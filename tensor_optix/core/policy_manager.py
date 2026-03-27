@@ -3,6 +3,8 @@ from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
+from .meta_controller import MetaAction
+
 from .base_agent import BaseAgent
 from .checkpoint_registry import CheckpointRegistry
 from .loop_controller import LoopCallback
@@ -49,11 +51,19 @@ class PolicyManager:
         ensemble = EnsembleAgent(pm, primary_agent=primary_agent)
     """
 
-    def __init__(self, registry: CheckpointRegistry, score_window: int = 10):
+    def __init__(
+        self,
+        registry: CheckpointRegistry,
+        score_window: int = 10,
+        max_spawns: Optional[int] = None,
+        max_ensemble_size: Optional[int] = None,
+    ):
         self._registry = registry
         self._ensemble: List[Tuple[BaseAgent, float]] = []
         self._score_history: Dict[int, Deque[float]] = {}
         self._score_window = score_window
+        self._max_spawns = max_spawns
+        self._max_ensemble_size = max_ensemble_size
         self._spawn_count: int = 0
         self._prune_count: int = 0
         self._current_regime: Optional[str] = None
@@ -247,11 +257,17 @@ class PolicyManager:
         """
         Compute a dynamic noise_scale for spawn_variant().
 
-        Maps recent improvement rate to mutation intensity:
-        - Improving (positive slope) → low noise (don't disrupt what works)
-        - Plateau / declining → high noise (explore more aggressively)
+        Driven by three signals, not one:
 
-        Pass the result directly to spawn_variant():
+        1. val_score slope: improving val → less noise (don't disrupt)
+        2. generalization_gap: large train-val gap → more noise (overfitting,
+           need to explore different solutions)
+        3. train/val correlation: low correlation → more noise (train is lying —
+           val is not following the training signal)
+
+        Without val data (no val_pipeline), falls back to slope-only mode.
+
+        Pass directly to spawn_variant():
             scale = pm.adaptive_noise_scale(metrics_history)
             pm.spawn_variant(MyAgent(...), noise_scale=scale)
         """
@@ -264,16 +280,47 @@ class PolicyManager:
         if mean == 0.0:
             return max_scale
 
+        # --- Signal 1: val (or train) slope ---
         x = np.arange(len(scores), dtype=float)
         slope = float(np.polyfit(x, scores, 1)[0])
         normalized_slope = slope / abs(mean)
-
-        # Clamp to [0, 1]: 0 = plateau/decline → max_scale, 1 = strong improvement → min_scale
+        # t=1 → strongly improving, t=0 → plateau/declining
         t = min(1.0, max(0.0, normalized_slope / 0.05))
-        scale = float(max_scale - t * (max_scale - min_scale))
+
+        # --- Signals 2 & 3: gap and correlation (only when val data present) ---
+        train_scores = [m.metrics.get("train_score") for m in recent]
+        val_scores = [m.metrics.get("val_score") for m in recent]
+        has_val = all(v is not None for v in train_scores + val_scores)
+
+        gap_penalty = 0.0
+        corr_penalty = 0.0
+
+        if has_val:
+            train_arr = np.array(train_scores, dtype=float)
+            val_arr = np.array(val_scores, dtype=float)
+
+            # Signal 2: mean generalization gap, normalized by |mean val|
+            mean_val = float(np.mean(val_arr))
+            if mean_val != 0.0:
+                mean_gap = float(np.mean(train_arr - val_arr))
+                gap_penalty = min(1.0, max(0.0, mean_gap / abs(mean_val)))
+
+            # Signal 3: Pearson correlation between train and val trends
+            # corr=1 → moving together (healthy), corr≈0 or negative → diverging
+            if len(train_arr) >= 3 and np.std(train_arr) > 0 and np.std(val_arr) > 0:
+                corr = float(np.corrcoef(train_arr, val_arr)[0, 1])
+                # corr_penalty: 0 when perfectly correlated, 1 when fully decorrelated
+                corr_penalty = min(1.0, max(0.0, 1.0 - corr))
+
+        # Combine: t reduces noise (improvement), gap and corr penalties increase it
+        # effective_t is reduced by overfitting and decorrelation signals
+        effective_t = t * (1.0 - 0.5 * gap_penalty) * (1.0 - 0.5 * corr_penalty)
+        scale = float(max_scale - effective_t * (max_scale - min_scale))
+
         logger.debug(
-            "PolicyManager.adaptive_noise_scale: slope=%.4f, t=%.2f, scale=%.4f",
-            normalized_slope, t, scale,
+            "PolicyManager.adaptive_noise_scale: slope_t=%.2f gap_penalty=%.2f "
+            "corr_penalty=%.2f effective_t=%.2f scale=%.4f",
+            t, gap_penalty, corr_penalty, effective_t, scale,
         )
         return scale
 
@@ -302,11 +349,51 @@ class PolicyManager:
             })
         return {
             "ensemble_size": len(self._ensemble),
+            "max_ensemble_size": self._max_ensemble_size,
             "agents": agents_info,
             "regime": self._current_regime,
             "spawn_count": self._spawn_count,
+            "max_spawns": self._max_spawns,
+            "spawns_remaining": self.spawns_remaining,
+            "budget_exhausted": self.budget_exhausted,
             "prune_count": self._prune_count,
         }
+
+    def training_report(self) -> dict:
+        """
+        Structured training report for display after training completes.
+
+        Returns a superset of status() enriched with:
+        - best_score: primary_score from the best registry checkpoint
+        - best_val_score: val_score from that checkpoint (if a val pipeline was used)
+        - best_generalization_gap: train - val from that checkpoint (if available)
+        - termination_reason: why training stopped ("budget_exhausted", "meta_stop", "natural_dormant")
+
+        Use pm.training_report() after opt.run() returns, or read it from the
+        formatted stdout block that PolicyManagerCallback prints automatically.
+        """
+        report = self.status()
+
+        # Enrich with best checkpoint info
+        best_score = None
+        best_val_score = None
+        best_gap = None
+        if self._registry is not None:
+            manifest = self._registry._load_manifest()
+            if manifest:
+                best_entry = max(manifest, key=lambda e: e["primary_score"])
+                best_score = best_entry.get("primary_score")
+                # Load full snapshot to access the complete metrics dict
+                snap = self._registry._load_snapshot_from_dir(best_entry["snapshot_dir"])
+                if snap is not None:
+                    m = snap.eval_metrics.metrics or {}
+                    best_val_score = m.get("val_score")
+                    best_gap = m.get("generalization_gap")
+
+        report["best_score"] = best_score
+        report["best_val_score"] = best_val_score
+        report["best_generalization_gap"] = best_gap
+        return report
 
     # ------------------------------------------------------------------
     # Evolution
@@ -411,12 +498,32 @@ class PolicyManager:
     # Helpers
     # ------------------------------------------------------------------
 
-    def as_callback(self, agent: BaseAgent) -> "PolicyManagerCallback":
+    def as_callback(
+        self,
+        agent: BaseAgent,
+        agent_factory: Optional[Callable[[], BaseAgent]] = None,
+        meta_controller: Optional[Any] = None,
+    ) -> "PolicyManagerCallback":
         """
-        Returns a LoopCallback that auto-triggers evolve() on DORMANT events.
-        Pass the result to RLOptimizer or LoopController as a callback.
+        Returns a LoopCallback that wires PolicyManager into the loop.
+
+        agent_factory: callable that returns a fresh agent shell for spawning.
+            If provided, the callback spawns variants autonomously on DORMANT.
+            Required for autonomous operation.
+
+        meta_controller: a MetaController (or any object with a
+            decide(metrics_history, pm_status) -> MetaAction interface).
+            If provided, all DORMANT decisions (spawn/prune/stop/no-op) are
+            delegated to it. If omitted, spawning always fires when budget allows.
+
+        Wiring:
+            pm = PolicyManager(registry, max_spawns=3, max_ensemble_size=5)
+            cb = pm.as_callback(agent, agent_factory=lambda: MyAgent(...),
+                                meta_controller=MetaController())
+            opt = RLOptimizer(..., callbacks=[cb])
+            cb.set_stop_fn(opt.stop)
         """
-        return PolicyManagerCallback(self, agent)
+        return PolicyManagerCallback(self, agent, agent_factory, meta_controller)
 
     @property
     def ranked_snapshots(self) -> List[dict]:
@@ -431,35 +538,206 @@ class PolicyManager:
     def ensemble_size(self) -> int:
         return len(self._ensemble)
 
+    @property
+    def budget_exhausted(self) -> bool:
+        """True when max_spawns is set and the spawn budget has been fully used."""
+        return self._max_spawns is not None and self._spawn_count >= self._max_spawns
+
+    @property
+    def spawns_remaining(self) -> Optional[int]:
+        """Remaining spawns in budget. None if no budget was set."""
+        if self._max_spawns is None:
+            return None
+        return max(0, self._max_spawns - self._spawn_count)
+
 
 class PolicyManagerCallback(LoopCallback):
     """
     Wires PolicyManager into the LoopController event system.
 
-    Pass to RLOptimizer / LoopController via the callbacks list:
+    Minimal wiring (rollback + budget termination only):
         cb = pm.as_callback(agent)
-        RLOptimizer(..., callbacks=[cb])
+        opt = RLOptimizer(..., callbacks=[cb])
+        cb.set_stop_fn(opt.stop)
 
-    Tracks the most recent eval score.
-    On DORMANT: auto-rebalances ensemble weights (if scores were recorded
-    via record_agent_score()), then calls evolve() for rollback check.
+    Fully autonomous (rollback + spawn + prune + MetaController decisions):
+        mc = MetaController(gap_threshold=0.2, corr_threshold=0.5)
+        cb = pm.as_callback(
+            agent,
+            agent_factory=lambda: MyAgent(...),
+            meta_controller=mc,
+        )
+        opt = RLOptimizer(..., callbacks=[cb])
+        cb.set_stop_fn(opt.stop)
+
+    On every DORMANT event:
+    1. Auto-rebalance ensemble weights from score history
+    2. Rollback to best checkpoint if current score < best
+    3. If agent_factory provided:
+       - If MetaController present: delegate SPAWN/PRUNE/STOP/NO_OP decision to it
+       - If no MetaController: spawn whenever budget allows (default behaviour)
+    4. If budget exhausted: call stop_fn → opt.run() returns cleanly
     """
 
-    def __init__(self, policy_manager: PolicyManager, agent: BaseAgent):
+    def __init__(
+        self,
+        policy_manager: PolicyManager,
+        agent: BaseAgent,
+        agent_factory: Optional[Callable[[], BaseAgent]] = None,
+        meta_controller: Optional[Any] = None,
+    ):
         self._pm = policy_manager
         self._agent = agent
+        self._agent_factory = agent_factory
+        self._meta = meta_controller
         self._last_score: Optional[float] = None
+        self._stop_fn: Optional[Callable[[], None]] = None
+        self._metrics_history: List[EvalMetrics] = []
+        self._reported: bool = False
+
+    def set_stop_fn(self, fn: Callable[[], None]) -> None:
+        """
+        Register a callable invoked when the spawn budget is exhausted.
+        Typically: cb.set_stop_fn(optimizer.stop)
+        """
+        self._stop_fn = fn
 
     def on_episode_end(self, episode_id: int, eval_metrics: Optional[EvalMetrics]) -> None:
         if eval_metrics is not None:
             self._last_score = eval_metrics.primary_score
+            self._metrics_history.append(eval_metrics)
 
     def on_dormant(self, episode_id: int) -> None:
+        # Step 1: rebalance weights
+        self._pm.auto_update_weights()
+
+        # Step 2: rollback if degraded
         if self._last_score is not None:
-            self._pm.auto_update_weights()
             rolled_back = self._pm.evolve(self._agent, self._last_score)
             if rolled_back:
                 logger.info(
-                    "Episode %d: DORMANT — PolicyManager rolled back to best checkpoint",
+                    "Episode %d: DORMANT — rolled back to best checkpoint",
                     episode_id,
                 )
+
+        # Step 3: autonomous decisions (only when factory is available)
+        # When no factory, this is natural convergence — print report once
+        if self._agent_factory is None and not self._reported:
+            self._reported = True
+            self._print_training_report("natural_dormant")
+
+        if self._agent_factory is not None:
+            if self._meta is not None:
+                action = self._meta.decide(self._metrics_history, self._pm.status())
+                self._execute(action, episode_id)
+            elif not self._pm.budget_exhausted:
+                self._do_spawn(episode_id)
+
+        # Step 4: terminate if budget exhausted
+        if self._pm.budget_exhausted:
+            logger.info(
+                "Episode %d: spawn budget exhausted (%d/%d) — signalling stop",
+                episode_id,
+                self._pm._spawn_count,
+                self._pm._max_spawns,
+            )
+            self._print_training_report("budget_exhausted")
+            if self._stop_fn is not None:
+                self._stop_fn()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _do_spawn(self, episode_id: int) -> None:
+        """Clone best checkpoint into a new variant and add to ensemble."""
+        shell = self._agent_factory()
+        scale = self._pm.adaptive_noise_scale(self._metrics_history)
+        variant = self._pm.spawn_variant(shell, noise_scale=scale)
+        self._pm.add_agent(variant, weight=1.0)
+        max_size = self._pm._max_ensemble_size
+        if max_size is not None and self._pm.ensemble_size > max_size:
+            self._pm.prune(bottom_k=1)
+        logger.info(
+            "Episode %d: spawned variant (noise=%.4f ensemble_size=%d spawns=%d/%s)",
+            episode_id, scale, self._pm.ensemble_size,
+            self._pm._spawn_count,
+            str(self._pm._max_spawns) if self._pm._max_spawns is not None else "∞",
+        )
+
+    def _execute(self, action: MetaAction, episode_id: int) -> None:
+        """Execute a MetaController decision."""
+        if action == MetaAction.STOP:
+            logger.info("Episode %d: MetaController → STOP", episode_id)
+            self._print_training_report("meta_stop")
+            if self._stop_fn is not None:
+                self._stop_fn()
+        elif action == MetaAction.SPAWN:
+            if not self._pm.budget_exhausted:
+                self._do_spawn(episode_id)
+            else:
+                logger.debug("Episode %d: MetaController → SPAWN but budget exhausted", episode_id)
+        elif action == MetaAction.PRUNE:
+            if self._pm.ensemble_size > 1:
+                removed = self._pm.prune(bottom_k=1)
+                logger.info(
+                    "Episode %d: MetaController → PRUNE (removed %d agent)",
+                    episode_id, len(removed),
+                )
+        elif action == MetaAction.NO_OP:
+            logger.debug("Episode %d: MetaController → NO_OP", episode_id)
+
+    def _print_training_report(self, reason: str) -> None:
+        """Print a human-readable training summary to stdout."""
+        report = self._pm.training_report()
+        sep = "━" * 54
+
+        reason_label = {
+            "budget_exhausted": "Spawn budget exhausted",
+            "meta_stop": "MetaController decision",
+            "natural_dormant": "Plateau — model converged",
+        }.get(reason, reason)
+
+        lines = [
+            "",
+            sep,
+            "  Training Complete",
+            f"  Reason           : {reason_label}",
+            sep,
+        ]
+
+        best = report.get("best_score")
+        if best is not None:
+            lines.append(f"  Best score       : {best:.4f}")
+
+        val = report.get("best_val_score")
+        if val is not None:
+            lines.append(f"  Val score        : {val:.4f}")
+
+        gap = report.get("best_generalization_gap")
+        if gap is not None:
+            lines.append(f"  Generalization   : {gap:.4f}  (train − val)")
+
+        max_sp = report.get("max_spawns")
+        sp = report.get("spawn_count", 0)
+        if max_sp is not None:
+            lines.append(f"  Spawns used      : {sp} / {max_sp}")
+        else:
+            lines.append(f"  Spawns used      : {sp}")
+
+        lines.append(f"  Pruned agents    : {report.get('prune_count', 0)}")
+        lines.append(f"  Ensemble size    : {report.get('ensemble_size', 0)}")
+
+        regime = report.get("regime")
+        if regime:
+            lines.append(f"  Regime           : {regime}")
+
+        agents = report.get("agents", [])
+        if agents:
+            lines.append("  Agents           :")
+            for a in agents:
+                ms = f"{a['mean_score']:.4f}" if a["mean_score"] is not None else "n/a"
+                lines.append(f"    [{a['index']}] weight={a['weight']:.4f}  mean_score={ms}")
+
+        lines += [sep, ""]
+        print("\n".join(lines))

@@ -54,6 +54,19 @@ class EvalMetrics:
         """True if this score beats other by at least margin."""
         return self.primary_score > other.primary_score + margin
 
+    @property
+    def generalization_gap(self) -> Optional[float]:
+        """
+        train_score - val_score if both are present in metrics, else None.
+        Positive gap = overfitting. Zero = perfect generalization.
+        Only available when a val_pipeline is configured.
+        """
+        train = self.metrics.get("train_score")
+        val = self.metrics.get("val_score")
+        if train is not None and val is not None:
+            return float(train) - float(val)
+        return None
+
 
 @dataclass
 class HyperparamSet:

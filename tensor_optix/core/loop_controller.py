@@ -60,11 +60,13 @@ class LoopController:
         improvement_margin: float = 0.0,
         max_episodes: Optional[int] = None,
         callbacks: Optional[List[LoopCallback]] = None,
+        val_pipeline: Optional[BasePipeline] = None,
     ):
         self._agent = agent
         self._evaluator = evaluator
         self._optimizer = optimizer
         self._pipeline = pipeline
+        self._val_pipeline = val_pipeline
         self._registry = checkpoint_registry
         self._scheduler = backoff_scheduler
         self._rollback_on_degradation = rollback_on_degradation
@@ -74,6 +76,7 @@ class LoopController:
         self._stop_requested = False
         self._best_snapshot: Optional[PolicySnapshot] = None
         self._metrics_history: List[EvalMetrics] = []
+        self._val_gen = None
 
     def run(self) -> None:
         """
@@ -81,6 +84,10 @@ class LoopController:
         """
         self._stop_requested = False
         self._pipeline.setup()
+        if self._val_pipeline is not None:
+            self._val_pipeline.setup()
+            self._val_gen = self._val_pipeline.episodes()
+            logger.info("Validation pipeline active — primary_score driven by val performance")
         self._fire("on_loop_start")
         try:
             self._cold_start()
@@ -90,6 +97,8 @@ class LoopController:
             raise
         finally:
             self._pipeline.teardown()
+            if self._val_pipeline is not None:
+                self._val_pipeline.teardown()
             self._fire("on_loop_stop")
 
     def stop(self) -> None:
@@ -145,8 +154,25 @@ class LoopController:
             eval_metrics: Optional[EvalMetrics] = None
 
             if self._scheduler.should_adapt(episode_id):
-                eval_metrics = self._evaluator.score(episode_data, train_diagnostics)
-                eval_metrics.episode_id = episode_id
+                train_metrics = self._evaluator.score(episode_data, train_diagnostics)
+                train_metrics.episode_id = episode_id
+
+                if self._val_gen is not None:
+                    val_episode = next(self._val_gen)
+                    val_episode.episode_id = episode_id
+                    val_metrics = self._evaluator.score_validation(val_episode)
+                    eval_metrics = self._evaluator.combine(train_metrics, val_metrics)
+                    eval_metrics.episode_id = episode_id
+                    logger.debug(
+                        "Episode %d: train=%.4f val=%.4f gap=%.4f",
+                        episode_id,
+                        train_metrics.primary_score,
+                        val_metrics.primary_score,
+                        train_metrics.primary_score - val_metrics.primary_score,
+                    )
+                else:
+                    eval_metrics = train_metrics
+
                 self._metrics_history.append(eval_metrics)
 
                 is_improvement = (

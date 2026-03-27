@@ -52,6 +52,7 @@ class RLOptimizer:
         dormant_threshold: int = 20,
         degradation_threshold: float = 0.95,
         callbacks: Optional[List[LoopCallback]] = None,
+        val_pipeline: Optional[BasePipeline] = None,
     ):
         # Inject agent into pipeline if pipeline supports it
         if hasattr(pipeline, "set_agent"):
@@ -84,6 +85,7 @@ class RLOptimizer:
             improvement_margin=improvement_margin,
             max_episodes=max_episodes,
             callbacks=callbacks,
+            val_pipeline=val_pipeline,
         )
 
     def run(self) -> None:

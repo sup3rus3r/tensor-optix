@@ -23,6 +23,8 @@ def make_pm(*weights):
     pm._ensemble = []
     pm._score_history = {}
     pm._score_window = 10
+    pm._max_spawns = None
+    pm._max_ensemble_size = None
     pm._spawn_count = 0
     pm._prune_count = 0
     pm._current_regime = None
