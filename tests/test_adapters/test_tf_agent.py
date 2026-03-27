@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-import tensorflow as tf
+tf = pytest.importorskip("tensorflow")
 from tensor_optix.adapters.tensorflow.tf_agent import TFAgent
 from tensor_optix.core.types import HyperparamSet, EpisodeData
 

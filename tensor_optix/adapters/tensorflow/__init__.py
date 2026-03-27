@@ -1,4 +1,6 @@
-from .tf_agent import TFAgent
-from .tf_evaluator import TFEvaluator
-
-__all__ = ["TFAgent", "TFEvaluator"]
+try:
+    from .tf_agent import TFAgent
+    from .tf_evaluator import TFEvaluator
+    __all__ = ["TFAgent", "TFEvaluator"]
+except (ImportError, RuntimeError):
+    __all__ = []

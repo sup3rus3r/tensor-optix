@@ -1,12 +1,16 @@
 # tensor-optix
 
-Autonomous continuous learning loop for TensorFlow RL agents.
+Self-evolving autonomous learning loop for TensorFlow RL agents.
 
-> **We own the loop. You own the model.**
+---
 
-tensor-optix wraps your TensorFlow model and Gymnasium environment and takes full ownership of the training loop — stepping continuously, evaluating performance windows, tuning hyperparameters, checkpointing, and adapting over time without manual intervention.
+## About
 
-**No fixed episodes.** Training runs as a continuous stream of steps. The loop determines when training ends — not the environment's `done` flag.
+tensor-optix replaces the conventional reinforcement learning training loop with an autonomous, continuously-learning optimization system. You bring your TensorFlow model and Gymnasium environment — the library owns everything else: stepping, evaluation, hyperparameter tuning, checkpointing, and policy evolution.
+
+The system runs as a continuous stream of steps with no fixed episode count. It detects performance plateaus through exponential backoff, tunes hyperparameters using finite difference estimation, and evolves policies by comparing live performance against its checkpoint history. Multiple agents can run simultaneously as a weighted ensemble — essential for non-stationary environments like financial markets where no single policy dominates all regimes.
+
+**Core philosophy:** We own the loop. You own the model.
 
 ---
 
@@ -73,8 +77,9 @@ The loop:
 2. Evaluates each window via `primary_score`
 3. If improved: saves checkpoint, resets backoff
 4. If plateau: backs off evaluation, eventually reaches DORMANT
-5. If degraded: optionally rolls back to best checkpoint, re-activates
-6. Tunes hyperparameters using two-phase finite difference
+5. If DORMANT: `PolicyManager` compares current score vs registry best and rolls back if needed
+6. If degraded: optionally rolls back to best checkpoint, re-activates
+7. Tunes hyperparameters using two-phase finite difference
 
 ---
 
@@ -203,6 +208,65 @@ Available hooks: `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvem
 
 ---
 
+## Policy Evolution
+
+`PolicyManager` handles model evolution — separate from the hyperparameter optimizer.
+
+**Separation of concerns:**
+- `BackoffOptimizer` / `PBTOptimizer` → tune hyperparameters
+- `PolicyManager` → evolve models (rollback, ensemble)
+
+### Automatic rollback on DORMANT
+
+When the loop reaches DORMANT, `PolicyManager` compares the current score against the best checkpoint. If current < best, it loads the best known weights back into the agent.
+
+```python
+from tensor_optix import PolicyManager, RLOptimizer
+from tensor_optix.core.checkpoint_registry import CheckpointRegistry
+
+registry = CheckpointRegistry("./checkpoints")
+pm = PolicyManager(registry)
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=pipeline,
+    checkpoint_dir="./checkpoints",
+    callbacks=[pm.as_callback(agent)],
+)
+opt.run()
+```
+
+### Ensemble — multiple policies
+
+Run multiple agents simultaneously. Actions are combined as a weighted average.
+
+```python
+from tensor_optix import PolicyManager, EnsembleAgent
+
+pm = PolicyManager(registry)
+pm.add_agent(agent_trending,  weight=1.0)   # strong in trending markets
+pm.add_agent(agent_ranging,   weight=1.0)   # strong in sideways markets
+pm.add_agent(agent_volatile,  weight=1.0)   # strong in high-volatility markets
+
+ensemble = EnsembleAgent(pm, primary_agent=agent_trending)
+
+opt = RLOptimizer(
+    agent=ensemble,
+    pipeline=BatchPipeline(env=env, agent=ensemble, window_size=200),
+    callbacks=[pm.as_callback(agent_trending)],
+)
+opt.run()
+```
+
+**Weight updates** — adjust ensemble weights based on recent regime performance:
+
+```python
+# After evaluating each agent separately:
+pm.update_weights({0: sharpe_trending, 1: sharpe_ranging, 2: sharpe_volatile})
+```
+
+---
+
 ## Full Configuration
 
 ```python
@@ -240,7 +304,9 @@ tensor_optix/
 │   ├── base_pipeline.py
 │   ├── loop_controller.py      # State machine + main loop
 │   ├── checkpoint_registry.py
-│   └── backoff_scheduler.py
+│   ├── backoff_scheduler.py
+│   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
+│   └── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
 ├── adapters/tensorflow/
 │   ├── tf_agent.py             # TFAgent — Keras model wrapper
 │   └── tf_evaluator.py         # TFEvaluator — default scorer
@@ -251,6 +317,17 @@ tensor_optix/
     ├── backoff_optimizer.py    # Two-phase finite difference
     └── pbt_optimizer.py        # Pseudo population-based training
 ```
+
+### Component responsibilities
+
+| Component | Responsibility |
+|-----------|---------------|
+| `LoopController` | State machine, episode orchestration |
+| `BackoffScheduler` | Adaptation interval + state transitions |
+| `CheckpointRegistry` | Snapshot storage and manifest |
+| `BaseOptimizer` | Hyperparameter tuning |
+| `PolicyManager` | Model evolution (rollback, ensemble weights) |
+| `EnsembleAgent` | Multi-policy action combining |
 
 ---
 

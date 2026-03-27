@@ -1,4 +1,3 @@
-from .optimizer import RLOptimizer
 from .core.types import (
     EpisodeData,
     EvalMetrics,
@@ -11,19 +10,26 @@ from .core.base_evaluator import BaseEvaluator
 from .core.base_optimizer import BaseOptimizer
 from .core.base_pipeline import BasePipeline
 from .core.loop_controller import LoopCallback
+from .core.policy_manager import PolicyManager, PolicyManagerCallback
+from .core.ensemble_agent import EnsembleAgent
 from .pipeline.batch_pipeline import BatchPipeline
 from .pipeline.live_pipeline import LivePipeline
-from .adapters.tensorflow.tf_agent import TFAgent
-from .adapters.tensorflow.tf_evaluator import TFEvaluator
 from .optimizers.backoff_optimizer import BackoffOptimizer
 from .optimizers.pbt_optimizer import PBTOptimizer
 
 __all__ = [
-    "RLOptimizer",
     "EpisodeData", "EvalMetrics", "HyperparamSet", "PolicySnapshot", "LoopState",
     "BaseAgent", "BaseEvaluator", "BaseOptimizer", "BasePipeline",
     "LoopCallback",
+    "PolicyManager", "PolicyManagerCallback", "EnsembleAgent",
     "BatchPipeline", "LivePipeline",
-    "TFAgent", "TFEvaluator",
     "BackoffOptimizer", "PBTOptimizer",
 ]
+
+try:
+    from .optimizer import RLOptimizer
+    from .adapters.tensorflow.tf_agent import TFAgent
+    from .adapters.tensorflow.tf_evaluator import TFEvaluator
+    __all__ += ["RLOptimizer", "TFAgent", "TFEvaluator"]
+except (ImportError, RuntimeError):
+    pass
