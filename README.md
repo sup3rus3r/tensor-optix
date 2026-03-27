@@ -1,6 +1,6 @@
 # tensor-optix
 
-Self-evolving autonomous reinforcement learning loop — algorithm-agnostic, framework-optional.
+Self-evolving autonomous reinforcement learning loop , algorithm-agnostic, framework-optional.
 
 ---
 
@@ -8,7 +8,7 @@ Self-evolving autonomous reinforcement learning loop — algorithm-agnostic, fra
 
 tensor-optix replaces the conventional RL training loop with an autonomous system that owns evaluation, checkpointing, hyperparameter tuning, policy evolution, and ensemble management. You bring your agent and environment. The library does everything else.
 
-**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, weights an ensemble by rolling performance, and uses both training and validation signals to drive every decision — not training alone.
+**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, weights an ensemble by rolling performance, and uses both training and validation signals to drive every decision , not training alone.
 
 **Core philosophy:** We own the loop. You own the model.
 
@@ -56,7 +56,7 @@ opt.run()  # runs until convergence (DORMANT state)
 
 ## Algorithm Support
 
-The core loop calls exactly **six methods** on any agent. Nothing else is assumed — no network architecture, no action space shape, no gradient-based learning, no framework.
+The core loop calls exactly **six methods** on any agent. Nothing else is assumed , no network architecture, no action space shape, no gradient-based learning, no framework.
 
 ```python
 class BaseAgent(ABC):
@@ -129,7 +129,7 @@ class DQNAgent(BaseAgent):
 
 ### Using SAC / TD3 / DDPG
 
-Same pattern — implement `BaseAgent`, override `act()` for continuous action sampling and `learn()` for your update rule. Hyperparams are an open dict; no key names are hardcoded anywhere in the framework.
+Same pattern , implement `BaseAgent`, override `act()` for continuous action sampling and `learn()` for your update rule. Hyperparams are an open dict; no key names are hardcoded anywhere in the framework.
 
 ### Using PyTorch or JAX
 
@@ -166,11 +166,11 @@ The loop, hyperparameter optimizer, checkpointing, and ensemble logic all work i
 ```
 ACTIVE   → aggressive tuning, evaluates every window
 COOLING  → recent improvement, exponential backoff on eval frequency
-DORMANT  → plateau reached — model is trained, minimal intervention
+DORMANT  → plateau reached , model is trained, minimal intervention
 WATCHDOG → monitoring for degradation
 ```
 
-**DORMANT = trained.** Not a fixed episode count — the system backs off evaluation geometrically until improvement stops, then declares convergence.
+**DORMANT = trained.** Not a fixed episode count , the system backs off evaluation geometrically until improvement stops, then declares convergence.
 
 ### Backoff Schedule
 
@@ -184,7 +184,7 @@ DORMANT declared when:  consecutive_no_improvement ≥ dormant_threshold
 
 Every improvement resets the backoff counter. The system accelerates evaluation when learning is happening, backs off when it isn't.
 
-### Hyperparameter Optimizer — Two-Phase Finite Difference
+### Hyperparameter Optimizer , Two-Phase Finite Difference
 
 `BackoffOptimizer` cycles through hyperparameters using staggered two-phase finite difference:
 
@@ -196,7 +196,7 @@ For each param θᵢ:
                      if ĝᵢ ≤ 0: apply θᵢ − δᵢ  (reverse direction)
 ```
 
-Step size `δᵢ` adapts: shrinks on improvement, grows on plateau. Params cycle round-robin — each is probed and committed independently.
+Step size `δᵢ` adapts: shrinks on improvement, grows on plateau. Params cycle round-robin , each is probed and committed independently.
 
 `PBTOptimizer` maintains a history of `(hyperparams, score)` pairs and exploits top performers when in the bottom 20%, otherwise explores with Gaussian perturbation.
 
@@ -204,7 +204,7 @@ Step size `δᵢ` adapts: shrinks on improvement, grows on plateau. Params cycle
 
 ## The Science: Train + Val Together
 
-Without validation, every decision — checkpoint saves, rollbacks, spawn triggers — is made on training data alone. That is overfitting disguised as improvement.
+Without validation, every decision , checkpoint saves, rollbacks, spawn triggers , is made on training data alone. That is overfitting disguised as improvement.
 
 ### Validation Pipeline
 
@@ -212,7 +212,7 @@ Without validation, every decision — checkpoint saves, rollbacks, spawn trigge
 opt = RLOptimizer(
     agent=agent,
     pipeline=train_pipeline,
-    val_pipeline=val_pipeline,   # held-out — agent acts, never learns
+    val_pipeline=val_pipeline,   # held-out , agent acts, never learns
 )
 ```
 
@@ -223,13 +223,13 @@ primary_score        = val_score          ← drives ALL checkpoint and rollback
 generalization_gap   = train_score − val  ← surfaced in every EvalMetrics
 ```
 
-Every adaptation decision in the system — rollback, spawn, noise scale, MetaController — is driven by out-of-sample performance, not training performance.
+Every adaptation decision in the system , rollback, spawn, noise scale, MetaController , is driven by out-of-sample performance, not training performance.
 
 ### Three-Signal Adaptive Noise
 
 When spawning a policy variant, the mutation intensity is computed from three signals:
 
-**Signal 1 — Val slope (improvement rate)**
+**Signal 1 , Val slope (improvement rate)**
 
 ```
 scores = [primary_score₁, ..., primary_scoreₙ]
@@ -239,22 +239,22 @@ t      = clip(slope / max_slope, 0, 1)
 
 `t → 1` when val is improving strongly. `t → 0` on plateau.
 
-**Signal 2 — Generalization gap**
+**Signal 2 , Generalization gap**
 
 ```
 gap_penalty = clip(mean(train − val) / |mean(val)|, 0, 1)
 ```
 
-Large gap means the model fits training data but not held-out data — explore different solutions.
+Large gap means the model fits training data but not held-out data , explore different solutions.
 
-**Signal 3 — Train/val correlation (Pearson)**
+**Signal 3 , Train/val correlation (Pearson)**
 
 ```
 corr         = Pearson(train_scores, val_scores)
 corr_penalty = clip(1 − corr, 0, 1)
 ```
 
-`corr → 1` means train and val are moving together (healthy). `corr → 0` or negative means train is moving but val isn't following — a signal to explore.
+`corr → 1` means train and val are moving together (healthy). `corr → 0` or negative means train is moving but val isn't following , a signal to explore.
 
 **Combined formula:**
 
@@ -295,7 +295,7 @@ opt = RLOptimizer(
 opt.run()
 ```
 
-### Spawn Budget — When Is Training Done?
+### Spawn Budget , When Is Training Done?
 
 Without a budget, DORMANT → spawn → new training → DORMANT → spawn → forever. `max_spawns` defines termination:
 
@@ -350,7 +350,7 @@ On DORMANT:
 6. Add to ensemble, prune if over `max_ensemble_size`
 7. When budget exhausted → call `stop_fn()` → print report
 
-### MetaController — Autonomous Decisions
+### MetaController , Autonomous Decisions
 
 `MetaController` observes the full metrics history and decides what to do on each DORMANT:
 
@@ -375,9 +375,9 @@ cb = pm.as_callback(
 )
 ```
 
-The MetaController interface is identical to any learned policy — swap it for a neural network decision maker without changing anything else.
+The MetaController interface is identical to any learned policy , swap it for a neural network decision maker without changing anything else.
 
-### Ensemble — Multiple Policies
+### Ensemble , Multiple Policies
 
 Actions are combined as a weighted average: `a = Σ(wᵢ × aᵢ) / Σ(wᵢ)`
 
@@ -401,7 +401,7 @@ opt = RLOptimizer(
 ### Autonomous Weight Rebalancing
 
 ```python
-# Record per-agent scores — happens every evaluation window
+# Record per-agent scores , happens every evaluation window
 pm.record_agent_score(0, sharpe_trending)
 pm.record_agent_score(1, sharpe_ranging)
 
@@ -571,20 +571,20 @@ opt = RLOptimizer(
 tensor_optix/
 ├── core/
 │   ├── types.py                # EpisodeData, EvalMetrics, HyperparamSet, LoopState
-│   ├── base_agent.py           # BaseAgent — 6-method contract
-│   ├── base_evaluator.py       # BaseEvaluator — score, combine, compare
-│   ├── base_optimizer.py       # BaseOptimizer — suggest, on_improvement, on_plateau
-│   ├── base_pipeline.py        # BasePipeline — episodes() generator
+│   ├── base_agent.py           # BaseAgent , 6-method contract
+│   ├── base_evaluator.py       # BaseEvaluator , score, combine, compare
+│   ├── base_optimizer.py       # BaseOptimizer , suggest, on_improvement, on_plateau
+│   ├── base_pipeline.py        # BasePipeline , episodes() generator
 │   ├── loop_controller.py      # State machine + main loop
 │   ├── backoff_scheduler.py    # Convergence detection + state transitions
 │   ├── checkpoint_registry.py  # Snapshot storage and manifest
 │   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
-│   ├── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
-│   ├── regime_detector.py      # RegimeDetector — score-based regime classification
-│   └── meta_controller.py      # MetaController — SPAWN/PRUNE/STOP/NO_OP decisions
+│   ├── ensemble_agent.py       # EnsembleAgent , multi-policy BaseAgent wrapper
+│   ├── regime_detector.py      # RegimeDetector , score-based regime classification
+│   └── meta_controller.py      # MetaController , SPAWN/PRUNE/STOP/NO_OP decisions
 ├── adapters/tensorflow/
-│   ├── tf_agent.py             # TFAgent — Keras model wrapper (REINFORCE baseline)
-│   └── tf_evaluator.py         # TFEvaluator — default scorer
+│   ├── tf_agent.py             # TFAgent , Keras model wrapper (REINFORCE baseline)
+│   └── tf_evaluator.py         # TFEvaluator , default scorer
 ├── pipeline/
 │   ├── batch_pipeline.py       # Continuous stepping, fixed windows
 │   └── live_pipeline.py        # Real-time streaming
@@ -610,4 +610,4 @@ tensor_optix/
 
 ## License
 
-MIT — Copyright (c) 2026 sup3rus3r
+MIT , Copyright (c) 2026 sup3rus3r
