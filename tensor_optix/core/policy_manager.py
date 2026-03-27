@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from .base_agent import BaseAgent
@@ -22,25 +23,31 @@ class PolicyManager:
     1. evolve(): On DORMANT, compare current score vs registry best.
                  If current < best: rollback agent to best checkpoint.
                  If current >= best: no-op (system is at its best known state).
-    2. ensemble_action(): Combine actions from multiple registered agents
+    2. spawn_variant(): Clone best checkpoint into a new agent shell and apply
+                        hyperparam mutation. Produces a candidate for the ensemble.
+    3. ensemble_action(): Combine actions from multiple registered agents
                           via weighted averaging.
-    3. update_weights(): Adjust agent weights based on recent performance.
+    4. update_weights() / auto_update_weights(): Adjust agent weights based on
+                          externally provided or internally recorded score history.
 
     Minimal usage (evolution only):
         pm = PolicyManager(registry)
         cb = pm.as_callback(agent)
         optimizer = RLOptimizer(..., callbacks=[cb])
 
-    Ensemble usage:
+    Ensemble with spawning:
         pm = PolicyManager(registry)
-        pm.add_agent(agent_a, weight=1.0)
-        pm.add_agent(agent_b, weight=1.0)
-        ensemble = EnsembleAgent(pm, primary_agent=agent_a)
+        pm.add_agent(primary_agent, weight=1.0)
+        variant = pm.spawn_variant(SecondAgent(...), noise_scale=0.05)
+        pm.add_agent(variant, weight=1.0)
+        ensemble = EnsembleAgent(pm, primary_agent=primary_agent)
     """
 
-    def __init__(self, registry: CheckpointRegistry):
+    def __init__(self, registry: CheckpointRegistry, score_window: int = 10):
         self._registry = registry
         self._ensemble: List[Tuple[BaseAgent, float]] = []
+        self._score_history: Dict[int, Deque[float]] = {}
+        self._score_window = score_window
 
     # ------------------------------------------------------------------
     # Ensemble management
@@ -104,6 +111,38 @@ class PolicyManager:
 
         self._ensemble = new_ensemble
 
+    def record_agent_score(self, agent_idx: int, score: float) -> None:
+        """
+        Record a performance score for a specific agent.
+
+        agent_idx: index in the ensemble (order of add_agent calls).
+        score: comparable scalar — higher is better.
+
+        Scores are stored in a rolling window of size score_window.
+        Call auto_update_weights() to apply the recorded history to weights.
+        """
+        if agent_idx not in self._score_history:
+            self._score_history[agent_idx] = deque(maxlen=self._score_window)
+        self._score_history[agent_idx].append(score)
+
+    def auto_update_weights(self) -> None:
+        """
+        Recompute ensemble weights from internally recorded score history.
+
+        For each agent with recorded scores, weight = mean(recent_scores).
+        Agents without recorded scores keep their current weight.
+        No-op if no scores have been recorded via record_agent_score().
+        """
+        if not self._score_history:
+            return
+        agent_scores = {
+            idx: float(np.mean(list(scores)))
+            for idx, scores in self._score_history.items()
+            if scores
+        }
+        if agent_scores:
+            self.update_weights(agent_scores)
+
     # ------------------------------------------------------------------
     # Evolution
     # ------------------------------------------------------------------
@@ -120,11 +159,16 @@ class PolicyManager:
         """
         best: Optional[PolicySnapshot] = self._registry.best
         if best is None:
-            best = self._registry.load_best(agent)
-
-        if best is None:
-            logger.debug("PolicyManager.evolve: registry empty — skipping")
-            return False
+            # Read metadata only — do NOT load weights yet.
+            manifest = self._registry._load_manifest()
+            if not manifest:
+                logger.debug("PolicyManager.evolve: registry empty — skipping")
+                return False
+            best_entry = max(manifest, key=lambda e: e["primary_score"])
+            best = self._registry._load_snapshot_from_dir(best_entry["snapshot_dir"])
+            if best is None:
+                logger.debug("PolicyManager.evolve: could not load snapshot metadata — skipping")
+                return False
 
         if current_score < best.eval_metrics.primary_score:
             logger.info(
@@ -142,6 +186,59 @@ class PolicyManager:
             best.eval_metrics.primary_score,
         )
         return False
+
+    def spawn_variant(
+        self,
+        agent_shell: BaseAgent,
+        noise_scale: float = 0.01,
+        mutation_fn: Optional[Callable[[BaseAgent], None]] = None,
+    ) -> BaseAgent:
+        """
+        Clone best checkpoint into agent_shell and apply mutation.
+
+        Loads the best known weights into agent_shell, then perturbs its
+        hyperparameters with multiplicative Gaussian noise. If mutation_fn
+        is provided, it is called after weight loading for custom weight
+        perturbation (e.g. adding noise directly to network parameters).
+
+        agent_shell: pre-instantiated, compatible agent. Its weights will
+                     be overwritten with the best-known checkpoint weights.
+        noise_scale: std dev for multiplicative Gaussian noise on each
+                     numeric hyperparam. Default 0.01 (1% perturbation).
+        mutation_fn: optional callable(agent) -> None for weight-space
+                     perturbation. Called after hyperparams are applied.
+
+        Returns agent_shell (mutated in place, also returned for chaining).
+
+        Example:
+            variant = pm.spawn_variant(MyAgent(...), noise_scale=0.05)
+            pm.add_agent(variant, weight=0.5)
+        """
+        snapshot = self._registry.load_best(agent_shell)
+        if snapshot is None:
+            logger.warning(
+                "PolicyManager.spawn_variant: registry empty — variant starts from scratch"
+            )
+            return agent_shell
+
+        hp = snapshot.hyperparams.copy()
+        rng = np.random.default_rng()
+        for key, val in list(hp.params.items()):
+            if isinstance(val, float):
+                hp.params[key] = float(val * (1.0 + rng.normal(0.0, noise_scale)))
+            elif isinstance(val, int):
+                hp.params[key] = max(1, round(val * (1.0 + rng.normal(0.0, noise_scale))))
+        agent_shell.set_hyperparams(hp)
+
+        if mutation_fn is not None:
+            mutation_fn(agent_shell)
+
+        logger.info(
+            "PolicyManager.spawn_variant: cloned %s with noise_scale=%.4f",
+            snapshot.snapshot_id,
+            noise_scale,
+        )
+        return agent_shell
 
     # ------------------------------------------------------------------
     # Helpers
@@ -176,7 +273,9 @@ class PolicyManagerCallback(LoopCallback):
         cb = pm.as_callback(agent)
         RLOptimizer(..., callbacks=[cb])
 
-    Tracks the most recent eval score and calls pm.evolve() when DORMANT.
+    Tracks the most recent eval score.
+    On DORMANT: auto-rebalances ensemble weights (if scores were recorded
+    via record_agent_score()), then calls evolve() for rollback check.
     """
 
     def __init__(self, policy_manager: PolicyManager, agent: BaseAgent):
@@ -190,6 +289,7 @@ class PolicyManagerCallback(LoopCallback):
 
     def on_dormant(self, episode_id: int) -> None:
         if self._last_score is not None:
+            self._pm.auto_update_weights()
             rolled_back = self._pm.evolve(self._agent, self._last_score)
             if rolled_back:
                 logger.info(

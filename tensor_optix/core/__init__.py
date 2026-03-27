@@ -8,3 +8,4 @@ from .checkpoint_registry import CheckpointRegistry
 from .backoff_scheduler import BackoffScheduler
 from .policy_manager import PolicyManager, PolicyManagerCallback
 from .ensemble_agent import EnsembleAgent
+from .regime_detector import RegimeDetector

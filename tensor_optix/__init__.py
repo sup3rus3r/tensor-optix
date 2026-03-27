@@ -12,6 +12,7 @@ from .core.base_pipeline import BasePipeline
 from .core.loop_controller import LoopCallback
 from .core.policy_manager import PolicyManager, PolicyManagerCallback
 from .core.ensemble_agent import EnsembleAgent
+from .core.regime_detector import RegimeDetector
 from .pipeline.batch_pipeline import BatchPipeline
 from .pipeline.live_pipeline import LivePipeline
 from .optimizers.backoff_optimizer import BackoffOptimizer
@@ -21,7 +22,7 @@ __all__ = [
     "EpisodeData", "EvalMetrics", "HyperparamSet", "PolicySnapshot", "LoopState",
     "BaseAgent", "BaseEvaluator", "BaseOptimizer", "BasePipeline",
     "LoopCallback",
-    "PolicyManager", "PolicyManagerCallback", "EnsembleAgent",
+    "PolicyManager", "PolicyManagerCallback", "EnsembleAgent", "RegimeDetector",
     "BatchPipeline", "LivePipeline",
     "BackoffOptimizer", "PBTOptimizer",
 ]

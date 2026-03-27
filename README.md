@@ -8,7 +8,7 @@ Self-evolving autonomous learning loop for TensorFlow RL agents.
 
 tensor-optix replaces the conventional reinforcement learning training loop with an autonomous, continuously-learning optimization system. You bring your TensorFlow model and Gymnasium environment — the library owns everything else: stepping, evaluation, hyperparameter tuning, checkpointing, and policy evolution.
 
-The system runs as a continuous stream of steps with no fixed episode count. It detects performance plateaus through exponential backoff, tunes hyperparameters using finite difference estimation, and evolves policies by comparing live performance against its checkpoint history. Multiple agents can run simultaneously as a weighted ensemble — essential for non-stationary environments like financial markets where no single policy dominates all regimes.
+The system runs as a continuous stream of steps with no fixed episode count. It detects performance plateaus through exponential backoff, tunes hyperparameters using finite difference estimation, and evolves policies by comparing live performance against its checkpoint history. When a plateau is detected, it can clone the best-known policy into a new variant, perturb its hyperparameters, and add the variant to the ensemble — autonomously generating new candidates instead of just reverting. Multiple agents run simultaneously as a weighted ensemble with self-adjusting weights based on rolling performance history, making the system particularly suited to non-stationary environments like financial markets where no single policy dominates all regimes.
 
 **Core philosophy:** We own the loop. You own the model.
 
@@ -214,7 +214,7 @@ Available hooks: `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvem
 
 **Separation of concerns:**
 - `BackoffOptimizer` / `PBTOptimizer` → tune hyperparameters
-- `PolicyManager` → evolve models (rollback, ensemble)
+- `PolicyManager` → evolve models (rollback, spawn, ensemble weights)
 
 ### Automatic rollback on DORMANT
 
@@ -236,17 +236,43 @@ opt = RLOptimizer(
 opt.run()
 ```
 
-### Ensemble — multiple policies
+### Spawning policy variants
 
-Run multiple agents simultaneously. Actions are combined as a weighted average.
+Clone the best checkpoint into a new agent shell and mutate its hyperparameters. The variant starts from the best-known weights with a small perturbation — a new candidate without starting from scratch.
 
 ```python
 from tensor_optix import PolicyManager, EnsembleAgent
 
 pm = PolicyManager(registry)
-pm.add_agent(agent_trending,  weight=1.0)   # strong in trending markets
-pm.add_agent(agent_ranging,   weight=1.0)   # strong in sideways markets
-pm.add_agent(agent_volatile,  weight=1.0)   # strong in high-volatility markets
+pm.add_agent(primary_agent, weight=1.0)
+
+# Clone best checkpoint into a new agent shell, perturb hyperparams by 5%
+variant = pm.spawn_variant(MyAgent(...), noise_scale=0.05)
+pm.add_agent(variant, weight=0.5)
+
+ensemble = EnsembleAgent(pm, primary_agent=primary_agent)
+```
+
+For weight-space perturbation (e.g. adding noise to network parameters), supply a `mutation_fn`:
+
+```python
+def perturb_weights(agent):
+    for layer in agent.model.layers:
+        for w in layer.trainable_weights:
+            w.assign_add(tf.random.normal(w.shape, stddev=0.01))
+
+variant = pm.spawn_variant(MyAgent(...), mutation_fn=perturb_weights)
+```
+
+### Ensemble — multiple policies
+
+Run multiple agents simultaneously. Actions are combined as a weighted average: `action = Σ(wᵢ × aᵢ) / Σ(wᵢ)`.
+
+```python
+pm = PolicyManager(registry)
+pm.add_agent(agent_trending,  weight=1.0)
+pm.add_agent(agent_ranging,   weight=1.0)
+pm.add_agent(agent_volatile,  weight=1.0)
 
 ensemble = EnsembleAgent(pm, primary_agent=agent_trending)
 
@@ -258,11 +284,53 @@ opt = RLOptimizer(
 opt.run()
 ```
 
-**Weight updates** — adjust ensemble weights based on recent regime performance:
+### Autonomous weight adjustment
+
+Record per-agent scores and let the system rebalance weights automatically. `auto_update_weights()` fires on every DORMANT event via the callback — no manual wiring needed.
 
 ```python
-# After evaluating each agent separately:
-pm.update_weights({0: sharpe_trending, 1: sharpe_ranging, 2: sharpe_volatile})
+# Record scores after each evaluation window (e.g. rolling Sharpe per regime)
+pm.record_agent_score(0, sharpe_trending)
+pm.record_agent_score(1, sharpe_ranging)
+pm.record_agent_score(2, sharpe_volatile)
+
+# auto_update_weights() is called automatically on DORMANT
+# or call it manually at any time:
+pm.auto_update_weights()
+```
+
+Scores are tracked in a rolling window (`score_window=10` by default). Agents with higher mean scores get proportionally higher weight.
+
+### Regime detection
+
+`RegimeDetector` classifies the current performance regime from `EvalMetrics` history using coefficient of variation (volatility) and normalized linear slope (trend).
+
+```python
+from tensor_optix import RegimeDetector
+
+detector = RegimeDetector(
+    volatility_threshold=0.2,   # CV above this → "volatile"
+    trend_threshold=0.05,       # normalized slope above this → "trending"
+    window=10,
+)
+
+regime = detector.detect(metrics_history)  # "trending" | "ranging" | "volatile"
+
+# Use regime to boost the relevant agent's weight
+regime_to_idx = {"trending": 0, "ranging": 1, "volatile": 2}
+pm.record_agent_score(regime_to_idx[regime], latest_score)
+```
+
+For domain-specific signals (Sharpe ratio, VIX, ATR), subclass and override `detect()`:
+
+```python
+class MarketRegimeDetector(RegimeDetector):
+    def detect(self, metrics_history):
+        if current_vix > 30:
+            return "volatile"
+        if atr_percentile > 70:
+            return "trending"
+        return "ranging"
 ```
 
 ---
@@ -306,7 +374,8 @@ tensor_optix/
 │   ├── checkpoint_registry.py
 │   ├── backoff_scheduler.py
 │   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
-│   └── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
+│   ├── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
+│   └── regime_detector.py      # RegimeDetector — score-based regime classification
 ├── adapters/tensorflow/
 │   ├── tf_agent.py             # TFAgent — Keras model wrapper
 │   └── tf_evaluator.py         # TFEvaluator — default scorer
@@ -326,8 +395,9 @@ tensor_optix/
 | `BackoffScheduler` | Adaptation interval + state transitions |
 | `CheckpointRegistry` | Snapshot storage and manifest |
 | `BaseOptimizer` | Hyperparameter tuning |
-| `PolicyManager` | Model evolution (rollback, ensemble weights) |
+| `PolicyManager` | Model evolution (rollback, spawn variants, ensemble weights) |
 | `EnsembleAgent` | Multi-policy action combining |
+| `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
 
 ---
 
