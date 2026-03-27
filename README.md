@@ -301,6 +301,64 @@ pm.auto_update_weights()
 
 Scores are tracked in a rolling window (`score_window=10` by default). Agents with higher mean scores get proportionally higher weight.
 
+### Population control
+
+As variants are spawned the ensemble grows. Prune the lowest-weight agents to keep inference fast and the ensemble signal clean:
+
+```python
+# Spawn a variant, then prune the weakest agent if ensemble exceeds desired size
+variant = pm.spawn_variant(MyAgent(...), noise_scale=scale)
+pm.add_agent(variant, weight=0.5)
+
+if pm.ensemble_size > 4:
+    pm.prune(bottom_k=1)  # removes lowest-weight agent, remaps score history
+```
+
+### Regime-driven weighting
+
+Tie regime detection directly to ensemble weights using `boost()`. It multiplies a specific agent's weight by a factor — `ensemble_action()` normalises by total weight so the others are proportionally reduced, not zeroed:
+
+```python
+regime = detector.detect(metrics_history)
+pm.set_regime(regime)  # stored for observability
+
+pm.boost(agent_trending, factor=2.0)   # if trending
+pm.boost(agent_ranging,  factor=2.0)   # if ranging
+pm.boost(agent_volatile, factor=2.0)   # if volatile
+```
+
+### Adaptive mutation
+
+`adaptive_noise_scale()` computes a dynamic `noise_scale` based on recent improvement. Strong improvement → low noise (don't disrupt what's working). Plateau or decline → high noise (explore aggressively):
+
+```python
+scale = pm.adaptive_noise_scale(
+    metrics_history,
+    min_scale=0.001,   # used when strongly improving
+    max_scale=0.1,     # used on plateau / decline
+)
+variant = pm.spawn_variant(MyAgent(...), noise_scale=scale)
+```
+
+### Observability
+
+`status()` returns a structured snapshot of all ensemble state — suitable for logging, dashboards, or debugging:
+
+```python
+import json
+print(json.dumps(pm.status(), indent=2))
+# {
+#   "ensemble_size": 3,
+#   "agents": [
+#     {"index": 0, "weight": 2.0, "mean_score": 8.3, "recent_scores": [7.1, 8.5, 9.2]},
+#     ...
+#   ],
+#   "regime": "volatile",
+#   "spawn_count": 2,
+#   "prune_count": 1
+# }
+```
+
 ### Regime detection
 
 `RegimeDetector` classifies the current performance regime from `EvalMetrics` history using coefficient of variation (volatility) and normalized linear slope (trend).
@@ -395,7 +453,7 @@ tensor_optix/
 | `BackoffScheduler` | Adaptation interval + state transitions |
 | `CheckpointRegistry` | Snapshot storage and manifest |
 | `BaseOptimizer` | Hyperparameter tuning |
-| `PolicyManager` | Model evolution (rollback, spawn variants, ensemble weights) |
+| `PolicyManager` | Model evolution (rollback, spawn, prune, boost, adaptive noise, status) |
 | `EnsembleAgent` | Multi-policy action combining |
 | `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
 

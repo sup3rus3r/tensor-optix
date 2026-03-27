@@ -25,10 +25,16 @@ class PolicyManager:
                  If current >= best: no-op (system is at its best known state).
     2. spawn_variant(): Clone best checkpoint into a new agent shell and apply
                         hyperparam mutation. Produces a candidate for the ensemble.
-    3. ensemble_action(): Combine actions from multiple registered agents
+    3. prune(): Remove the lowest-performing agents to keep the ensemble lean.
+    4. boost(): Multiply a specific agent's weight — use after regime detection.
+    5. ensemble_action(): Combine actions from multiple registered agents
                           via weighted averaging.
-    4. update_weights() / auto_update_weights(): Adjust agent weights based on
+    6. update_weights() / auto_update_weights(): Adjust agent weights based on
                           externally provided or internally recorded score history.
+    7. adaptive_noise_scale(): Compute a dynamic noise_scale for spawn_variant
+                          based on recent improvement — high noise on plateau,
+                          low noise when improving.
+    8. status(): Structured snapshot of all ensemble state for observability.
 
     Minimal usage (evolution only):
         pm = PolicyManager(registry)
@@ -48,6 +54,9 @@ class PolicyManager:
         self._ensemble: List[Tuple[BaseAgent, float]] = []
         self._score_history: Dict[int, Deque[float]] = {}
         self._score_window = score_window
+        self._spawn_count: int = 0
+        self._prune_count: int = 0
+        self._current_regime: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Ensemble management
@@ -143,6 +152,162 @@ class PolicyManager:
         if agent_scores:
             self.update_weights(agent_scores)
 
+    def prune(self, bottom_k: int = 1) -> List[BaseAgent]:
+        """
+        Remove the bottom_k agents by current weight from the ensemble.
+
+        Keeps the ensemble lean — call after spawn_variant() if the
+        population has grown beyond a desired size.
+
+        Returns the list of removed agents (in ascending weight order).
+        No-op and returns [] if ensemble has bottom_k or fewer agents.
+        """
+        if len(self._ensemble) <= bottom_k:
+            logger.debug("PolicyManager.prune: ensemble too small to prune (%d agents)", len(self._ensemble))
+            return []
+
+        order = sorted(range(len(self._ensemble)), key=lambda i: self._ensemble[i][1])
+        to_remove = set(order[:bottom_k])
+
+        removed_agents = [self._ensemble[i][0] for i in sorted(to_remove)]
+
+        new_ensemble: List[Tuple[BaseAgent, float]] = []
+        new_score_history: Dict[int, Deque[float]] = {}
+        new_idx = 0
+        for old_idx, (agent, weight) in enumerate(self._ensemble):
+            if old_idx not in to_remove:
+                new_ensemble.append((agent, weight))
+                if old_idx in self._score_history:
+                    new_score_history[new_idx] = self._score_history[old_idx]
+                new_idx += 1
+
+        self._ensemble = new_ensemble
+        self._score_history = new_score_history
+        self._prune_count += bottom_k
+
+        logger.info(
+            "PolicyManager.prune: removed %d agent(s), ensemble size now %d",
+            len(removed_agents),
+            len(self._ensemble),
+        )
+        return removed_agents
+
+    def boost(self, agent: BaseAgent, factor: float = 2.0) -> None:
+        """
+        Multiply the weight of a specific agent by factor.
+
+        Use after regime detection to shift action weight toward the most
+        relevant policy without zeroing out the others.
+
+        ensemble_action() normalises by total weight, so boosting one
+        agent proportionally reduces the influence of all others.
+
+        Example:
+            regime = detector.detect(metrics_history)
+            if regime == "volatile":
+                pm.boost(agent_volatile, factor=2.0)
+        """
+        for i, (a, w) in enumerate(self._ensemble):
+            if a is agent:
+                self._ensemble[i] = (a, w * factor)
+                logger.info(
+                    "PolicyManager.boost: agent[%d] weight %.4f → %.4f (factor=%.2f)",
+                    i, w, w * factor, factor,
+                )
+                return
+        logger.warning("PolicyManager.boost: agent not found in ensemble")
+
+    def set_regime(self, regime: str) -> None:
+        """
+        Record the current regime label for observability.
+
+        Call this after RegimeDetector.detect() so that status() reflects
+        the active regime. Logs a message when the regime changes.
+
+        Example:
+            regime = detector.detect(metrics_history)
+            pm.set_regime(regime)
+            pm.boost(regime_agents[regime], factor=2.0)
+        """
+        if regime != self._current_regime:
+            logger.info(
+                "PolicyManager.set_regime: %s → %s",
+                self._current_regime or "none",
+                regime,
+            )
+            self._current_regime = regime
+
+    def adaptive_noise_scale(
+        self,
+        metrics_history: List[EvalMetrics],
+        min_scale: float = 0.001,
+        max_scale: float = 0.1,
+        window: int = 10,
+    ) -> float:
+        """
+        Compute a dynamic noise_scale for spawn_variant().
+
+        Maps recent improvement rate to mutation intensity:
+        - Improving (positive slope) → low noise (don't disrupt what works)
+        - Plateau / declining → high noise (explore more aggressively)
+
+        Pass the result directly to spawn_variant():
+            scale = pm.adaptive_noise_scale(metrics_history)
+            pm.spawn_variant(MyAgent(...), noise_scale=scale)
+        """
+        if len(metrics_history) < 3:
+            return max_scale
+
+        recent = metrics_history[-window:]
+        scores = np.array([m.primary_score for m in recent], dtype=float)
+        mean = float(np.mean(scores))
+        if mean == 0.0:
+            return max_scale
+
+        x = np.arange(len(scores), dtype=float)
+        slope = float(np.polyfit(x, scores, 1)[0])
+        normalized_slope = slope / abs(mean)
+
+        # Clamp to [0, 1]: 0 = plateau/decline → max_scale, 1 = strong improvement → min_scale
+        t = min(1.0, max(0.0, normalized_slope / 0.05))
+        scale = float(max_scale - t * (max_scale - min_scale))
+        logger.debug(
+            "PolicyManager.adaptive_noise_scale: slope=%.4f, t=%.2f, scale=%.4f",
+            normalized_slope, t, scale,
+        )
+        return scale
+
+    def status(self) -> dict:
+        """
+        Structured snapshot of current ensemble state.
+
+        Returns a dict with:
+        - ensemble_size: number of active agents
+        - agents: list of {index, weight, mean_score, recent_scores}
+        - regime: current regime label (if set via set_regime())
+        - spawn_count: total spawns since construction
+        - prune_count: total agents pruned since construction
+
+        Use for logging, dashboards, or debugging:
+            import json; print(json.dumps(pm.status(), indent=2))
+        """
+        agents_info = []
+        for i, (_, weight) in enumerate(self._ensemble):
+            history = list(self._score_history.get(i, []))
+            agents_info.append({
+                "index": i,
+                "weight": round(weight, 6),
+                "mean_score": round(float(np.mean(history)), 4) if history else None,
+                "recent_scores": [round(s, 4) for s in history],
+            })
+        return {
+            "ensemble_size": len(self._ensemble),
+            "agents": agents_info,
+            "regime": self._current_regime,
+            "spawn_count": self._spawn_count,
+            "prune_count": self._prune_count,
+        }
+
     # ------------------------------------------------------------------
     # Evolution
     # ------------------------------------------------------------------
@@ -233,10 +398,12 @@ class PolicyManager:
         if mutation_fn is not None:
             mutation_fn(agent_shell)
 
+        self._spawn_count += 1
         logger.info(
-            "PolicyManager.spawn_variant: cloned %s with noise_scale=%.4f",
+            "PolicyManager.spawn_variant: cloned %s with noise_scale=%.4f (total spawns: %d)",
             snapshot.snapshot_id,
             noise_scale,
+            self._spawn_count,
         )
         return agent_shell
 
