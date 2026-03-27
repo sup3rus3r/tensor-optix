@@ -26,6 +26,7 @@ dev = [
     "black",
     "ruff",
     "mypy",
+    "twine>=5.0",
 ]
 
 [tool.ruff]
