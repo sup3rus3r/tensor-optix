@@ -34,13 +34,24 @@ class BackoffScheduler:
         plateau_threshold: int = 5,
         dormant_threshold: int = 20,
         degradation_threshold: float = 0.95,
+        min_degradation_drop: float = 1e-4,
     ):
+        """
+        Args:
+            min_degradation_drop: Minimum absolute score drop that can trigger
+                degradation detection. Guards against spurious resets when
+                best_score ≈ 0 (where the relative threshold collapses to
+                near-zero and any noise fires the watchdog).
+                Default 1e-4 is safe for normalized score ranges [0, 1].
+                Set higher (e.g. 0.01) for raw reward scales.
+        """
         self._base_interval = base_interval
         self._backoff_factor = backoff_factor
         self._max_interval = max_interval_episodes
         self._plateau_threshold = plateau_threshold
         self._dormant_threshold = dormant_threshold
         self._degradation_threshold = degradation_threshold
+        self._min_degradation_drop = min_degradation_drop
 
         self._state = LoopState.ACTIVE
         self._consecutive_non_improvements = 0
@@ -77,14 +88,20 @@ class BackoffScheduler:
         Returns True if score represents degradation relative to best known score.
         Does NOT record anything — caller decides whether to act.
 
-        Uses an absolute drop threshold to handle negative scores correctly:
-            degraded if: score < best - abs(best) * (1 - threshold)
-        This works for both positive scores (e.g. 100 → drop of 5)
-        and negative scores (e.g. -100 → drop of 5, meaning -105).
+        Drop threshold is the larger of:
+          - relative: abs(best_score) * (1 - degradation_threshold)
+          - absolute: min_degradation_drop
+
+        Taking the max prevents spurious watchdog triggers when best_score ≈ 0,
+        where the relative term collapses to near-zero and any noise fires this.
+
+        Works for positive scores (e.g. best=100, drop=5 → threshold=5.0)
+        and negative scores (e.g. best=-100, drop=5 → threshold=-105).
         """
         if self._best_score is None:
             return False
-        allowed_drop = abs(self._best_score) * (1.0 - self._degradation_threshold)
+        relative_drop = abs(self._best_score) * (1.0 - self._degradation_threshold)
+        allowed_drop = max(relative_drop, self._min_degradation_drop)
         return score < self._best_score - allowed_drop
 
     def should_adapt(self, episode_count: int) -> bool:

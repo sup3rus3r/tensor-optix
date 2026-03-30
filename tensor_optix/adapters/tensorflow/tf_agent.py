@@ -52,35 +52,66 @@ class TFAgent(BaseAgent):
 
     def learn(self, episode_data: EpisodeData) -> dict:
         """
-        Generic policy gradient update using GradientTape.
+        Policy gradient update using GradientTape.
 
-        Uses REINFORCE-style returns: discounted cumulative reward as target.
-        Override this method in a subclass for algorithm-specific logic.
+        If episode_data.values is provided (critic V(s_t) estimates), computes
+        Actor-Critic advantages:
+            A_t = G_t - V(s_t)
+        This is an unbiased, lower-variance gradient estimator vs. plain REINFORCE.
+        The advantage baseline does not bias the gradient by the policy gradient theorem:
+            ∇J = E[∇ log π(a|s) · A_t]
 
-        Returns dict: {loss, grad_norm}
+        If episode_data.values is None, falls back to normalized REINFORCE returns.
+
+        Override this method in a subclass for algorithm-specific logic (PPO, SAC, DQN).
+
+        Returns dict: {loss, grad_norm, baseline_type, explained_variance}
         """
         gamma = float(self._hyperparams.params.get("gamma", 0.99))
 
-        # Compute discounted returns
+        # Compute discounted returns G_t = r_t + γ·r_{t+1} + γ²·r_{t+2} + ...
         rewards = episode_data.rewards
         returns = []
         G = 0.0
         for r in reversed(rewards):
             G = r + gamma * G
             returns.insert(0, G)
-        returns_tensor = tf.cast(returns, tf.float32)
+        returns_array = np.array(returns, dtype=np.float32)
 
-        # Normalize returns for stability
-        if len(returns_tensor) > 1:
-            returns_tensor = (returns_tensor - tf.reduce_mean(returns_tensor)) / (
-                tf.math.reduce_std(returns_tensor) + 1e-8
+        if episode_data.values is not None:
+            # A2C: advantage = G_t - V(s_t)
+            # Subtracting the baseline reduces variance without introducing bias.
+            # Normalize advantages (not returns) for gradient stability.
+            values_array = np.array(episode_data.values, dtype=np.float32)
+            advantages = returns_array - values_array
+            if len(advantages) > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            targets = tf.cast(advantages, tf.float32)
+
+            # Explained variance: how much of return variance V(s) explains.
+            # 1.0 = perfect baseline, 0.0 = no better than mean, <0 = harmful.
+            var_returns = float(np.var(returns_array))
+            explained_var = float(
+                1.0 - np.var(returns_array - values_array) / (var_returns + 1e-8)
             )
+            baseline_type = "a2c"
+        else:
+            # REINFORCE fallback: normalize returns as the baseline
+            returns_tensor = tf.cast(returns_array, tf.float32)
+            if len(returns_array) > 1:
+                targets = (returns_tensor - tf.reduce_mean(returns_tensor)) / (
+                    tf.math.reduce_std(returns_tensor) + 1e-8
+                )
+            else:
+                targets = returns_tensor
+            explained_var = 0.0
+            baseline_type = "reinforce"
 
         obs = tf.cast(episode_data.observations, tf.float32)
 
         if self._compute_loss_fn is not None:
             with tf.GradientTape() as tape:
-                loss = self._compute_loss_fn(self.model, episode_data, returns_tensor)
+                loss = self._compute_loss_fn(self.model, episode_data, targets)
         else:
             with tf.GradientTape() as tape:
                 logits = self.model(obs, training=True)
@@ -88,7 +119,7 @@ class TFAgent(BaseAgent):
                 log_probs = tf.nn.sparse_softmax_cross_entropy_with_logits(
                     labels=actions, logits=logits
                 )
-                loss = tf.reduce_mean(log_probs * returns_tensor)
+                loss = tf.reduce_mean(log_probs * targets)
 
         grads = tape.gradient(loss, self.model.trainable_variables)
         grad_norm = tf.linalg.global_norm(grads).numpy()
@@ -97,6 +128,8 @@ class TFAgent(BaseAgent):
         return {
             "loss": float(loss.numpy()),
             "grad_norm": float(grad_norm),
+            "baseline_type": baseline_type,
+            "explained_variance": explained_var,
         }
 
     def get_hyperparams(self) -> HyperparamSet:

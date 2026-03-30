@@ -1,6 +1,9 @@
+import logging
 from .base_agent import BaseAgent
 from .policy_manager import PolicyManager
 from .types import EpisodeData, HyperparamSet
+
+logger = logging.getLogger(__name__)
 
 
 class EnsembleAgent(BaseAgent):
@@ -10,8 +13,18 @@ class EnsembleAgent(BaseAgent):
     The pipeline and LoopController see one agent. Internally, act() delegates
     to PolicyManager.ensemble_action(), combining multiple policies.
 
-    The primary_agent handles everything except act():
-        learn(), get/set_hyperparams(), save/load_weights()
+    learn() trains ALL registered ensemble agents on the same episode.
+    This is mathematically necessary: if non-primary agents do not update,
+    their action distributions diverge from the primary as training progresses.
+    The ensemble then degrades — you pay the cost of multiple agents while
+    only the primary improves. Each agent learns independently; their
+    contributions are combined only at act() time via weighted averaging.
+
+    Diagnostics returned by learn() are from the primary agent. Per-agent
+    diagnostics are logged at DEBUG level as "agent_{i}_{key}".
+
+    get/set_hyperparams(), save/load_weights() delegate to primary only —
+    the primary is the authoritative agent for checkpointing.
 
     Usage:
         pm = PolicyManager(registry)
@@ -30,7 +43,23 @@ class EnsembleAgent(BaseAgent):
         return self._pm.ensemble_action(observation)
 
     def learn(self, episode_data: EpisodeData) -> dict:
-        return self._primary.learn(episode_data)
+        """
+        Train all registered ensemble agents on the same episode data.
+
+        Returns primary agent's diagnostics for the LoopController/evaluator.
+        Non-primary diagnostics are logged at DEBUG level to avoid polluting
+        the main metrics stream.
+        """
+        primary_diagnostics = {}
+        for i, (agent, _weight) in enumerate(self._pm._ensemble):
+            diagnostics = agent.learn(episode_data)
+            if agent is self._primary:
+                primary_diagnostics = diagnostics
+            else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    for k, v in diagnostics.items():
+                        logger.debug("EnsembleAgent agent_%d_%s=%s", i, k, v)
+        return primary_diagnostics
 
     def get_hyperparams(self) -> HyperparamSet:
         return self._primary.get_hyperparams()

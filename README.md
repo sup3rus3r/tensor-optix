@@ -368,9 +368,9 @@ cb = pm.as_callback(
     agent,
     agent_factory=make_agent,
     meta_controller=MetaController(
-        gap_threshold=0.3,        # normalized gap above this → PRUNE
-        corr_threshold=0.5,       # train/val correlation below this → SPAWN
-        improvement_threshold=0.05,  # normalized slope below this → SPAWN
+        gap_threshold=0.3,          # normalized gap level above this → PRUNE
+        gap_slope_threshold=0.02,   # gap widening rate above this → PRUNE
+        improvement_threshold=0.05, # normalized val slope below this → SPAWN
     ),
 )
 ```
@@ -583,7 +583,7 @@ tensor_optix/
 │   ├── regime_detector.py      # RegimeDetector , score-based regime classification
 │   └── meta_controller.py      # MetaController , SPAWN/PRUNE/STOP/NO_OP decisions
 ├── adapters/tensorflow/
-│   ├── tf_agent.py             # TFAgent , Keras model wrapper (REINFORCE baseline)
+│   ├── tf_agent.py             # TFAgent , Keras model wrapper (A2C advantage or REINFORCE)
 │   └── tf_evaluator.py         # TFEvaluator , default scorer
 ├── pipeline/
 │   ├── batch_pipeline.py       # Continuous stepping, fixed windows
@@ -605,6 +605,87 @@ tensor_optix/
 | `MetaController` | Rule-based (or learned) SPAWN/PRUNE/STOP/NO_OP decisions |
 | `EnsembleAgent` | Weighted-average action combining across multiple agents |
 | `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
+
+---
+
+## Math & Science Reference
+
+This section documents the mathematical decisions behind each component.
+
+### A2C Advantage Baseline (`TFAgent`)
+
+The base `TFAgent.learn()` supports two gradient estimators:
+
+**REINFORCE (fallback, no `episode_data.values`):**
+```
+∇J ≈ Σ ∇log π(aₜ|sₜ) · Ĝₜ        where Ĝₜ = normalized discounted return
+```
+Variance is O(T²). Converges but slowly.
+
+**Actor-Critic advantage (when `episode_data.values` is set):**
+```
+Aₜ = Gₜ − V(sₜ)                    advantage = return − critic estimate
+∇J ≈ Σ ∇log π(aₜ|sₜ) · Âₜ         where Âₜ = normalized advantage
+```
+By the policy gradient theorem, subtracting V(sₜ) does not bias the gradient while dramatically reducing variance. The explained variance diagnostic in `learn()` diagnostics measures critic quality: 1.0 = perfect baseline, 0.0 = useless, <0 = harmful.
+
+To use A2C, populate `episode_data.values` with your critic's V(sₜ) estimates before calling `learn()`.
+
+### PBT Perturbation Modes (`PBTOptimizer`)
+
+Parameters that span orders of magnitude (learning rates, weight decay) require multiplicative perturbation, not additive. Additive noise on `[1e-4, 1e-1]` would oversample near the top and undersample the critical lower end.
+
+**Linear (default for bounded params):**
+```
+δ = scale × (high − low)
+θ' = clip(θ + Uniform(−δ, +δ), low, high)
+```
+
+**Log-scale (for `learning_rate`, `lr`, `alpha`, `epsilon`, `weight_decay`):**
+```
+δ_log = scale × log(high / low)
+θ' = clip(θ × exp(Uniform(−δ_log, +δ_log)), low, high)
+```
+Equal probability mass per decade, following Jaderberg et al. 2017 (PBT). Custom param names can be passed via `log_scale_params` constructor arg.
+
+### Detrended Volatility (`RegimeDetector`)
+
+Raw CV (`std/|mean|`) conflates volatility with trend direction — a steadily declining score has low CV but is not "ranging". The corrected metric:
+
+```
+trend_line  = linear_regression(scores)
+residuals   = scores − trend_line
+CV_detrended = std(residuals) / (|mean(scores)| + ε)
+```
+
+A single `np.polyfit` call produces both the slope (used for trend classification) and the residuals (used for volatility), with no redundant computation.
+
+### Degradation Floor (`BackoffScheduler`)
+
+The watchdog threshold:
+```
+allowed_drop = max(
+    |best_score| × (1 − degradation_threshold),   # relative
+    min_degradation_drop,                           # absolute floor
+)
+degraded = score < best_score − allowed_drop
+```
+The floor prevents spurious resets when `best_score ≈ 0`, where the relative term collapses to near-zero and any noise fires the watchdog. Default `min_degradation_drop=1e-4` suits normalized score ranges. Increase for raw reward scales.
+
+### Gap-Slope Overfitting Signal (`MetaController`)
+
+The former Signal 2 (Pearson correlation) was replaced with gap slope. Pearson measures whether train and val move together in shape — not whether they diverge in level. A pair like `train=[0.9, 0.91, 0.92]` and `val=[0.3, 0.31, 0.32]` has r=1.0 but is catastrophically overfit.
+
+Gap slope detects active overfitting progression:
+```
+gap_t = (train_score_t − val_score_t) / |val_score_t|   # normalized gap at t
+slope = linear_regression_slope(gap_t)                    # is it widening?
+```
+`slope > gap_slope_threshold` → PRUNE, even if the current gap level is below threshold.
+
+### Ensemble Multi-Agent Learning (`EnsembleAgent`)
+
+`EnsembleAgent.learn()` trains all registered agents on the same `EpisodeData`. Without this, non-primary agents diverge from the primary as training progresses — their action distributions become stale while the primary improves. The ensemble then degrades: you pay the cost of N agents but only get 1 improving policy. Primary agent diagnostics are returned to the evaluator; per-agent diagnostics are logged at DEBUG level.
 
 ---
 

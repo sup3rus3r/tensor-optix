@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Dict, List, Optional
 import time
+import numpy as np
 
 
 class LoopState(Enum):
@@ -14,13 +15,16 @@ class LoopState(Enum):
 @dataclass
 class EpisodeData:
     """Raw interaction data produced by one episode."""
-    observations: Any          # np.ndarray or tf.Tensor, shape [T, obs_dim]
-    actions: Any               # np.ndarray or tf.Tensor, shape [T, act_dim] or [T]
-    rewards: List[float]       # per-step rewards
-    terminated: List[bool]     # Gymnasium terminated flags
-    truncated: List[bool]      # Gymnasium truncated flags
-    infos: List[Dict]          # per-step info dicts from env
+    observations: Any                    # np.ndarray or tf.Tensor, shape [T, obs_dim]
+    actions: Any                         # np.ndarray or tf.Tensor, shape [T, act_dim] or [T]
+    rewards: List[float]                 # per-step rewards
+    terminated: List[bool]               # Gymnasium terminated flags
+    truncated: List[bool]                # Gymnasium truncated flags
+    infos: List[Dict]                    # per-step info dicts from env
     episode_id: int
+    values: Optional[List[float]] = None # V(s_t) estimates from critic, shape [T]
+                                         # Required for A2C advantage baseline.
+                                         # When None, TFAgent falls back to REINFORCE.
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
 

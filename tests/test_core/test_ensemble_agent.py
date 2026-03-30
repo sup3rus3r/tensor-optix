@@ -81,13 +81,17 @@ def test_act_two_agents_averaged():
 # learn / hyperparams / weights delegate to primary_agent
 # -----------------------------------------------------------------------
 
-def test_learn_delegates_to_primary():
+def test_learn_trains_all_agents():
+    """All ensemble agents must learn from each episode to stay current."""
     pm, [a, b] = make_pm_with_agents([0.0], [1.0])
     ensemble = EnsembleAgent(pm, primary_agent=a)
     ep = make_episode()
-    ensemble.learn(ep)
+    diag = ensemble.learn(ep)
+    # Both agents train — non-primary agents must not diverge from primary
     assert a.learn_calls == 1
-    assert b.learn_calls == 0
+    assert b.learn_calls == 1
+    # Diagnostics returned are from primary agent
+    assert "loss" in diag
 
 
 def test_get_hyperparams_from_primary():

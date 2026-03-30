@@ -57,18 +57,19 @@ def test_no_prune_when_gap_small():
 
 
 # -----------------------------------------------------------------------
-# MetaAction.SPAWN — low correlation
+# MetaAction.PRUNE — widening gap (gap slope)
 # -----------------------------------------------------------------------
 
-def test_spawn_on_low_correlation():
-    mc = MetaController(gap_threshold=10.0, corr_threshold=0.5)
-    # Train zigzags, val stays flat → low correlation
+def test_prune_on_widening_gap():
+    # Gap level is small but actively widening each episode → gap slope fires
+    mc = MetaController(gap_threshold=10.0, gap_slope_threshold=0.01, improvement_threshold=-999.0)
+    # train improves, val stays flat → gap widens monotonically
     history = [
-        make_metrics(5.0, train=10.0 + (-1)**i * 5, val=5.0, episode_id=i)
+        make_metrics(5.0 + i * 0.5, train=5.0 + i, val=5.0, episode_id=i)
         for i in range(6)
     ]
     action = mc.decide(history, {"budget_exhausted": False})
-    assert action == MetaAction.SPAWN
+    assert action == MetaAction.PRUNE
 
 
 # -----------------------------------------------------------------------
@@ -76,7 +77,7 @@ def test_spawn_on_low_correlation():
 # -----------------------------------------------------------------------
 
 def test_spawn_on_plateau():
-    mc = MetaController(gap_threshold=10.0, corr_threshold=-1.0, improvement_threshold=0.05)
+    mc = MetaController(gap_threshold=10.0, gap_slope_threshold=999.0, improvement_threshold=0.05)
     # Flat scores → slope ≈ 0
     history = [make_metrics(10.0, episode_id=i) for i in range(6)]
     action = mc.decide(history, {"budget_exhausted": False})
@@ -88,8 +89,8 @@ def test_spawn_on_plateau():
 # -----------------------------------------------------------------------
 
 def test_no_op_when_improving_and_generalizing():
-    mc = MetaController(gap_threshold=0.5, corr_threshold=0.3, improvement_threshold=0.01)
-    # Both train and val improving together
+    mc = MetaController(gap_threshold=0.5, gap_slope_threshold=0.5, improvement_threshold=0.01)
+    # Both train and val improving together, gap stable
     history = [
         make_metrics(5.0 + i, train=5.0 + i, val=5.0 + i, episode_id=i)
         for i in range(6)

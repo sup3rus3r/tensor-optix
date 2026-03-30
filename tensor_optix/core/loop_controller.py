@@ -177,12 +177,14 @@ class LoopController:
 
                 is_improvement = (
                     self._best_snapshot is None
-                    or self._evaluator.compare(
-                        eval_metrics,
-                        self._best_snapshot.eval_metrics,
-                    )
-                    and eval_metrics.beats(
-                        self._best_snapshot.eval_metrics, self._improvement_margin
+                    or (
+                        self._evaluator.compare(
+                            eval_metrics,
+                            self._best_snapshot.eval_metrics,
+                        )
+                        and eval_metrics.beats(
+                            self._best_snapshot.eval_metrics, self._improvement_margin
+                        )
                     )
                 )
 
