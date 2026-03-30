@@ -242,7 +242,11 @@ class LoopController:
             eval_metrics.primary_score,
             self._scheduler.best_score or 0.0,
         )
-        if self._rollback_on_degradation and self._best_snapshot is not None:
+        if (
+            self._rollback_on_degradation
+            and self._best_snapshot is not None
+            and self._scheduler.current_state == LoopState.DORMANT
+        ):
             self._registry.load_best(self._agent)
             logger.info("Rolled back to best snapshot (episode %d)", self._best_snapshot.episode_id)
         self._scheduler.record_degradation()
