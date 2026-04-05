@@ -22,9 +22,12 @@ class EpisodeData:
     truncated: List[bool]                # Gymnasium truncated flags
     infos: List[Dict]                    # per-step info dicts from env
     episode_id: int
-    values: Optional[List[float]] = None # V(s_t) estimates from critic, shape [T]
-                                         # Required for A2C advantage baseline.
-                                         # When None, TFAgent falls back to REINFORCE.
+    values: Optional[List[float]] = None     # V(s_t) estimates from critic, shape [T]
+                                             # Required for A2C advantage baseline.
+                                             # When None, TFAgent falls back to REINFORCE.
+    log_probs: Optional[List[float]] = None  # log π(a_t|s_t) at collection time, shape [T]
+                                             # Required for PPO importance ratio computation.
+                                             # Populated by PPOAgent.act() during rollout.
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
 

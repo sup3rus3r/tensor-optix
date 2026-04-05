@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensor-optix"
-version = "0.7.0"
-description = "Autonomous continuous learning loop for TensorFlow RL agents"
+version = "0.8.0"
+description = "Autonomous training loop for any sequential learning model — built-in PPO, DQN, and SAC for TensorFlow and PyTorch"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -20,6 +20,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+torch = [
+    "torch>=2.0.0",
+]
+atari = [
+    "gymnasium[atari]>=1.0.0",
+    "ale-py>=0.8",
+]
+mujoco = [
+    "gymnasium[mujoco]>=1.0.0",
+]
+all = [
+    "torch>=2.0.0",
+    "gymnasium[atari]>=1.0.0",
+    "gymnasium[mujoco]>=1.0.0",
+    "ale-py>=0.8",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov",
@@ -27,6 +43,7 @@ dev = [
     "ruff",
     "mypy",
     "twine>=5.0",
+    "torch>=2.0.0",
 ]
 
 [tool.setuptools]

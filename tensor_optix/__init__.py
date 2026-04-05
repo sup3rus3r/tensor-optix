@@ -29,10 +29,35 @@ __all__ = [
     "BackoffOptimizer", "PBTOptimizer",
 ]
 
+from .core.normalizers import RunningMeanStd, ObsNormalizer, RewardNormalizer
+from .core.trajectory_buffer import compute_gae, make_minibatches
+from .pipeline.vector_pipeline import VectorBatchPipeline
+
+__all__ += [
+    "RunningMeanStd", "ObsNormalizer", "RewardNormalizer",
+    "compute_gae", "make_minibatches",
+    "VectorBatchPipeline",
+]
+
 try:
     from .optimizer import RLOptimizer
     from .adapters.tensorflow.tf_agent import TFAgent
     from .adapters.tensorflow.tf_evaluator import TFEvaluator
-    __all__ += ["RLOptimizer", "TFAgent", "TFEvaluator"]
+    from .algorithms.tf_ppo import TFPPOAgent
+    from .algorithms.tf_dqn import TFDQNAgent
+    from .algorithms.tf_sac import TFSACAgent
+    __all__ += ["RLOptimizer", "TFAgent", "TFEvaluator",
+                "TFPPOAgent", "TFDQNAgent", "TFSACAgent"]
+except (ImportError, RuntimeError):
+    pass
+
+try:
+    from .adapters.pytorch.torch_agent import TorchAgent
+    from .adapters.pytorch.torch_evaluator import TorchEvaluator
+    from .algorithms.torch_ppo import TorchPPOAgent
+    from .algorithms.torch_dqn import TorchDQNAgent
+    from .algorithms.torch_sac import TorchSACAgent
+    __all__ += ["TorchAgent", "TorchEvaluator",
+                "TorchPPOAgent", "TorchDQNAgent", "TorchSACAgent"]
 except (ImportError, RuntimeError):
     pass
