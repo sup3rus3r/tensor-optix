@@ -115,6 +115,11 @@ class TFPPOAgent(BaseAgent):
 
         # Align cache with episode_data (BatchPipeline steps == len(cache))
         T = len(episode_data.rewards)
+        if len(self._cache_obs) < T:
+            raise RuntimeError(
+                f"Cache underflow: expected >= {T} entries but got {len(self._cache_obs)}. "
+                "Ensure act() is called exactly once per environment step."
+            )
         obs_arr      = np.array(self._cache_obs[:T],      dtype=np.float32)
         old_lp_arr   = np.array(self._cache_log_probs[:T], dtype=np.float32)
         values_arr   = np.array(self._cache_values[:T],    dtype=np.float32)
@@ -190,7 +195,7 @@ class TFPPOAgent(BaseAgent):
                 total_approx_kl   += approx_kl
                 n_updates += 1
 
-        self._clear_cache()
+        self._clear_cache(T)
 
         n = max(n_updates, 1)
         explained_var = self._explained_variance(values_arr, returns)
@@ -235,10 +240,10 @@ class TFPPOAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _clear_cache(self) -> None:
-        self._cache_obs.clear()
-        self._cache_log_probs.clear()
-        self._cache_values.clear()
+    def _clear_cache(self, T: int) -> None:
+        del self._cache_obs[:T]
+        del self._cache_log_probs[:T]
+        del self._cache_values[:T]
 
     @staticmethod
     def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:

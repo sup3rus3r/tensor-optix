@@ -27,7 +27,7 @@ def make_hp(lr=1e-3, gamma=0.99):
 # -----------------------------------------------------------------------
 
 def test_spawn_variant_loads_best_weights(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     source = DummyAgent()
     source._weights["w"] = 42.0
@@ -43,7 +43,7 @@ def test_spawn_variant_loads_best_weights(tmp_path):
 
 
 def test_spawn_variant_perturbs_float_hyperparams(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(10.0), make_hp(lr=1e-3, gamma=0.99))
@@ -64,7 +64,7 @@ def test_spawn_variant_perturbs_float_hyperparams(tmp_path):
 
 
 def test_spawn_variant_no_perturbation_at_zero_noise(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(10.0), make_hp(lr=1e-3, gamma=0.99))
@@ -79,7 +79,7 @@ def test_spawn_variant_no_perturbation_at_zero_noise(tmp_path):
 
 
 def test_spawn_variant_returns_agent_shell(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(10.0), make_hp())
@@ -92,7 +92,7 @@ def test_spawn_variant_returns_agent_shell(tmp_path):
 
 
 def test_spawn_variant_calls_mutation_fn(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(10.0), make_hp())
@@ -110,7 +110,7 @@ def test_spawn_variant_calls_mutation_fn(tmp_path):
 
 
 def test_spawn_variant_empty_registry_returns_shell(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
 
     shell = DummyAgent()
@@ -121,7 +121,7 @@ def test_spawn_variant_empty_registry_returns_shell(tmp_path):
 
 
 def test_spawn_variant_int_hyperparams_stay_positive(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     hp = HyperparamSet(params={"batch_size": 32, "n_steps": 128}, episode_id=0)
@@ -210,7 +210,7 @@ def test_unrecorded_agents_keep_their_weights():
 
 
 def test_callback_calls_auto_update_weights_on_dormant(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(100.0), make_hp())

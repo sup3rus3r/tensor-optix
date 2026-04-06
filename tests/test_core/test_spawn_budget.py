@@ -68,7 +68,7 @@ def test_budget_exhausted_beyond_limit():
 # -----------------------------------------------------------------------
 
 def test_spawn_increments_count(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(10.0), make_hp())
@@ -129,7 +129,7 @@ def test_status_budget_exhausted_true():
 # -----------------------------------------------------------------------
 
 def test_set_stop_fn_called_when_budget_exhausted(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(100.0), make_hp())
@@ -149,7 +149,7 @@ def test_set_stop_fn_called_when_budget_exhausted(tmp_path):
 
 
 def test_stop_fn_not_called_when_budget_not_exhausted(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(100.0), make_hp())
@@ -168,7 +168,7 @@ def test_stop_fn_not_called_when_budget_not_exhausted(tmp_path):
 
 
 def test_stop_fn_not_called_when_no_budget(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(100.0), make_hp())
@@ -185,7 +185,7 @@ def test_stop_fn_not_called_when_no_budget(tmp_path):
 
 
 def test_budget_exhausted_fires_stop_even_without_score(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 

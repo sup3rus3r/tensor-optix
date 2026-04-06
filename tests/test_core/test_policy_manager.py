@@ -27,7 +27,7 @@ def make_hp():
 # -----------------------------------------------------------------------
 
 def test_evolve_returns_false_when_registry_empty(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     pm = PolicyManager(registry)
     result = pm.evolve(DummyAgent(), current_score=5.0)
@@ -35,7 +35,7 @@ def test_evolve_returns_false_when_registry_empty(tmp_path):
 
 
 def test_evolve_rolls_back_when_current_below_best(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 
@@ -54,7 +54,7 @@ def test_evolve_rolls_back_when_current_below_best(tmp_path):
 
 
 def test_evolve_no_rollback_when_current_at_best(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 
@@ -69,7 +69,7 @@ def test_evolve_no_rollback_when_current_at_best(tmp_path):
 
 
 def test_evolve_no_rollback_when_current_above_best(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 
@@ -194,7 +194,7 @@ def test_update_weights_partial_update():
 # -----------------------------------------------------------------------
 
 def test_ranked_snapshots_sorted_by_score(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 
@@ -214,7 +214,7 @@ def test_ranked_snapshots_sorted_by_score(tmp_path):
 # -----------------------------------------------------------------------
 
 def test_callback_triggers_evolve_on_dormant(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
 
@@ -234,7 +234,7 @@ def test_callback_triggers_evolve_on_dormant(tmp_path):
 
 
 def test_callback_no_evolve_without_score(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     registry = make_registry(tmp_path)
     agent = DummyAgent()
     registry.save(agent, make_metrics(100.0), make_hp())

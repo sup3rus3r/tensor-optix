@@ -41,7 +41,7 @@ def test_loop_runs_max_episodes(dummy_agent, dummy_evaluator, dummy_pipeline, tm
 
 
 def test_stop_halts_loop(dummy_agent, dummy_evaluator, tmp_path):
-    from tests.conftest import DummyPipeline
+    from conftest import DummyPipeline
     pipeline = DummyPipeline(rewards_sequence=[[1.0] * 5] * 100)
 
     class StopAfterFirst(LoopCallback):
@@ -74,7 +74,7 @@ def test_stop_halts_loop(dummy_agent, dummy_evaluator, tmp_path):
 
 def test_improvement_callback_fires(dummy_agent, dummy_evaluator, tmp_path):
     # Increasing rewards so improvement is always detected
-    from tests.conftest import DummyPipeline
+    from conftest import DummyPipeline
     rewards = [[float(i)] * 3 for i in range(1, 20)]
     pipeline = DummyPipeline(rewards_sequence=rewards)
 

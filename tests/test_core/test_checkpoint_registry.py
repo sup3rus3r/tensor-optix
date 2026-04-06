@@ -12,7 +12,7 @@ def tmp_registry(tmp_path):
 
 @pytest.fixture
 def dummy_agent_for_registry(tmp_path):
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     return DummyAgent()
 
 
@@ -44,14 +44,14 @@ def test_load_best_restores_agent(tmp_registry, dummy_agent_for_registry):
 
 def test_load_best_returns_none_when_empty(tmp_path):
     registry = CheckpointRegistry(str(tmp_path / "empty"), max_snapshots=3)
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     result = registry.load_best(DummyAgent())
     assert result is None
 
 
 def test_prune_keeps_max_snapshots(tmp_path):
     registry = CheckpointRegistry(str(tmp_path / "prune_test"), max_snapshots=2)
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     agent = DummyAgent()
     for i in range(4):
         metrics = EvalMetrics(primary_score=float(i), metrics={}, episode_id=i)
@@ -64,7 +64,7 @@ def test_prune_keeps_max_snapshots(tmp_path):
 
 def test_manifest_persists_across_instances(tmp_path):
     checkpoint_dir = str(tmp_path / "persist_test")
-    from tests.conftest import DummyAgent
+    from conftest import DummyAgent
     agent = DummyAgent()
 
     r1 = CheckpointRegistry(checkpoint_dir, max_snapshots=5)

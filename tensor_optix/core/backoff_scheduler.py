@@ -35,6 +35,7 @@ class BackoffScheduler:
         dormant_threshold: int = 20,
         degradation_threshold: float = 0.95,
         min_degradation_drop: float = 1e-4,
+        min_episodes_before_dormant: int = 0,
     ):
         """
         Args:
@@ -44,6 +45,11 @@ class BackoffScheduler:
                 near-zero and any noise fires the watchdog).
                 Default 1e-4 is safe for normalized score ranges [0, 1].
                 Set higher (e.g. 0.01) for raw reward scales.
+            min_episodes_before_dormant: Minimum total eval episodes that must
+                occur before DORMANT can be declared. Prevents premature
+                convergence on lucky early plateaus. Default 0 (no guard).
+                Example: set to 50 to require at least 50 eval windows before
+                the loop can stop.
         """
         self._base_interval = base_interval
         self._backoff_factor = backoff_factor
@@ -52,11 +58,13 @@ class BackoffScheduler:
         self._dormant_threshold = dormant_threshold
         self._degradation_threshold = degradation_threshold
         self._min_degradation_drop = min_degradation_drop
+        self._min_episodes_before_dormant = min_episodes_before_dormant
 
         self._state = LoopState.ACTIVE
         self._consecutive_non_improvements = 0
         self._current_interval = base_interval
         self._best_score: float | None = None
+        self._total_episodes: int = 0
 
     def record_improvement(self, score: float) -> None:
         """Call when a new best score is achieved. Resets backoff and state."""
@@ -64,16 +72,19 @@ class BackoffScheduler:
         self._consecutive_non_improvements = 0
         self._current_interval = self._base_interval
         self._state = LoopState.ACTIVE
+        self._total_episodes += 1
 
     def record_non_improvement(self) -> None:
         """Call when episode did not beat best. Advances backoff and may change state."""
         self._consecutive_non_improvements += 1
+        self._total_episodes += 1
         self._current_interval = min(
             int(self._current_interval * self._backoff_factor),
             self._max_interval,
         )
         if self._consecutive_non_improvements >= self._dormant_threshold:
-            self._state = LoopState.DORMANT
+            if self._total_episodes >= self._min_episodes_before_dormant:
+                self._state = LoopState.DORMANT
         elif self._consecutive_non_improvements >= self._plateau_threshold:
             self._state = LoopState.COOLING
 
@@ -129,3 +140,7 @@ class BackoffScheduler:
     @property
     def best_score(self) -> float | None:
         return self._best_score
+
+    @property
+    def total_episodes(self) -> int:
+        return self._total_episodes

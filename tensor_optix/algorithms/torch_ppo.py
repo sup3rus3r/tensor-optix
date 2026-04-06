@@ -92,6 +92,11 @@ class TorchPPOAgent(BaseAgent):
         max_grad_norm = float(hp.get("max_grad_norm",  0.5))
 
         T = len(episode_data.rewards)
+        if len(self._cache_obs) < T:
+            raise RuntimeError(
+                f"Cache underflow: expected >= {T} entries but got {len(self._cache_obs)}. "
+                "Ensure act() is called exactly once per environment step."
+            )
         obs_arr    = np.array(self._cache_obs[:T],       dtype=np.float32)
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
@@ -153,9 +158,9 @@ class TorchPPOAgent(BaseAgent):
                 total_kl       += float((old_b - new_lp).mean().item())
                 n_updates += 1
 
-        self._cache_obs.clear()
-        self._cache_log_probs.clear()
-        self._cache_values.clear()
+        del self._cache_obs[:T]
+        del self._cache_log_probs[:T]
+        del self._cache_values[:T]
 
         n = max(n_updates, 1)
         ev = self._explained_variance(val_arr, returns)

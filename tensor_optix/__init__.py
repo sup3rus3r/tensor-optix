@@ -46,8 +46,9 @@ try:
     from .algorithms.tf_ppo import TFPPOAgent
     from .algorithms.tf_dqn import TFDQNAgent
     from .algorithms.tf_sac import TFSACAgent
+    from .algorithms.tf_ppo_continuous import TFGaussianPPOAgent
     __all__ += ["RLOptimizer", "TFAgent", "TFEvaluator",
-                "TFPPOAgent", "TFDQNAgent", "TFSACAgent"]
+                "TFPPOAgent", "TFDQNAgent", "TFSACAgent", "TFGaussianPPOAgent"]
 except (ImportError, RuntimeError):
     pass
 
@@ -57,7 +58,8 @@ try:
     from .algorithms.torch_ppo import TorchPPOAgent
     from .algorithms.torch_dqn import TorchDQNAgent
     from .algorithms.torch_sac import TorchSACAgent
+    from .algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
     __all__ += ["TorchAgent", "TorchEvaluator",
-                "TorchPPOAgent", "TorchDQNAgent", "TorchSACAgent"]
+                "TorchPPOAgent", "TorchDQNAgent", "TorchSACAgent", "TorchGaussianPPOAgent"]
 except (ImportError, RuntimeError):
     pass
