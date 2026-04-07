@@ -17,6 +17,7 @@ dependencies = [
     "tensorflow>=2.18.0",
     "gymnasium>=1.0.0",
     "numpy>=1.24.0",
+    "nvidia-cuda-nvcc-cu12",
 ]
 
 [project.optional-dependencies]
