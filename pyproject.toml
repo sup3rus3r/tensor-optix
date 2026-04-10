@@ -7,14 +7,14 @@ name = "tensor-optix"
 version = "1.2.0"
 description = "Autonomous training loop for any sequential learning model — built-in PPO, DQN, and SAC for TensorFlow and PyTorch"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "sup3rus3r" },
 ]
 
 dependencies = [
-    "tensorflow>=2.18.0",
+    "tensorflow[and-cuda]>=2.18.0",
     "gymnasium[box2d]>=1.0.0",
     "numpy>=1.24.0",
     "nvidia-cuda-nvcc-cu12",
@@ -55,6 +55,9 @@ dev = [
 
 [tool.setuptools]
 license-files = []
+
+[tool.setuptools.packages.find]
+include = ["tensor_optix*"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }

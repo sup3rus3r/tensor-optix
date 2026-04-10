@@ -839,14 +839,15 @@ ENV_CONFIGS = {
         "train_optix":      train_optix_sac,
     },
     "acrobot": {
-        # CartPole-v1 with PPO — classic discrete control, dense rewards.
-        # PPO's on-policy updates handle the dense reward cleanly.
-        # Solve threshold: 475 (Gymnasium standard).
+        # Acrobot-v1 with PPO — sparse rewards, hard exploration.
+        # The agent must swing the end-effector above the bar; reward is -1
+        # per step until solved. PPO with entropy bonus handles the sparse
+        # signal well. Solve threshold: -100 (Gymnasium standard).
         "key":             "acrobot",
-        "label":           "CartPole-v1",
-        "env_id":          "CartPole-v1",
+        "label":           "Acrobot-v1",
+        "env_id":          "Acrobot-v1",
         "algo":            "PPO (discrete)",
-        "solve_threshold":  475.0,
+        "solve_threshold":  -100.0,
         "max_steps":        400_000,
         "window_size":      2_048,
         "eval_every":       20_000,
