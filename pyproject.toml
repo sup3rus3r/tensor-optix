@@ -20,6 +20,9 @@ dependencies = [
     "nvidia-cuda-nvcc-cu12",
     "matplotlib>=3.10.8",
     "optuna>=4.8.0",
+    "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +55,16 @@ dev = [
 
 [tool.setuptools]
 license-files = []
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [tool.ruff]
 line-length = 100
