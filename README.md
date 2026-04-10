@@ -296,16 +296,26 @@ pipeline = VectorBatchPipeline(env_fns=env_fns, window_size=256, async_envs=True
 from tensor_optix.core.normalizers import ObsNormalizer, RewardNormalizer
 
 obs_norm    = ObsNormalizer(obs_shape=(obs_dim,), clip=10.0)
-reward_norm = RewardNormalizer(gamma=0.99, clip=10.0)
 
 # Update stats from a collected rollout, then normalize in act():
 obs_norm.update(obs_batch)
 normed_obs = obs_norm.normalize(raw_obs)
-
-# Scale rewards using running return std:
-reward_norm.step(raw_reward)
-scaled_reward = reward_norm.normalize([raw_reward])[0]
 ```
+
+`RewardNormalizer` is most useful with on-policy agents. Pass it directly to the agent — it handles the step/reset cycle at episode boundaries internally, so you don't have to track done flags manually:
+
+```python
+from tensor_optix.core.normalizers import RewardNormalizer
+
+reward_norm = RewardNormalizer(gamma=0.99, clip=10.0)
+
+agent = TFPPOAgent(
+    actor=actor, critic=critic, optimizer=optimizer, hyperparams=hp,
+    reward_normalizer=reward_norm,   # resets at done, normalizes before GAE
+)
+```
+
+The agent calls `step(r)` and `reset()` for each reward in the window during `learn()`, then normalizes the full batch before GAE. This is a correctness requirement for multi-episode windows — forgetting to reset the running return across episode boundaries biases the return variance estimate.
 
 ---
 

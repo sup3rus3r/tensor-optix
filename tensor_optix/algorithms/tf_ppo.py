@@ -67,11 +67,13 @@ class TFPPOAgent(BaseAgent):
         critic: tf.keras.Model,
         optimizer: tf.keras.optimizers.Optimizer,
         hyperparams: HyperparamSet,
+        reward_normalizer=None,
     ):
         self._actor = actor
         self._critic = critic
         self._optimizer = optimizer
         self._hyperparams = hyperparams.copy()
+        self._reward_normalizer = reward_normalizer
 
         # Rollout cache — populated by act(), consumed by learn()
         self._cache_obs: list = []
@@ -135,10 +137,26 @@ class TFPPOAgent(BaseAgent):
         obs_arr      = np.array(self._cache_obs[:T],      dtype=np.float32)
         old_lp_arr   = np.array(self._cache_log_probs[:T], dtype=np.float32)
         values_arr   = np.array(self._cache_values[:T],    dtype=np.float32)
-        rewards      = episode_data.rewards
+        rewards      = list(episode_data.rewards)
         dones        = episode_data.dones
 
-        advantages, returns = compute_gae(rewards, values_arr, dones, gamma, gae_lambda)
+        # Reward normalizer: update running stats and reset at episode boundaries.
+        # Done internally so subclasses and callers don't have to manage it.
+        if self._reward_normalizer is not None:
+            for r, done in zip(rewards, dones):
+                self._reward_normalizer.step(r)
+                if done:
+                    self._reward_normalizer.reset()
+            rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
+
+        # Bootstrap: if the window ended mid-episode, V(s_T) from the critic
+        # corrects the TD target at the last step. Zero when terminal.
+        last_value = 0.0
+        if not dones[-1] and episode_data.final_obs is not None:
+            final_obs_t = tf.cast(np.atleast_2d(episode_data.final_obs), tf.float32)
+            last_value = float(tf.squeeze(self._critic(final_obs_t, training=False)).numpy())
+
+        advantages, returns = compute_gae(rewards, values_arr, dones, gamma, gae_lambda, last_value)
 
         # Normalize advantages across the rollout
         if T > 1:
@@ -219,6 +237,16 @@ class TFPPOAgent(BaseAgent):
             "explained_var":  explained_var,
             "n_updates":      n_updates,
         }
+
+    def action_probs(self, observation) -> np.ndarray:
+        """
+        Return softmax action probabilities without sampling.
+        Used by PolicyManager.ensemble_action() to average distributions
+        across ensemble members rather than averaging sampled actions.
+        """
+        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        logits = self._actor(obs, training=False)
+        return tf.nn.softmax(logits)[0].numpy()
 
     def get_hyperparams(self) -> HyperparamSet:
         self._hyperparams.params["learning_rate"] = float(

@@ -87,12 +87,14 @@ class TFGaussianPPOAgent(BaseAgent):
         optimizer: tf.keras.optimizers.Optimizer,
         action_dim: int,
         hyperparams: HyperparamSet,
+        reward_normalizer=None,
     ):
         self._actor = actor
         self._critic = critic
         self._optimizer = optimizer
         self._action_dim = action_dim
         self._hyperparams = hyperparams.copy()
+        self._reward_normalizer = reward_normalizer
 
         # Rollout cache — populated by act(), consumed by learn()
         self._cache_obs: list = []
@@ -181,10 +183,22 @@ class TFGaussianPPOAgent(BaseAgent):
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
         act_arr    = np.array(episode_data.actions,      dtype=np.float32)
-        rewards    = episode_data.rewards
+        rewards    = list(episode_data.rewards)
         dones      = episode_data.dones
 
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda)
+        if self._reward_normalizer is not None:
+            for r, done in zip(rewards, dones):
+                self._reward_normalizer.step(r)
+                if done:
+                    self._reward_normalizer.reset()
+            rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
+
+        last_value = 0.0
+        if not dones[-1] and episode_data.final_obs is not None:
+            final_obs_t = tf.cast(np.atleast_2d(episode_data.final_obs), tf.float32)
+            last_value = float(tf.squeeze(self._critic(final_obs_t, training=False)).numpy())
+
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

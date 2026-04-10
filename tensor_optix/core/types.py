@@ -30,6 +30,16 @@ class EpisodeData:
                                              # Populated by PPOAgent.act() during rollout.
     timestamp: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    episode_starts: Optional[List[int]] = None
+    # Indices into the window where a new episode begins (index 0 is always
+    # an episode start and is included). Populated by BatchPipeline.
+    # Use this instead of scanning dones manually:
+    #   for start in episode_data.episode_starts: ...
+    final_obs: Optional[Any] = None
+    # The observation immediately after the last step in the window.
+    # None when the window ended at a terminal state (done[-1] is True).
+    # Set by BatchPipeline and used by on-policy agents to bootstrap V(s_T)
+    # correctly when the window ends mid-episode.
 
     @property
     def dones(self) -> List[bool]:

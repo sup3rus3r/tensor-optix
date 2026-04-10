@@ -8,6 +8,7 @@ def compute_gae(
     dones: List[bool],
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
+    last_value: float = 0.0,
 ) -> tuple:
     """
     Generalized Advantage Estimation (GAE-λ) over a flat rollout buffer.
@@ -17,11 +18,13 @@ def compute_gae(
     via the next_non_terminal mask. This means a single window can contain multiple
     episode fragments without needing separate per-episode buffers.
 
-    Limitation: truncated episodes (time-limit) are treated identically to terminated
-    episodes — V(s_{t+1}) is set to 0 rather than bootstrapped from the critic.
-    For environments with fixed time limits (e.g. Gymnasium TimeLimit wrappers),
-    this slightly underestimates value at the final step. Override compute_gae and
-    pass the critic's V(next_obs) explicitly for precise handling.
+    last_value: V(s_T) — critic estimate of the state immediately after the window.
+        Pass 0.0 (default) when the window ended at a terminal state.
+        Pass the critic's value of the post-window observation when the window ended
+        mid-episode (truncated by window_size, not by env termination). This corrects
+        the bootstrap at the rollout boundary. TFPPOAgent and TorchPPOAgent compute
+        this automatically from EpisodeData.final_obs; callers that bypass the agent
+        should supply it explicitly.
 
     Args:
         rewards:    per-step rewards, length T
@@ -29,6 +32,7 @@ def compute_gae(
         dones:      terminated | truncated flags, length T
         gamma:      discount factor
         gae_lambda: GAE smoothing parameter (0 = TD(0), 1 = Monte Carlo)
+        last_value: V(s_T) bootstrap for the post-window state (0.0 if terminal)
 
     Returns:
         advantages: np.ndarray shape [T], GAE-λ advantages
@@ -41,7 +45,7 @@ def compute_gae(
 
     for t in reversed(range(T)):
         next_non_terminal = 1.0 - float(dones[t])
-        next_value = values_arr[t + 1] if t < T - 1 else 0.0
+        next_value = values_arr[t + 1] if t < T - 1 else last_value
         delta = rewards[t] + gamma * next_value * next_non_terminal - values_arr[t]
         last_gae = delta + gamma * gae_lambda * next_non_terminal * last_gae
         advantages[t] = last_gae

@@ -38,9 +38,22 @@ class VectorBatchPipeline(BasePipeline):
     window_size: steps collected PER ENV per yielded EpisodeData.
                  Total steps per yield = window_size * n_envs.
     async_envs:  use AsyncVectorEnv (subprocess) instead of SyncVectorEnv.
+                 Requires env_fns to be picklable — each function is sent to a
+                 subprocess via pickle. If any fn captures a large array, a
+                 non-picklable object (lambda with a closure over a TF/Torch
+                 model, etc.), setup() will detect this and fall back to
+                 SyncVectorEnv with a warning rather than letting gymnasium
+                 raise a confusing TypeError deep in multiprocessing.
 
     Note: each env resets automatically when it terminates/truncates. Episode
     boundaries are tracked per-env and merged into the flat yielded arrays.
+
+    Warning — gym.Env method name collision:
+        gymnasium's VectorEnv wrapper exposes close(), step(), reset(),
+        render(), and seed() as its own methods. If your env class defines
+        an *attribute* with any of those names, the wrapper's method is
+        shadowed, causing confusing AttributeErrors or silent misbehaviour.
+        Rename any conflicting env attributes before passing env_fns here.
     """
 
     def __init__(
@@ -63,6 +76,30 @@ class VectorBatchPipeline(BasePipeline):
 
     def setup(self) -> None:
         import gymnasium as gym
+        import pickle
+        if self._async_envs:
+            # AsyncVectorEnv sends each fn to a subprocess via pickle.
+            # Test picklability up front to produce a clear warning instead of
+            # a confusing TypeError buried in multiprocessing machinery.
+            unpicklable = False
+            for fn in self._env_fns:
+                try:
+                    pickle.dumps(fn)
+                except (pickle.PicklingError, AttributeError, TypeError) as exc:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "VectorBatchPipeline: env_fns are not picklable (%s). "
+                        "Falling back to SyncVectorEnv. "
+                        "Pass async_envs=False to silence this warning, or "
+                        "restructure env_fns to avoid closures over unpicklable objects "
+                        "(e.g. TensorFlow/PyTorch models, open file handles).",
+                        exc,
+                    )
+                    unpicklable = True
+                    break
+            if unpicklable:
+                self._async_envs = False
+
         if self._async_envs:
             self._vec_env = gym.vector.AsyncVectorEnv(self._env_fns)
         else:

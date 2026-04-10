@@ -24,6 +24,23 @@ class BatchPipeline(BasePipeline):
     Uses Gymnasium API:
         env.reset() -> (obs, info)
         env.step(action) -> (obs, reward, terminated, truncated, info)
+
+    EpisodeData fields populated by this pipeline:
+        episode_starts: list of step indices where a new episode begins within
+                        the window. Index 0 is always included. Use these instead
+                        of scanning dones manually.
+        final_obs:      the observation immediately after the last step. None when
+                        the window ended at a terminal state. On-policy agents
+                        (TFPPOAgent, TorchPPOAgent) use this to bootstrap V(s_T)
+                        correctly when the window ends mid-episode.
+
+    Warning — gym.Env method name collision:
+        gymnasium wraps env instances in a VectorEnv (or similar) that exposes
+        close(), step(), reset(), render(), and seed() as its own methods. If your
+        env class defines an *attribute* with any of those names, it will shadow
+        the wrapper's method and cause confusing AttributeErrors or silent
+        misbehaviour at teardown or during collection. Rename any conflicting env
+        attributes before passing the env to BatchPipeline.
     """
 
     def __init__(
@@ -57,8 +74,9 @@ class BatchPipeline(BasePipeline):
             terminated_flags = []
             truncated_flags = []
             infos = []
+            episode_start_indices = [0]
 
-            for _ in range(self._window_size):
+            for step_idx in range(self._window_size):
                 obs = self._obs
                 observations.append(obs)
                 action = self._agent.act(obs)
@@ -86,9 +104,12 @@ class BatchPipeline(BasePipeline):
                 if terminated or truncated:
                     # Env done mid-window — reset and continue filling the window
                     self._obs, _ = self._env.reset()
+                    if step_idx + 1 < self._window_size:
+                        episode_start_indices.append(step_idx + 1)
                 else:
                     self._obs = next_obs
 
+            last_done = terminated_flags[-1] or truncated_flags[-1]
             yield EpisodeData(
                 observations=np.array(observations),
                 actions=np.array(actions),
@@ -97,6 +118,8 @@ class BatchPipeline(BasePipeline):
                 truncated=truncated_flags,
                 infos=infos,
                 episode_id=self._window_counter,
+                episode_starts=episode_start_indices,
+                final_obs=None if last_done else self._obs,
             )
             self._window_counter += 1
 

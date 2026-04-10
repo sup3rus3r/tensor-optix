@@ -147,15 +147,20 @@ class DiagnosticController:
                     changed = True
 
         # ── Rule 3: PPO KL too high ───────────────────────────────────────
+        # High KL means the data distribution has shifted: the policy at update
+        # time is far from the policy that collected the data. The correct
+        # response is to make smaller updates (reduce learning_rate), not to
+        # tighten clip_ratio. clip_ratio limits the importance ratio magnitude
+        # but does not address the root cause of large policy divergence.
         kl = train_diagnostics.get("kl_div") or train_diagnostics.get("approx_kl")
         if kl is not None and self._target_kl is not None:
             kl = float(kl)
             if kl > 2.0 * self._target_kl:
-                old_cr = float(params.get("clip_ratio", 0))
-                if old_cr > 0:
-                    new_cr = max(old_cr * 0.8, 0.05)
-                    params["clip_ratio"] = new_cr
-                    action = f"clip_ratio {old_cr:.5g}→{new_cr:.5g} (-20%)  [KL={kl:.4f} > 2×target={2*self._target_kl:.4f}]"
+                old_lr = float(params.get("learning_rate", 0))
+                if old_lr > 0:
+                    new_lr = old_lr * 0.5
+                    params["learning_rate"] = new_lr
+                    action = f"lr {old_lr:.5g}→{new_lr:.5g} (-50%)  [KL={kl:.4f} > 2×target={2*self._target_kl:.4f}]"
                     fired.append(("KL_TOO_HIGH", action))
                     changed = True
 

@@ -83,6 +83,7 @@ class TorchGaussianPPOAgent(BaseAgent):
         action_dim: int,
         hyperparams: HyperparamSet,
         device: str = "auto",
+        reward_normalizer=None,
     ):
         import torch
         self._torch = torch
@@ -94,6 +95,7 @@ class TorchGaussianPPOAgent(BaseAgent):
         self._optimizer = optimizer
         self._action_dim = action_dim
         self._hyperparams = hyperparams.copy()
+        self._reward_normalizer = reward_normalizer
 
         # Rollout cache — populated by act(), consumed by learn()
         self._cache_obs: list = []
@@ -194,10 +196,25 @@ class TorchGaussianPPOAgent(BaseAgent):
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
         # actions are float arrays of shape [action_dim] per step
         act_arr    = np.array(episode_data.actions,      dtype=np.float32)
-        rewards    = episode_data.rewards
+        rewards    = list(episode_data.rewards)
         dones      = episode_data.dones
 
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda)
+        if self._reward_normalizer is not None:
+            for r, done in zip(rewards, dones):
+                self._reward_normalizer.step(r)
+                if done:
+                    self._reward_normalizer.reset()
+            rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
+
+        last_value = 0.0
+        if not dones[-1] and episode_data.final_obs is not None:
+            with torch.no_grad():
+                final_obs_t = torch.as_tensor(
+                    np.atleast_2d(episode_data.final_obs), dtype=torch.float32
+                ).to(self._device)
+                last_value = float(self._critic(final_obs_t).squeeze().item())
+
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

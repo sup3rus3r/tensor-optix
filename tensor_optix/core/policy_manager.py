@@ -81,10 +81,17 @@ class PolicyManager:
         Return a combined action from all registered agents.
 
         Single agent: equivalent to agent.act(obs).
-        Multiple agents: weighted average — action = Σ(w_i * a_i) / Σ(w_i).
 
-        Works for both continuous (direct average) and discrete action spaces
-        (returns a soft value; caller decides whether to argmax).
+        Multiple agents — two modes depending on whether agents expose action_probs():
+          Discrete (agents implement action_probs):
+            Weighted average is computed in probability space AFTER softmax,
+            not over sampled actions or logits. Averaging logits before softmax
+            is not equivalent to averaging policies and produces incorrect results.
+            Returns a probability array; caller argmaxes or samples from it.
+          Continuous (agents do not implement action_probs):
+            Falls back to weighted average of sampled actions. This is correct
+            for unimodal continuous policies but loses distributional information
+            for multimodal policies.
         """
         if not self._ensemble:
             raise RuntimeError("No agents registered in PolicyManager")
@@ -99,6 +106,19 @@ class PolicyManager:
         else:
             weights = [w for _, w in self._ensemble]
 
+        # Prefer probability averaging for discrete agents (correct ensemble combination).
+        all_probs = [
+            getattr(agent, "action_probs", lambda _: None)(obs)
+            for agent, _ in self._ensemble
+        ]
+        if all(p is not None for p in all_probs):
+            combined = sum(
+                np.asarray(p, dtype=float) * w
+                for p, w in zip(all_probs, weights)
+            ) / total_weight
+            return combined
+
+        # Fallback for continuous agents: average sampled actions.
         combined = sum(
             np.asarray(agent.act(obs), dtype=float) * w
             for (agent, _), w in zip(self._ensemble, weights)

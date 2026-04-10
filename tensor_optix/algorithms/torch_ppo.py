@@ -58,7 +58,7 @@ class TorchPPOAgent(BaseAgent):
     }
     default_log_params = ["learning_rate"]
 
-    def __init__(self, actor, critic, optimizer, hyperparams: HyperparamSet, device: str = "auto"):
+    def __init__(self, actor, critic, optimizer, hyperparams: HyperparamSet, device: str = "auto", reward_normalizer=None):
         import torch
         self._torch  = torch
         if device == "auto":
@@ -68,6 +68,7 @@ class TorchPPOAgent(BaseAgent):
         self._critic = critic.to(self._device)
         self._optimizer = optimizer
         self._hyperparams = hyperparams.copy()
+        self._reward_normalizer = reward_normalizer
 
         self._cache_obs: list      = []
         self._cache_log_probs: list = []
@@ -114,10 +115,28 @@ class TorchPPOAgent(BaseAgent):
         obs_arr    = np.array(self._cache_obs[:T],       dtype=np.float32)
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
-        rewards    = episode_data.rewards
+        rewards    = list(episode_data.rewards)
         dones      = episode_data.dones
 
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda)
+        # Reward normalizer: update running stats and reset at episode boundaries.
+        if self._reward_normalizer is not None:
+            for r, done in zip(rewards, dones):
+                self._reward_normalizer.step(r)
+                if done:
+                    self._reward_normalizer.reset()
+            rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
+
+        # Bootstrap: if the window ended mid-episode, V(s_T) from the critic
+        # corrects the TD target at the last step. Zero when terminal.
+        last_value = 0.0
+        if not dones[-1] and episode_data.final_obs is not None:
+            with torch.no_grad():
+                final_obs_t = torch.as_tensor(
+                    np.atleast_2d(episode_data.final_obs), dtype=torch.float32
+                ).to(self._device)
+                last_value = float(self._critic(final_obs_t).squeeze().item())
+
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -186,6 +205,20 @@ class TorchPPOAgent(BaseAgent):
             "explained_var": ev,
             "n_updates":     n_updates,
         }
+
+    def action_probs(self, observation) -> np.ndarray:
+        """
+        Return softmax action probabilities without sampling.
+        Used by PolicyManager.ensemble_action() to average distributions
+        across ensemble members rather than averaging sampled actions.
+        """
+        import torch
+        import torch.nn.functional as F
+        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
+        with torch.no_grad():
+            logits = self._actor(obs)
+            probs = F.softmax(logits, dim=-1)
+        return probs[0].cpu().numpy()
 
     def get_hyperparams(self) -> HyperparamSet:
         self._hyperparams.params["learning_rate"] = float(
