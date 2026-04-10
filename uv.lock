@@ -2568,7 +2568,7 @@ wheels = [
 
 [[package]]
 name = "tensor-optix"
-version = "0.8.2"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium", extra = ["box2d"] },
