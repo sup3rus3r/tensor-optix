@@ -72,7 +72,9 @@ def test_degradation_resets_to_active():
     assert s.current_state == LoopState.DORMANT
     s.record_degradation()
     assert s.current_state == LoopState.ACTIVE
-    assert s.current_interval == 1
+    # Interval is intentionally NOT reset by record_degradation — resetting to 1
+    # would fire the optimizer every episode and cause cascading degradation.
+    # record_restart() resets it (called after PolicyManager acts on DORMANT).
 
 
 def test_check_degradation():

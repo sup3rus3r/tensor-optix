@@ -55,3 +55,62 @@ class BaseAgent(ABC):
     @abstractmethod
     def load_weights(self, path: str) -> None:
         """Restore model weights from the given path."""
+
+    @property
+    def is_on_policy(self) -> bool:
+        """
+        True  → on-policy (PPO, A2C, REINFORCE).
+                 Each window is fresh data. Rollback to a previous checkpoint
+                 is safe because the next window will be generated entirely by
+                 the restored policy.
+
+        False → off-policy (SAC, DQN, TD3).
+                 A replay buffer accumulates experience from ALL past policies.
+                 Rolling back weights WITHOUT clearing the buffer means the
+                 agent immediately trains on stale, mismatched experience —
+                 corrupted Bellman targets drag the policy back down.
+                 LoopController skips weight rollback for off-policy agents
+                 even when rollback_on_degradation=True.
+
+        Default: True. Off-policy agents MUST override this to False.
+        """
+        return True
+
+    def average_weights(self, paths: list) -> None:
+        """
+        Replace current weights with the element-wise mean of weights
+        loaded from each path in `paths`.
+
+        Math: θ_avg = (1/N) × Σᵢ θᵢ
+
+        This implements Stochastic Weight Averaging (SWA). Averaging weights
+        from multiple high-scoring checkpoints tends to land in a flatter,
+        wider region of the loss landscape, improving generalisation and
+        robustness without any inference cost.
+
+        Only checkpoints within a score band of the best should be averaged —
+        checkpoints from very different training stages (e.g. pre/post collapse)
+        will produce a broken policy when averaged.
+
+        Default: no-op. Framework-specific agents override this.
+        Called by CheckpointRegistry.load_ensemble().
+        """
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        """
+        Apply multiplicative Gaussian noise to all network parameters.
+
+        Math: θ_new = θ × (1 + noise_scale × ε),  ε ~ N(0, I)
+
+        Multiplicative noise is scale-invariant: a parameter of magnitude
+        0.001 receives the same *relative* perturbation as one of magnitude
+        10.0.  This matches the hyperparam perturbation in spawn_variant()
+        and is the standard weight-space mutation used in ES and PBT.
+
+        Default: no-op.  Framework-specific agents (TorchPPOAgent, etc.)
+        override this to perturb their actual network parameters.
+
+        Called by PolicyManagerCallback._do_spawn() after spawn_variant()
+        restores the best checkpoint — so perturbation is always relative
+        to the best known weights, not the current (possibly degraded) ones.
+        """

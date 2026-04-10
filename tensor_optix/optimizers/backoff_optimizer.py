@@ -9,54 +9,75 @@ class BackoffOptimizer(BaseOptimizer):
     """
     Staggered two-phase finite difference optimizer.
 
+    All probing is done in normalized [0, 1] param space:
+        x = (θ - lo) / (hi - lo)
+
+    This makes delta scale-invariant across params of wildly different
+    magnitudes (e.g. lr=3e-4 and clip_ratio=0.2 both probe with the same
+    fractional step in their respective ranges). Without normalization,
+    perturbation_scale * |θ| collapses to min_delta for small params.
+
     Each bounded param gets its own independent probe/commit cycle:
 
     Phase 1 — PROBE:
-        Apply θᵢ + δᵢ to the agent (δᵢ = perturbation_scale * |θᵢ|).
-        Record base_score (score before the probe).
-        Run one episode.
+        Normalize current value to x ∈ [0,1].
+        Apply x + δ (δ = perturbation_scale, a fraction of the unit range).
+        Denormalize back to raw space and apply to agent.
+        Record base_score.
 
     Phase 2 — COMMIT:
-        Measure probe_score from the completed episode.
-        gradient = (probe_score - base_score) / δᵢ
-        If gradient > 0: keep θᵢ + δᵢ  (moving up was good)
-        If gradient < 0: apply θᵢ - δᵢ  (moving up was bad, go the other way)
-        If gradient ≈ 0: keep θᵢ unchanged (no signal)
-        Move to next param.
+        gradient = (probe_score - base_score) / δ   (in normalized space)
+        If gradient > 0: keep probe value
+        If gradient < 0: apply x - δ (reflected step)
+        If gradient ≈ 0: keep current value
+        Advance to next param.
 
     Params are cycled round-robin. With N bounded params, a full cycle
-    takes N episodes. Each param is updated independently.
+    takes 2N episodes (probe + commit per param).
 
-    Adaptive step size:
-        δᵢ = perturbation_scale * |θᵢ|   (multiplicative, scale-invariant)
-        δᵢ = max(δᵢ, min_delta)           (floor to avoid zero)
-
-    On improvement: increase perturbation scale (explore more aggressively).
-    On plateau: increase perturbation scale even more, reset cycle.
+    On improvement: increase perturbation_scale (explore more aggressively).
+    On plateau: increase perturbation_scale further, reset cycle.
     """
 
     def __init__(
         self,
         param_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
         perturbation_scale: float = 0.05,
-        min_delta: float = 1e-7,
-        gradient_threshold: float = 1e-10,  # treat gradient below this as zero
+        min_delta: float = 1e-4,        # minimum step in normalized [0,1] space
+        gradient_threshold: float = 1e-10,
     ):
         self._param_bounds = param_bounds or {}
         self._perturbation_scale = perturbation_scale
         self._min_delta = min_delta
         self._gradient_threshold = gradient_threshold
 
-        # Ordered list of params being tuned (set on first suggest call)
         self._param_names: List[str] = []
         self._current_param_idx: int = 0
 
         # Per-param probe state
-        # phase: "probe" = about to probe, "commit" = probe applied, awaiting result
         self._phase: Dict[str, str] = {}
-        self._probe_delta: Dict[str, float] = {}    # δᵢ used for this probe
-        self._base_score: Dict[str, float] = {}     # score before probe
-        self._probe_value: Dict[str, float] = {}    # θᵢ + δᵢ applied
+        self._probe_delta: Dict[str, float] = {}    # δ in normalized space
+        self._base_score: Dict[str, float] = {}
+        self._probe_value_raw: Dict[str, float] = {}  # denormalized probe value
+        self._current_x: Dict[str, float] = {}       # normalized current value
+        self._currently_probing: bool = False
+
+    # ------------------------------------------------------------------
+    # Normalization helpers
+    # ------------------------------------------------------------------
+
+    def _normalize(self, value: float, lo: float, hi: float) -> float:
+        """Map raw param value to [0, 1]."""
+        span = hi - lo
+        if span == 0:
+            return 0.0
+        return (value - lo) / span
+
+    def _denormalize(self, x: float, lo: float, hi: float) -> float:
+        """Map normalized [0, 1] value back to raw param space."""
+        return lo + x * (hi - lo)
+
+    # ------------------------------------------------------------------
 
     def suggest(
         self,
@@ -66,7 +87,6 @@ class BackoffOptimizer(BaseOptimizer):
         if not metrics_history:
             return current_hyperparams.copy()
 
-        # Initialize param list on first call
         if not self._param_names:
             self._param_names = [
                 k for k in current_hyperparams.params
@@ -81,52 +101,59 @@ class BackoffOptimizer(BaseOptimizer):
         new_params = dict(current_hyperparams.params)
         latest_score = metrics_history[-1].primary_score
 
-        # Get current param being worked on
         param_name = self._param_names[self._current_param_idx]
-        low, high = self._param_bounds[param_name]
+        lo, hi = self._param_bounds[param_name]
         current_value = float(current_hyperparams.params[param_name])
+        x_current = self._normalize(current_value, lo, hi)
 
         if self._phase[param_name] == "probe":
-            # Phase 1: apply probe, record base score
-            delta = max(self._perturbation_scale * abs(current_value), self._min_delta)
-            probe_value = current_value + delta
-            probe_value = max(low, min(high, probe_value))
+            # Probe in normalized space — delta is a fixed fraction of [0,1]
+            delta = max(self._perturbation_scale, self._min_delta)
+            x_probe = min(1.0, x_current + delta)
+            # If already at upper bound, probe downward instead
+            if x_probe == x_current:
+                x_probe = max(0.0, x_current - delta)
+            probe_value_raw = self._denormalize(x_probe, lo, hi)
 
             self._phase[param_name] = "commit"
             self._probe_delta[param_name] = delta
             self._base_score[param_name] = latest_score
-            self._probe_value[param_name] = probe_value
+            self._probe_value_raw[param_name] = probe_value_raw
+            self._current_x[param_name] = x_current
+            self._currently_probing = True
 
-            new_params[param_name] = probe_value
+            new_params[param_name] = probe_value_raw
 
         else:
-            # Phase 2: commit — measure gradient, decide direction
+            # Commit: measure gradient in normalized space, decide direction
             probe_score = latest_score
             base_score = self._base_score[param_name]
             delta = self._probe_delta[param_name]
-            probe_value = self._probe_value[param_name]
+            x_cur = self._current_x[param_name]
+            probe_raw = self._probe_value_raw[param_name]
 
             gradient = (probe_score - base_score) / delta
 
             if abs(gradient) <= self._gradient_threshold:
-                # No signal — keep current value unchanged
                 new_params[param_name] = current_value
             elif gradient > 0:
-                # Probe direction was good — keep probe value
-                new_params[param_name] = probe_value
+                new_params[param_name] = probe_raw
             else:
-                # Probe direction was bad — go the other way
-                opposite = current_value - delta
-                new_params[param_name] = max(low, min(high, opposite))
+                x_opposite = max(0.0, x_cur - delta)
+                new_params[param_name] = self._denormalize(x_opposite, lo, hi)
 
-            # Reset phase for this param, advance to next
             self._phase[param_name] = "probe"
             self._current_param_idx = (self._current_param_idx + 1) % len(self._param_names)
+            self._currently_probing = False
 
         return HyperparamSet(
             params=new_params,
             episode_id=current_hyperparams.episode_id,
         )
+
+    @property
+    def is_probing(self) -> bool:
+        return self._currently_probing
 
     def on_improvement(self, metrics: EvalMetrics) -> None:
         # Widen exploration slightly after improvement

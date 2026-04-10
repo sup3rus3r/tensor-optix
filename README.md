@@ -10,7 +10,7 @@ tensor-optix is a framework-agnostic autonomous training loop. It owns evaluatio
 
 The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop — it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, and SAC** for both TensorFlow and PyTorch so you can start training without writing a single algorithm line.
 
-**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, weights an ensemble by rolling performance, and uses both training and validation signals to drive every decision — not training alone.
+**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision — not training alone.
 
 **Core philosophy:** We own the loop. You own the model.
 
@@ -119,8 +119,8 @@ opt.run()
 Discrete action spaces. Actor + critic are separate models.
 
 ```python
-from tensor_optix.algorithms.tf_ppo import TFPPOAgent   # TensorFlow
-from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch
+from tensor_optix.algorithms.tf_ppo import TFPPOAgent        # TensorFlow
+from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch (auto-detects CUDA)
 ```
 
 **What it implements:**
@@ -147,13 +147,52 @@ from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch
 
 ---
 
+### PPO Continuous — Gaussian Policy (Continuous Actions)
+
+Continuous action spaces. Squashed Gaussian actor with learned log-std.
+
+```python
+from tensor_optix.algorithms.tf_ppo_continuous import TFGaussianPPOAgent        # TensorFlow
+from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent  # PyTorch
+```
+
+**What it adds over discrete PPO:**
+- Gaussian policy head outputs `[mean || log_std]` — `action_dim * 2` outputs
+- Actions sampled as `a = tanh(mean + std * ε)`, squashed to `(−1, 1)`
+- Log-prob corrected for tanh squashing (numerically stable)
+- `action_dim` required at construction
+
+```python
+import torch.nn as nn
+from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
+
+obs_dim, act_dim = 8, 2   # e.g. LunarLanderContinuous-v3
+
+actor  = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, act_dim * 2))
+critic = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, 1))
+
+agent = TorchGaussianPPOAgent(
+    actor=actor, critic=critic,
+    optimizer=torch.optim.Adam(
+        list(actor.parameters()) + list(critic.parameters()), lr=3e-4
+    ),
+    action_dim=act_dim,
+    hyperparams=HyperparamSet(params={
+        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
+        "gamma": 0.99, "gae_lambda": 0.95, "n_epochs": 10, "minibatch_size": 64,
+    }, episode_id=0),
+)
+```
+
+---
+
 ### DQN — Deep Q-Network
 
 Discrete action spaces. Single Q-network; target network updated periodically.
 
 ```python
-from tensor_optix.algorithms.tf_dqn import TFDQNAgent     # TensorFlow
-from tensor_optix.algorithms.torch_dqn import TorchDQNAgent  # PyTorch
+from tensor_optix.algorithms.tf_dqn import TFDQNAgent        # TensorFlow
+from tensor_optix.algorithms.torch_dqn import TorchDQNAgent  # PyTorch (auto-detects CUDA)
 ```
 
 **What it implements:**
@@ -172,12 +211,15 @@ q_net = tf.keras.Sequential([
 agent = TFDQNAgent(
     q_network=q_net,
     n_actions=n_actions,
-    optimizer=tf.keras.optimizers.Adam(1e-3),
+    optimizer=tf.keras.optimizers.Adam(3e-4),
     hyperparams=HyperparamSet(params={
-        "learning_rate": 1e-3, "gamma": 0.99,
+        "learning_rate": 3e-4, "gamma": 0.99,
         "epsilon": 1.0, "epsilon_min": 0.05, "epsilon_decay": 0.995,
         "batch_size": 64, "target_update_freq": 100,
         "replay_capacity": 100_000,
+        "per_alpha": 0.0,        # 0 = uniform replay; 1 = full prioritized
+        "per_beta":  0.4,        # IS correction exponent
+        "n_step":    1,          # multi-step TD return length
     }, episode_id=0),
 )
 ```
@@ -189,8 +231,8 @@ agent = TFDQNAgent(
 Continuous action spaces. Squashed Gaussian actor, twin critics, auto-entropy tuning.
 
 ```python
-from tensor_optix.algorithms.tf_sac import TFSACAgent     # TensorFlow
-from tensor_optix.algorithms.torch_sac import TorchSACAgent  # PyTorch
+from tensor_optix.algorithms.tf_sac import TFSACAgent        # TensorFlow
+from tensor_optix.algorithms.torch_sac import TorchSACAgent  # PyTorch (auto-detects CUDA)
 ```
 
 **What it implements:**
@@ -308,16 +350,43 @@ Any model — RL algorithms, evolutionary strategies, supervised sequence models
 
 ## How It Works
 
+### Adaptive Eval Scheduling
+
+One of tensor-optix's core strengths is that **it decides when to evaluate** — not you, and not a fixed schedule.
+
+The `BackoffScheduler` dynamically controls eval frequency based on learning progress:
+
+```
+  [loop] ep=   1  raw=  -67.2  smoothed= -150.6  state=ACTIVE  interval=1
+  [loop] ep=   2  raw= -191.9  smoothed= -129.5  state=ACTIVE  interval=1
+  [loop] ep=   4  raw= -106.8  smoothed= -100.5  state=ACTIVE  interval=2
+  [loop] ep=   6  raw= -258.8  smoothed= -178.6  state=ACTIVE  interval=2
+  [loop] ep=   8  raw=   65.7  smoothed=  -96.6  state=ACTIVE  interval=4
+  [loop] ep=  16  raw=  208.1  smoothed=  136.9  state=ACTIVE  interval=8
+  [loop] ep=  17  raw=  194.8  smoothed=  201.5  state=ACTIVE  interval=1  ← improvement detected, reset
+```
+
+- **No improvement** → interval doubles (2, 4, 8...) — more training time between evals, budget spent on learning
+- **Improvement detected** → interval snaps back to 1 — dense eval to track the breakthrough
+- **DORMANT** → loop stops, best weights restored automatically
+
+Vanilla frameworks evaluate on a fixed schedule regardless of progress. tensor-optix spends the budget where it matters.
+
+Enable verbose output to see this in action:
+
+```python
+opt = RLOptimizer(agent=agent, pipeline=pipeline, verbose=True)
+```
+
 ### The Loop States
 
 ```
-ACTIVE   → aggressive tuning, evaluates every window
-COOLING  → recent improvement, exponential backoff on eval frequency
-DORMANT  → plateau reached — model is trained, minimal intervention
-WATCHDOG → monitoring for degradation
+ACTIVE   → learning detected, evaluates frequently
+COOLING  → no recent improvement, exponential backoff on eval frequency
+DORMANT  → plateau confirmed — training is done, loop stops cleanly
 ```
 
-**DORMANT = trained.** Not a fixed episode count — the system backs off evaluation geometrically until improvement stops, then declares convergence.
+**DORMANT = trained.** Not a fixed episode count — the system backs off evaluation geometrically until improvement stops, then declares convergence and restores the best known weights.
 
 ### Backoff Schedule
 
@@ -329,23 +398,115 @@ Plateau detected when:  consecutive_no_improvement ≥ plateau_threshold
 DORMANT declared when:  consecutive_no_improvement ≥ dormant_threshold
 ```
 
-Every improvement resets the backoff counter. The system accelerates evaluation when learning is happening, backs off when it isn't.
+Every improvement resets the counter. The system accelerates evaluation when learning is happening, backs off when it isn't.
 
-### Hyperparameter Optimizer — Two-Phase Finite Difference
+### Hyperparameter Optimization — Two Layers
 
-`BackoffOptimizer` cycles through hyperparameters using staggered two-phase finite difference:
+tensor-optix provides two complementary levels of hyperparameter optimization. They are designed to compose: run `TrialOrchestrator` first to find a good starting configuration, then hand those params to `RLOptimizer` for the final full-budget run with SPSA online adaptation.
+
+#### Layer 1 — Online Adaptation (SPSA, within a single run)
+
+The default optimizer is `SPSAOptimizer` (Simultaneous Perturbation Stochastic Approximation). It adapts hyperparameters *during* a training run, episode by episode, responding to non-stationarity in real time.
 
 ```
-For each param θᵢ:
-  Phase 1 (probe):   apply θᵢ + δᵢ, run one window, record score s₊
-  Phase 2 (commit):  gradient ĝᵢ = (s₊ − s₀) / δᵢ
-                     if ĝᵢ > 0: keep θᵢ + δᵢ
-                     if ĝᵢ ≤ 0: apply θᵢ − δᵢ  (reverse direction)
+Episode 1 (probe+):  sample Δ ∈ {−1, +1}ᴺ  (Rademacher vector)
+                     apply θ⁺ = θ + c·Δ,  record score f⁺
+
+Episode 2 (probe−):  apply θ⁻ = θ − c·Δ,  record score f⁻
+
+Gradient estimate:   ĝᵢ = (f⁺ − f⁻) / (2·c·Δᵢ)   ← unbiased for all i simultaneously
+
+Update:              x_new = clip(x + α·ĝ, 0, 1)   ← in normalized [0,1] param space
+                     θ_new = denormalize(x_new)
 ```
 
-Step size `δᵢ` adapts: shrinks on improvement, grows on plateau. Params cycle round-robin — each is probed and committed independently.
+All probing is done in a normalized `[0, 1]` parameter space — a fixed perturbation scale applies equally to a learning rate of `3e-4` and a clip ratio of `0.2` without manual tuning.
 
-`PBTOptimizer` maintains a history of `(hyperparams, score)` pairs and exploits top performers when in the bottom 20%, otherwise explores with Gaussian perturbation.
+**Probe-aware degradation gating:** during probe episodes, score drops are self-inflicted perturbations, not genuine policy collapses. The loop skips degradation checks while the optimizer is probing.
+
+`BackoffOptimizer` is also available for single-parameter cycling via two-phase finite difference:
+
+```python
+from tensor_optix.optimizers.backoff_optimizer import BackoffOptimizer
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=pipeline,
+    optimizer=BackoffOptimizer(param_bounds={
+        "learning_rate": (1e-5, 1e-2),
+        "clip_ratio":    (0.05, 0.4),
+    }),
+)
+```
+
+#### Layer 2 — Trial-Level Search (TrialOrchestrator, across independent runs)
+
+`TrialOrchestrator` runs N fully independent `RLOptimizer` trials, each with a different hyperparameter configuration, and uses **Optuna TPE** (Tree-structured Parzen Estimator) to select configurations. It is mathematically the same algorithm used by Stable-Baselines3, CleanRL, and RLlib for RL HPO sweeps.
+
+**When to use it:** before committing to a long training run. Give each trial 10–20% of your final budget — enough to rank configurations, not enough for full training.
+
+```python
+from tensor_optix import TrialOrchestrator, RLOptimizer
+# pip install optuna   (optional dependency)
+
+def make_agent(params: dict) -> BaseAgent:
+    net = tf.keras.Sequential([...])
+    return TFPPOAgent(
+        actor=net, critic=critic_net,
+        optimizer=tf.keras.optimizers.Adam(params["learning_rate"]),
+        hyperparams=HyperparamSet(params=params, episode_id=0),
+    )
+
+def make_pipeline() -> BasePipeline:
+    return BatchPipeline(env_id="LunarLander-v3", n_steps=2048)
+
+orchestrator = TrialOrchestrator(
+    agent_factory=make_agent,
+    pipeline_factory=make_pipeline,
+    param_space={
+        "learning_rate": ("log_float", 1e-4, 3e-3),   # log-uniform (good for lr)
+        "clip_ratio":    ("float",     0.1,  0.3),
+        "entropy_coef":  ("float",     0.001, 0.05),  # 0.001 floor prevents entropy collapse
+        "gamma":         ("float",     0.95, 0.999),
+    },
+    n_trials=20,          # number of independent runs
+    trial_steps=50_000,   # step budget per trial
+)
+best_params, best_score = orchestrator.run()
+
+# Final full-budget run with the best configuration found
+agent = make_agent(best_params)
+optimizer = RLOptimizer(agent=agent, pipeline=make_pipeline(), max_episodes=500)
+optimizer.run()
+```
+
+**Parameter space spec:**
+
+| Spec | Description |
+|---|---|
+| `("float", lo, hi)` | Uniform float in `[lo, hi]` |
+| `("log_float", lo, hi)` | Log-uniform float — use for learning rate, α |
+| `("int", lo, hi)` | Uniform integer |
+| `("log_int", lo, hi)` | Log-uniform integer — use for batch size, buffer size |
+| `("categorical", v1, v2, ...)` | One of the listed values |
+
+**How TPE works:**
+
+TPE fits two kernel density estimates — `p(x | good)` over the top-k% of trials and `p(x | bad)` over the rest. The next configuration is chosen by maximising the acquisition ratio `p(x | good) / p(x | bad)`. This is equivalent to Bayesian optimisation with a non-parametric surrogate, without the O(n³) cost of Gaussian Process inference.
+
+**MedianPruner:** after a short warmup, any trial whose score falls below the median of all trials at the same episode is terminated early. This cuts wall time by stopping clearly bad configurations without committing to a fixed bracket schedule.
+
+Each trial gets an isolated checkpoint directory — no cross-trial interference. The underlying `Optuna` study is accessible via `orchestrator.study` for inspection, plotting, and storage to SQLite for distributed sweeps.
+
+### Adaptive Improvement Margin
+
+A gain of +0.001 on a signal with ±5 noise is not a real improvement. The loop computes an adaptive floor before crediting any score as a new best:
+
+```
+effective_margin = max(user_margin, noise_k × std(recent_scores))
+```
+
+`noise_k = 2.0` by default. Gains below 2σ of recent score noise do not reset backoff, preventing noise-level fluctuations from blocking convergence detection.
 
 ---
 
@@ -371,6 +532,24 @@ generalization_gap   = train_score − val  ← surfaced in every EvalMetrics
 ```
 
 Every adaptation decision — rollback, spawn, noise scale, MetaController — is driven by out-of-sample performance, not training performance.
+
+### External Checkpoint Scoring
+
+The training window mean is a noisy signal — it diverges from the true policy quality that matters at deployment. Pass `checkpoint_score_fn` to decouple checkpoint saving from training noise:
+
+```python
+def external_eval(agent) -> float:
+    # deterministic, fixed seed — measures true policy quality
+    return eval_policy(agent, env_id="LunarLander-v3", seed=42, n_episodes=5)
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=pipeline,
+    checkpoint_score_fn=external_eval,
+)
+```
+
+The best checkpoint is selected by the external score. The training signal still drives convergence detection — only checkpoint saving uses the external eval.
 
 ### Three-Signal Adaptive Noise
 
@@ -400,32 +579,31 @@ effective_t = t × (1 − 0.5 × gap_penalty) × (1 − 0.5 × corr_penalty)
 noise_scale = max_scale − effective_t × (max_scale − min_scale)
 ```
 
+Without a val pipeline, spawn noise adapts to the training improvement ratio:
+```
+σ = base_noise / (1 + improvement_ratio)
+```
+Exploit when improving, explore when stuck.
+
 ---
 
 ## Policy Evolution
 
 ### Automatic Rollback
 
-When the loop reaches DORMANT, `PolicyManager` compares the current score against the best checkpoint. If current < best, it loads the best known weights back into the agent automatically.
+When `run()` returns, the agent **always holds the best known weights** — whether stopped by convergence, budget, or manual `stop()`. This is unconditional and requires no configuration.
+
+For mid-training rollback on degradation:
 
 ```python
-from tensor_optix import PolicyManager
-from tensor_optix.core.checkpoint_registry import CheckpointRegistry
-
-registry = CheckpointRegistry("./checkpoints")
-pm = PolicyManager(registry)
-
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
-    callbacks=[pm.as_callback(agent)],
-)
-opt.run()
+opt = RLOptimizer(agent=agent, pipeline=pipeline, rollback_on_degradation=True)
 ```
 
 ### Spawn Budget — When Is Training Done?
 
 ```python
+from tensor_optix import PolicyManager
+
 pm = PolicyManager(registry, max_spawns=3)
 cb = pm.as_callback(agent)
 cb.set_stop_fn(opt.stop)
@@ -446,11 +624,6 @@ When budget is exhausted, a training report is printed automatically:
   Spawns used      : 3 / 3
   Pruned agents    : 1
   Ensemble size    : 3
-  Regime           : trending
-  Agents           :
-    [0] weight=2.4100  mean_score=0.8710
-    [1] weight=1.0300  mean_score=0.7240
-    [2] weight=0.5600  mean_score=0.6120
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -568,21 +741,54 @@ Available hooks: `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvem
 opt = RLOptimizer(
     agent=agent,
     pipeline=pipeline,
-    val_pipeline=val_pipeline,              # optional held-out pipeline
-    evaluator=None,                         # default: TFEvaluator
-    optimizer=None,                         # default: BackoffOptimizer
-    checkpoint_dir="./checkpoints",
-    max_snapshots=10,
-    rollback_on_degradation=False,
-    improvement_margin=0.0,
-    max_episodes=None,                      # None = run until DORMANT
-    base_interval=1,
-    backoff_factor=2.0,
-    max_interval_episodes=100,
-    plateau_threshold=5,
-    dormant_threshold=20,
-    degradation_threshold=0.95,
+
+    # ── Pipelines & components ────────────────────────────────────────────
+    val_pipeline=val_pipeline,              # held-out pipeline; agent acts only, never learns
+    evaluator=None,                         # default: TFEvaluator (or TorchEvaluator for PyTorch)
+    optimizer=None,                         # default: SPSAOptimizer (all params in 2 episodes)
+
+    # ── Checkpointing ─────────────────────────────────────────────────────
+    checkpoint_dir="./checkpoints",         # where snapshots are saved
+    max_snapshots=10,                       # keep only the N best snapshots on disk
+    checkpoint_score_fn=None,               # callable(agent) → float; when set, checkpoint
+                                            # selection uses this external eval instead of the
+                                            # noisy training signal. Use for deterministic evals.
+
+    # ── Budget ────────────────────────────────────────────────────────────
+    max_episodes=None,                      # hard cap; None = run until DORMANT
+
+    # ── Convergence detection (BackoffScheduler) ──────────────────────────
+    base_interval=1,                        # eval every N episodes at the start
+    backoff_factor=2.0,                     # multiply interval by this on each non-improvement
+    max_interval_episodes=100,              # interval cap — never wait more than this
+    plateau_threshold=5,                    # consecutive non-improvements → COOLING
+    dormant_threshold=20,                   # consecutive non-improvements → DORMANT (stop)
+                                            # off-policy agents (DQN, SAC) auto-set to 15 —
+                                            # replay buffer scores are noisier than on-policy
+    score_smoothing=2,                      # rolling mean window applied before comparing scores;
+                                            # filters single-episode noise from convergence signals
+
+    # ── Improvement margin ────────────────────────────────────────────────
+    improvement_margin=0.0,                 # fixed minimum gain to count as improvement
+    noise_k=2.0,                            # adaptive margin multiplier: effective_margin =
+                                            # max(improvement_margin, noise_k × std(recent_scores))
+                                            # increase if the loop stops too early on noisy envs
+    score_window=20,                        # rolling window size for computing the noise floor
+
+    # ── Degradation detection ─────────────────────────────────────────────
+    rollback_on_degradation=False,          # restore best weights when degradation is detected
+                                            # safe for on-policy (PPO); skip for off-policy (DQN/SAC)
+    degradation_threshold=0.95,             # score must drop below best × threshold to fire
+    min_episodes_before_dormant=0,          # don't declare DORMANT before this many evals;
+                                            # auto-set per agent class when left at 0:
+                                            # DQN=60 (epsilon decay floor timing),
+                                            # SAC=30 (Q-function stabilisation)
+    min_episodes_before_degradation=5,      # don't fire degradation before this many evals;
+                                            # prevents false alarms during chaotic early training
+
+    # ── Misc ──────────────────────────────────────────────────────────────
     callbacks=[],
+    verbose=False,                          # print per-episode eval output (raw, smoothed, state)
 )
 ```
 
@@ -607,6 +813,9 @@ tensor_optix/
 │   ├── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
 │   ├── regime_detector.py      # RegimeDetector — score-based regime classification
 │   └── meta_controller.py      # MetaController — SPAWN/PRUNE/STOP/NO_OP decisions
+├── optimizers/
+│   ├── spsa_optimizer.py       # SPSAOptimizer — default, all params in 2 episodes
+│   └── backoff_optimizer.py    # BackoffOptimizer — single-param finite difference
 ├── adapters/
 │   ├── tensorflow/
 │   │   ├── tf_agent.py         # TFAgent — generic REINFORCE / A2C base
@@ -616,11 +825,13 @@ tensor_optix/
 │       └── torch_evaluator.py  # TorchEvaluator — default scorer (no TF dep)
 ├── algorithms/
 │   ├── tf_ppo.py               # TFPPOAgent — clipped surrogate, GAE-λ, n-epoch minibatch
-│   ├── tf_dqn.py               # TFDQNAgent — replay buffer, target net, ε-greedy
+│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent — continuous action PPO, squashed Gaussian
+│   ├── tf_dqn.py               # TFDQNAgent — PER replay, target net, ε-greedy
 │   ├── tf_sac.py               # TFSACAgent — twin critics, squashed Gaussian, auto-α
-│   ├── torch_ppo.py            # TorchPPOAgent
-│   ├── torch_dqn.py            # TorchDQNAgent
-│   └── torch_sac.py            # TorchSACAgent
+│   ├── torch_ppo.py            # TorchPPOAgent (CUDA auto-detect)
+│   ├── torch_ppo_continuous.py # TorchGaussianPPOAgent — continuous PPO (CUDA auto-detect)
+│   ├── torch_dqn.py            # TorchDQNAgent (CUDA auto-detect)
+│   └── torch_sac.py            # TorchSACAgent (CUDA auto-detect)
 └── pipeline/
     ├── batch_pipeline.py       # Continuous stepping, fixed windows
     ├── live_pipeline.py        # Real-time streaming with reconnect
@@ -629,14 +840,17 @@ tensor_optix/
 
 | Component | Responsibility |
 |-----------|---------------|
-| `TFPPOAgent` / `TorchPPOAgent` | PPO with GAE, clipping, entropy, n-epoch minibatch |
-| `TFDQNAgent` / `TorchDQNAgent` | DQN with replay buffer, target net, ε-greedy |
-| `TFSACAgent` / `TorchSACAgent` | SAC with twin critics, auto-entropy, soft updates |
+| `TFPPOAgent` / `TorchPPOAgent` | Discrete PPO — GAE, clipping, entropy, n-epoch minibatch |
+| `TFGaussianPPOAgent` / `TorchGaussianPPOAgent` | Continuous PPO — squashed Gaussian actor, same PPO core |
+| `TFDQNAgent` / `TorchDQNAgent` | DQN with PER replay, n-step returns, target net, ε-greedy |
+| `TFSACAgent` / `TorchSACAgent` | SAC with twin critics, auto-entropy, soft target updates |
 | `LoopController` | State machine, episode orchestration, eval, checkpoint |
-| `BackoffScheduler` | Convergence detection via exponential backoff |
+| `BackoffScheduler` | Adaptive eval scheduling + convergence detection |
 | `CheckpointRegistry` | Snapshot storage, best-checkpoint manifest |
+| `SPSAOptimizer` | SPSA — all N params in 2 episodes, normalized space (online, within a run) |
 | `BackoffOptimizer` | Two-phase finite difference hyperparameter tuning |
 | `PBTOptimizer` | Population-based exploit/explore hyperparameter tuning |
+| `TrialOrchestrator` | Optuna TPE trial-level HPO — N independent runs, MedianPruner (requires `optuna`) |
 | `PolicyManager` | Rollback, spawn, prune, boost, ensemble weights, adaptive noise |
 | `MetaController` | Rule-based SPAWN/PRUNE/STOP/NO_OP decisions |
 | `EnsembleAgent` | Weighted-average action combining across multiple agents |
@@ -648,6 +862,23 @@ tensor_optix/
 ---
 
 ## Math & Science Reference
+
+### SPSA Gradient Estimate (`SPSAOptimizer`)
+
+```
+Δ ~ Rademacher({−1, +1}ᴺ)          ← simultaneous perturbation vector
+
+θ⁺ = θ + c·Δ   →   f⁺ = score(θ⁺)
+θ⁻ = θ − c·Δ   →   f⁻ = score(θ⁻)
+
+ĝᵢ = (f⁺ − f⁻) / (2·c·Δᵢ)         ← unbiased estimator for all i
+
+x  = (θ − lo) / (hi − lo)           ← normalize to [0,1]
+x' = clip(x + α·ĝ, 0, 1)
+θ' = lo + x' · (hi − lo)            ← denormalize
+```
+
+Spall (1992) proved that this two-measurement estimator is unbiased and converges at the same asymptotic rate as finite difference with N measurements. Normalizing to `[0,1]` before updating ensures a fixed perturbation scale `c` applies equally to parameters of any magnitude.
 
 ### GAE-λ (`trajectory_buffer.compute_gae`)
 

@@ -1,5 +1,7 @@
-import time
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from typing import Any, Generator, Optional
 from tensor_optix.core.base_pipeline import BasePipeline, EpisodeBoundaryFn
 from tensor_optix.core.types import EpisodeData
@@ -62,7 +64,20 @@ class BatchPipeline(BasePipeline):
                 action = self._agent.act(obs)
                 actions.append(action)
 
-                next_obs, reward, terminated, truncated, info = self._env.step(action)
+                try:
+                    next_obs, reward, terminated, truncated, info = self._env.step(action)
+                except Exception as e:
+                    # Physics engines (e.g. Box2D in BipedalWalker) can raise
+                    # AssertionErrors on degenerate states (zero-length lidar rays,
+                    # unstable joint configurations). Treat as episode termination
+                    # and reset — the window continues with a fresh episode.
+                    logger.warning("env.step() raised %s: %s — treating as termination", type(e).__name__, e)
+                    terminated = True
+                    truncated = False
+                    reward = 0.0
+                    info = {}
+                    next_obs = obs  # placeholder, overwritten by reset below
+
                 rewards.append(float(reward))
                 terminated_flags.append(bool(terminated))
                 truncated_flags.append(bool(truncated))

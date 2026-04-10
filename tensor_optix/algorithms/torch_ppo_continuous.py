@@ -65,6 +65,16 @@ class TorchGaussianPPOAgent(BaseAgent):
         gae_lambda, n_epochs, minibatch_size, max_grad_norm
     """
 
+    default_param_bounds = {
+        "learning_rate": (1e-4, 3e-3),
+        "gamma":         (0.95, 0.999),
+        "clip_ratio":    (0.1,  0.3),
+        "entropy_coef":  (0.001, 0.05),
+        # entropy_coef lo=0.001: continuous PPO std can collapse to zero when entropy_coef=0.
+        # gamma included: SPSA can adapt the discount horizon per-environment.
+    }
+    default_log_params = ["learning_rate"]
+
     def __init__(
         self,
         actor,
@@ -72,11 +82,15 @@ class TorchGaussianPPOAgent(BaseAgent):
         optimizer,
         action_dim: int,
         hyperparams: HyperparamSet,
+        device: str = "auto",
     ):
         import torch
         self._torch = torch
-        self._actor = actor
-        self._critic = critic
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = torch.device(device)
+        self._actor = actor.to(self._device)
+        self._critic = critic.to(self._device)
         self._optimizer = optimizer
         self._action_dim = action_dim
         self._hyperparams = hyperparams.copy()
@@ -121,7 +135,7 @@ class TorchGaussianPPOAgent(BaseAgent):
         Returns a float numpy array of shape [action_dim].
         """
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32)
+        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
 
         with torch.no_grad():
             out     = self._actor(obs)                                # [1, 2*action_dim]
@@ -140,7 +154,7 @@ class TorchGaussianPPOAgent(BaseAgent):
         self._cache_log_probs.append(float(log_prob.item()))
         self._cache_values.append(float(value.item()))
 
-        return action.squeeze(0).numpy()  # [action_dim]
+        return action.squeeze(0).cpu().numpy()  # [action_dim]
 
     def learn(self, episode_data: EpisodeData) -> dict:
         """
@@ -204,11 +218,11 @@ class TorchGaussianPPOAgent(BaseAgent):
 
         for _ in range(n_epochs):
             for batch in make_minibatches(rollout, mb_size):
-                obs_b = torch.as_tensor(batch["obs"],        dtype=torch.float32)
-                act_b = torch.as_tensor(batch["actions"],    dtype=torch.float32)
-                old_b = torch.as_tensor(batch["old_lp"],     dtype=torch.float32)
-                adv_b = torch.as_tensor(batch["advantages"], dtype=torch.float32)
-                ret_b = torch.as_tensor(batch["returns"],    dtype=torch.float32)
+                obs_b = torch.as_tensor(batch["obs"],        dtype=torch.float32).to(self._device)
+                act_b = torch.as_tensor(batch["actions"],    dtype=torch.float32).to(self._device)
+                old_b = torch.as_tensor(batch["old_lp"],     dtype=torch.float32).to(self._device)
+                adv_b = torch.as_tensor(batch["advantages"], dtype=torch.float32).to(self._device)
+                ret_b = torch.as_tensor(batch["returns"],    dtype=torch.float32).to(self._device)
 
                 # Recover pre_tanh from stored actions (atanh, numerically safe)
                 pre_tanh_b = torch.atanh(act_b.clamp(-1 + 1e-6, 1 - 1e-6))
@@ -282,11 +296,35 @@ class TorchGaussianPPOAgent(BaseAgent):
     def load_weights(self, path: str) -> None:
         import torch
         self._actor.load_state_dict(
-            torch.load(os.path.join(path, "actor.pt"),  map_location="cpu")
+            torch.load(os.path.join(path, "actor.pt"),  map_location=self._device)
         )
         self._critic.load_state_dict(
-            torch.load(os.path.join(path, "critic.pt"), map_location="cpu")
+            torch.load(os.path.join(path, "critic.pt"), map_location=self._device)
         )
+
+    def average_weights(self, paths: list) -> None:
+        import torch
+        n = len(paths)
+        with torch.no_grad():
+            for net, fname in ((self._actor, "actor.pt"), (self._critic, "critic.pt")):
+                avg = None
+                for path in paths:
+                    sd = torch.load(os.path.join(path, fname), map_location=self._device)
+                    if avg is None:
+                        avg = {k: v.clone().float() for k, v in sd.items()}
+                    else:
+                        for k in avg:
+                            avg[k] += sd[k].float()
+                for k in avg:
+                    avg[k] /= n
+                net.load_state_dict({k: v.to(next(net.parameters()).dtype) for k, v in avg.items()})
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        import torch
+        with torch.no_grad():
+            for module in (self._actor, self._critic):
+                for param in module.parameters():
+                    param.mul_(1.0 + noise_scale * torch.randn_like(param))
 
     @staticmethod
     def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:

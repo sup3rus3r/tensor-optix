@@ -1,40 +1,11 @@
 import os
 import copy
-import random
-from collections import deque
 
 import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-
-
-class _ReplayBuffer:
-    def __init__(self, capacity: int):
-        self._buf = deque(maxlen=capacity)
-
-    def push(self, obs, action, reward, next_obs, done):
-        self._buf.append((
-            np.array(obs,    dtype=np.float32),
-            np.array(action, dtype=np.float32),
-            float(reward),
-            np.array(next_obs, dtype=np.float32),
-            float(done),
-        ))
-
-    def sample(self, batch_size: int):
-        batch = random.sample(self._buf, batch_size)
-        obs, actions, rewards, next_obs, dones = zip(*batch)
-        return (
-            np.array(obs,      dtype=np.float32),
-            np.array(actions,  dtype=np.float32),
-            np.array(rewards,  dtype=np.float32),
-            np.array(next_obs, dtype=np.float32),
-            np.array(dones,    dtype=np.float32),
-        )
-
-    def __len__(self):
-        return len(self._buf)
+from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
 
 
 class TorchSACAgent(BaseAgent):
@@ -51,6 +22,11 @@ class TorchSACAgent(BaseAgent):
         actor:   nn.Module, obs → [mean || log_std], shape [batch, 2*action_dim]
         critic1: nn.Module, [obs || action] → Q-value, shape [batch, 1]
         critic2: nn.Module, same as critic1
+
+    PER and n-step params are exposed in hyperparams so SPSA can adapt them:
+        per_alpha      — prioritization strength (0=uniform, 1=full PER)
+        per_beta       — IS correction exponent
+        n_step         — multi-step TD target length
 
     Usage:
         import torch
@@ -69,12 +45,15 @@ class TorchSACAgent(BaseAgent):
             ),
             alpha_optimizer=torch.optim.Adam([log_alpha], lr=3e-4),
             hyperparams=HyperparamSet(params={
-                "learning_rate":   3e-4,
-                "gamma":           0.99,
-                "tau":             0.005,
-                "batch_size":      256,
+                "learning_rate":    3e-4,
+                "gamma":            0.99,
+                "tau":              0.005,
+                "batch_size":       256,
                 "updates_per_step": 1,
-                "replay_capacity": 1_000_000,
+                "replay_capacity":  1_000_000,
+                "per_alpha":        0.0,
+                "per_beta":         0.4,
+                "n_step":           1,
             }, episode_id=0),
         )
 
@@ -94,14 +73,18 @@ class TorchSACAgent(BaseAgent):
         critic_optimizer,
         alpha_optimizer,
         hyperparams: HyperparamSet,
+        device: str = "auto",
     ):
         import torch
         self._torch    = torch
-        self._actor    = actor
-        self._c1       = critic1
-        self._c2       = critic2
-        self._c1_tgt   = copy.deepcopy(critic1)
-        self._c2_tgt   = copy.deepcopy(critic2)
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = torch.device(device)
+        self._actor    = actor.to(self._device)
+        self._c1       = critic1.to(self._device)
+        self._c2       = critic2.to(self._device)
+        self._c1_tgt   = copy.deepcopy(critic1).to(self._device)
+        self._c2_tgt   = copy.deepcopy(critic2).to(self._device)
         self._action_dim    = action_dim
         self._actor_opt     = actor_optimizer
         self._critic_opt    = critic_optimizer
@@ -110,22 +93,52 @@ class TorchSACAgent(BaseAgent):
 
         log_alpha_init = float(hyperparams.params.get("log_alpha_init", 0.0))
         self._log_alpha = torch.tensor(log_alpha_init, dtype=torch.float32,
-                                       requires_grad=True)
+                                       requires_grad=True, device=self._device)
         # Replace alpha_optimizer param group with our log_alpha tensor
         self._alpha_opt = type(alpha_optimizer)(
             [self._log_alpha], **{k: v for k, v in alpha_optimizer.defaults.items()}
         )
         self._target_entropy = -float(action_dim)
 
-        capacity = int(hyperparams.params.get("replay_capacity", 1_000_000))
-        self._buffer = _ReplayBuffer(capacity)
+        hp = hyperparams.params
+        capacity  = int(hp.get("replay_capacity", 1_000_000))
+        per_alpha = float(hp.get("per_alpha", 0.0))
+        per_beta  = float(hp.get("per_beta",  0.4))
+        n_step    = int(hp.get("n_step",    1))
+        gamma     = float(hp.get("gamma",   0.99))
+
+        self._buffer = PrioritizedReplayBuffer(
+            capacity=capacity,
+            alpha=per_alpha,
+            beta=per_beta,
+            n_step=n_step,
+            gamma=gamma,
+        )
+
+    default_param_bounds = {
+        "learning_rate": (1e-4, 1e-3),
+        "gamma":         (0.97, 0.999),
+        "tau":           (1e-3, 1e-1),
+        # lr upper bound 1e-3: gradient spikes at early training (large td_errors on random
+        # Q-networks) cause instability at lr=3e-3 even with clip_by_norm.  1e-3 keeps the
+        # maximum parameter step ≤ 0.01 (lr × clip_norm=10), same reasoning as DQN.
+    }
+    default_log_params = ["learning_rate", "tau"]
+
+    # SAC has no epsilon decay but twin Q-functions need ~20 episodes to stabilize
+    # their value estimates before DORMANT intervention is meaningful.
+    default_min_episodes_before_dormant = 30
+
+    @property
+    def is_on_policy(self) -> bool:
+        return False  # replay buffer — rollback without buffer clear is harmful
 
     def act(self, observation) -> np.ndarray:
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32)
+        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
         with torch.no_grad():
             action, _ = self._sample_action(obs)
-        return action.numpy()[0]
+        return action.cpu().numpy()[0]
 
     def learn(self, episode_data: EpisodeData) -> dict:
         hp = self._hyperparams.params
@@ -143,6 +156,7 @@ class TorchSACAgent(BaseAgent):
         for t in range(T - 1):
             self._buffer.push(obs_arr[t], act_arr[t], float(rew_arr[t]),
                                obs_arr[t + 1], float(done_arr[t]))
+        self._buffer.flush_episode()
 
         if len(self._buffer) < batch_size:
             return {
@@ -170,15 +184,25 @@ class TorchSACAgent(BaseAgent):
         self._hyperparams.params["learning_rate"] = float(
             self._actor_opt.param_groups[0]["lr"]
         )
+        self._hyperparams.params["per_alpha"] = self._buffer._alpha
+        self._hyperparams.params["per_beta"]  = self._buffer._beta
+        self._hyperparams.params["n_step"]    = self._buffer._n_step
         return self._hyperparams.copy()
 
     def set_hyperparams(self, hyperparams: HyperparamSet) -> None:
         self._hyperparams = hyperparams.copy()
-        if "learning_rate" in hyperparams.params:
-            lr = float(hyperparams.params["learning_rate"])
+        hp = hyperparams.params
+        if "learning_rate" in hp:
+            lr = float(hp["learning_rate"])
             for opt in (self._actor_opt, self._critic_opt, self._alpha_opt):
                 for pg in opt.param_groups:
                     pg["lr"] = lr
+        self._buffer.set_params(
+            alpha=hp.get("per_alpha"),
+            beta=hp.get("per_beta"),
+            n_step=hp.get("n_step"),
+            gamma=hp.get("gamma"),
+        )
 
     def save_weights(self, path: str) -> None:
         import torch
@@ -190,13 +214,50 @@ class TorchSACAgent(BaseAgent):
 
     def load_weights(self, path: str) -> None:
         import torch
-        self._actor.load_state_dict(torch.load(os.path.join(path, "actor.pt"),   map_location="cpu"))
-        self._c1.load_state_dict(   torch.load(os.path.join(path, "critic1.pt"), map_location="cpu"))
-        self._c2.load_state_dict(   torch.load(os.path.join(path, "critic2.pt"), map_location="cpu"))
+        self._actor.load_state_dict(torch.load(os.path.join(path, "actor.pt"),   map_location=self._device))
+        self._c1.load_state_dict(   torch.load(os.path.join(path, "critic1.pt"), map_location=self._device))
+        self._c2.load_state_dict(   torch.load(os.path.join(path, "critic2.pt"), map_location=self._device))
         la_path = os.path.join(path, "log_alpha.npy")
         if os.path.exists(la_path):
             with torch.no_grad():
                 self._log_alpha.fill_(float(np.load(la_path)))
+        self._c1_tgt.load_state_dict(self._c1.state_dict())
+        self._c2_tgt.load_state_dict(self._c2.state_dict())
+
+    def average_weights(self, paths: list) -> None:
+        import torch
+        n = len(paths)
+        nets_files = [
+            (self._actor, "actor.pt"),
+            (self._c1,    "critic1.pt"),
+            (self._c2,    "critic2.pt"),
+        ]
+        with torch.no_grad():
+            for net, fname in nets_files:
+                avg = None
+                for path in paths:
+                    sd = torch.load(os.path.join(path, fname), map_location=self._device)
+                    if avg is None:
+                        avg = {k: v.clone().float() for k, v in sd.items()}
+                    else:
+                        for k in avg:
+                            avg[k] += sd[k].float()
+                for k in avg:
+                    avg[k] /= n
+                net.load_state_dict({k: v.to(next(net.parameters()).dtype) for k, v in avg.items()})
+            # Sync target networks from averaged online networks
+            self._c1_tgt.load_state_dict(self._c1.state_dict())
+            self._c2_tgt.load_state_dict(self._c2.state_dict())
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        import torch
+        # Perturb actor and online critics only. Target networks sync via
+        # soft update (τ) during learning — don't perturb them directly.
+        with torch.no_grad():
+            for module in (self._actor, self._c1, self._c2):
+                for param in module.parameters():
+                    param.mul_(1.0 + noise_scale * torch.randn_like(param))
+        # Sync targets to match perturbed critics so they don't diverge immediately.
         self._c1_tgt.load_state_dict(self._c1.state_dict())
         self._c2_tgt.load_state_dict(self._c2.state_dict())
 
@@ -225,12 +286,16 @@ class TorchSACAgent(BaseAgent):
         import torch
         import torch.nn.functional as F
 
-        obs_b, act_b, rew_b, next_b, done_b = self._buffer.sample(batch_size)
-        obs_b  = torch.as_tensor(obs_b,  dtype=torch.float32)
-        act_b  = torch.as_tensor(act_b,  dtype=torch.float32)
-        rew_b  = torch.as_tensor(rew_b,  dtype=torch.float32)
-        next_b = torch.as_tensor(next_b, dtype=torch.float32)
-        done_b = torch.as_tensor(done_b, dtype=torch.float32)
+        obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
+        obs_b   = torch.as_tensor(obs_b,    dtype=torch.float32).to(self._device)
+        act_b   = torch.as_tensor(act_b,    dtype=torch.float32).to(self._device)
+        rew_b   = torch.as_tensor(rew_b,    dtype=torch.float32).to(self._device)
+        next_b  = torch.as_tensor(next_b,   dtype=torch.float32).to(self._device)
+        done_b  = torch.as_tensor(done_b,   dtype=torch.float32).to(self._device)
+        weights = torch.as_tensor(weights,  dtype=torch.float32).to(self._device)
+        gammas_n = torch.as_tensor(
+            gamma ** n_steps.astype(np.float32), dtype=torch.float32
+        ).to(self._device)
         alpha  = self._log_alpha.exp().detach()
 
         # Critic update
@@ -239,14 +304,22 @@ class TorchSACAgent(BaseAgent):
             ci_next = torch.cat([next_b, na], dim=-1)
             q1t = self._c1_tgt(ci_next).squeeze(-1)
             q2t = self._c2_tgt(ci_next).squeeze(-1)
-            q_t = rew_b + gamma * (1 - done_b) * (torch.minimum(q1t, q2t) - alpha * nlp)
+            q_t = rew_b + gammas_n * (1 - done_b) * (torch.minimum(q1t, q2t) - alpha * nlp)
 
         ci = torch.cat([obs_b, act_b], dim=-1)
         q1 = self._c1(ci).squeeze(-1)
         q2 = self._c2(ci).squeeze(-1)
-        c_loss = F.mse_loss(q1, q_t) + F.mse_loss(q2, q_t)
+
+        td_errors = ((q1 + q2) / 2 - q_t).detach().cpu().numpy()
+        self._buffer.update_priorities(indices, np.abs(td_errors))
+
+        c_loss = (weights * (F.mse_loss(q1, q_t, reduction="none") +
+                             F.mse_loss(q2, q_t, reduction="none"))).mean()
         self._critic_opt.zero_grad()
         c_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(self._c1.parameters()) + list(self._c2.parameters()), 10.0
+        )
         self._critic_opt.step()
 
         # Actor update
@@ -257,6 +330,7 @@ class TorchSACAgent(BaseAgent):
         a_loss = (alpha * new_lp - torch.minimum(q1n, q2n)).mean()
         self._actor_opt.zero_grad()
         a_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self._actor.parameters(), 10.0)
         self._actor_opt.step()
 
         # Alpha update

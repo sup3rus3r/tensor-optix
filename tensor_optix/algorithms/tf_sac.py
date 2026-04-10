@@ -1,6 +1,4 @@
 import os
-import random
-from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -8,36 +6,7 @@ import tensorflow as tf
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-
-
-class _ReplayBuffer:
-    """Replay buffer for continuous-action off-policy methods."""
-
-    def __init__(self, capacity: int):
-        self._buf = deque(maxlen=capacity)
-
-    def push(self, obs, action, reward, next_obs, done) -> None:
-        self._buf.append((
-            np.array(obs,      dtype=np.float32),
-            np.array(action,   dtype=np.float32),
-            float(reward),
-            np.array(next_obs, dtype=np.float32),
-            float(done),
-        ))
-
-    def sample(self, batch_size: int):
-        batch = random.sample(self._buf, batch_size)
-        obs, actions, rewards, next_obs, dones = zip(*batch)
-        return (
-            np.array(obs,      dtype=np.float32),
-            np.array(actions,  dtype=np.float32),
-            np.array(rewards,  dtype=np.float32),
-            np.array(next_obs, dtype=np.float32),
-            np.array(dones,    dtype=np.float32),
-        )
-
-    def __len__(self) -> int:
-        return len(self._buf)
+from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
 
 
 class TFSACAgent(BaseAgent):
@@ -57,6 +26,11 @@ class TFSACAgent(BaseAgent):
 
     Target entropy heuristic (Haarnoja et al.): -action_dim
 
+    PER and n-step params are exposed in hyperparams so SPSA can adapt them:
+        per_alpha      — prioritization strength (0=uniform, 1=full PER)
+        per_beta       — IS correction exponent
+        n_step         — multi-step TD target length
+
     Usage:
         actor   = build_actor(obs_dim, action_dim)    # outputs [mean||log_std]
         critic1 = build_critic(obs_dim, action_dim)   # takes [obs||action]
@@ -68,13 +42,16 @@ class TFSACAgent(BaseAgent):
             critic_optimizer=tf.keras.optimizers.Adam(3e-4),
             alpha_optimizer=tf.keras.optimizers.Adam(3e-4),
             hyperparams=HyperparamSet(params={
-                "learning_rate":   3e-4,
-                "gamma":           0.99,
-                "tau":             0.005,
-                "batch_size":      256,
-                "log_alpha_init":  0.0,
-                "replay_capacity": 1_000_000,
+                "learning_rate":    3e-4,
+                "gamma":            0.99,
+                "tau":              0.005,
+                "batch_size":       256,
+                "log_alpha_init":   0.0,
+                "replay_capacity":  1_000_000,
                 "updates_per_step": 1,
+                "per_alpha":        0.0,
+                "per_beta":         0.4,
+                "n_step":           1,
             }, episode_id=0),
         )
 
@@ -116,15 +93,44 @@ class TFSACAgent(BaseAgent):
         self._log_alpha = tf.Variable(log_alpha_init, dtype=tf.float32, trainable=True)
         self._target_entropy = tf.constant(-float(action_dim), dtype=tf.float32)
 
-        capacity = int(hyperparams.params.get("replay_capacity", 1_000_000))
-        self._buffer = _ReplayBuffer(capacity)
+        hp = hyperparams.params
+        capacity  = int(hp.get("replay_capacity", 1_000_000))
+        per_alpha = float(hp.get("per_alpha", 0.6))
+        per_beta  = float(hp.get("per_beta",  0.4))
+        n_step    = int(hp.get("n_step",    1))
+        gamma     = float(hp.get("gamma",   0.99))
 
-        # Track last obs for building (s, a, r, s') transitions
+        self._buffer = PrioritizedReplayBuffer(
+            capacity=capacity,
+            alpha=per_alpha,
+            beta=per_beta,
+            n_step=n_step,
+            gamma=gamma,
+        )
+
         self._last_obs: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------
     # BaseAgent interface
     # ------------------------------------------------------------------
+
+    default_param_bounds = {
+        "learning_rate": (1e-4, 1e-3),
+        "gamma":         (0.97, 0.999),
+        "tau":           (1e-3, 1e-1),
+        # lr upper bound 1e-3: gradient spikes at early training (large td_errors on random
+        # Q-networks) cause instability at lr=3e-3 even with clip_by_norm.  1e-3 keeps the
+        # maximum parameter step ≤ 0.01 (lr × clip_norm=10), same reasoning as DQN.
+    }
+    default_log_params = ["learning_rate", "tau"]
+
+    # SAC has no epsilon decay but twin Q-functions need ~20 episodes to stabilize
+    # their value estimates before DORMANT intervention is meaningful.
+    default_min_episodes_before_dormant = 30
+
+    @property
+    def is_on_policy(self) -> bool:
+        return False  # replay buffer — rollback without buffer clear is harmful
 
     def act(self, observation) -> np.ndarray:
         """
@@ -161,6 +167,7 @@ class TFSACAgent(BaseAgent):
                 obs_arr[t + 1],
                 float(done_arr[t]),
             )
+        self._buffer.flush_episode()
 
         if len(self._buffer) < batch_size:
             return {
@@ -192,15 +199,25 @@ class TFSACAgent(BaseAgent):
             if hasattr(self._actor_opt.learning_rate, "numpy")
             else self._actor_opt.learning_rate
         )
+        self._hyperparams.params["per_alpha"] = self._buffer._alpha
+        self._hyperparams.params["per_beta"]  = self._buffer._beta
+        self._hyperparams.params["n_step"]    = self._buffer._n_step
         return self._hyperparams.copy()
 
     def set_hyperparams(self, hyperparams: HyperparamSet) -> None:
         self._hyperparams = hyperparams.copy()
-        if "learning_rate" in hyperparams.params:
-            lr = float(hyperparams.params["learning_rate"])
+        hp = hyperparams.params
+        if "learning_rate" in hp:
+            lr = float(hp["learning_rate"])
             self._actor_opt.learning_rate.assign(lr)
             self._critic_opt.learning_rate.assign(lr)
             self._alpha_opt.learning_rate.assign(lr)
+        self._buffer.set_params(
+            alpha=hp.get("per_alpha"),
+            beta=hp.get("per_beta"),
+            n_step=hp.get("n_step"),
+            gamma=hp.get("gamma"),
+        )
 
     def save_weights(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
@@ -222,6 +239,23 @@ class TFSACAgent(BaseAgent):
         log_alpha_path = os.path.join(path, "log_alpha.npy")
         if os.path.exists(log_alpha_path):
             self._log_alpha.assign(float(np.load(log_alpha_path)))
+
+    def average_weights(self, paths: list) -> None:
+        for net, fname in ((self._actor, "actor.keras"), (self._c1, "critic1.keras"), (self._c2, "critic2.keras")):
+            loaded = [tf.keras.models.load_model(os.path.join(p, fname)) for p in paths]
+            for v, *lvs in zip(net.trainable_variables, *[m.trainable_variables for m in loaded]):
+                v.assign(tf.reduce_mean(tf.stack([lv for lv in lvs], axis=0), axis=0))
+        self._c1_tgt.set_weights(self._c1.get_weights())
+        self._c2_tgt.set_weights(self._c2.get_weights())
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        # Perturb actor and online critics. Sync targets after so they
+        # don't immediately diverge from the perturbed online networks.
+        for module in (self._actor, self._c1, self._c2):
+            for v in module.trainable_variables:
+                v.assign(v * (1.0 + noise_scale * tf.random.normal(v.shape)))
+        self._c1_tgt.set_weights(self._c1.get_weights())
+        self._c2_tgt.set_weights(self._c2.get_weights())
         # Sync target networks from loaded weights
         self._c1_tgt.set_weights(self._c1.get_weights())
         self._c2_tgt.set_weights(self._c2.get_weights())
@@ -268,34 +302,37 @@ class TFSACAgent(BaseAgent):
 
     def _update_step(self, batch_size: int, gamma: float, tau: float):
         """One full SAC gradient step (critic + actor + alpha + soft update)."""
-        obs_b, act_b, rew_b, next_obs_b, done_b = self._buffer.sample(batch_size)
+        obs_b, act_b, rew_b, next_obs_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
         obs_b      = tf.cast(obs_b,      tf.float32)
         act_b      = tf.cast(act_b,      tf.float32)
         rew_b      = tf.cast(rew_b,      tf.float32)
         next_obs_b = tf.cast(next_obs_b, tf.float32)
         done_b     = tf.cast(done_b,     tf.float32)
+        weights    = tf.cast(weights,    tf.float32)
+        gammas_n   = tf.cast(gamma ** n_steps.astype(np.float32), tf.float32)
         alpha      = tf.exp(self._log_alpha)
 
         # ---- Critic update ----
         with tf.GradientTape() as tape:
-            # Target: r + γ(1-d)(min Q_tgt(s', ã') - α log π(ã'|s'))
             next_a, next_lp = self._sample_action(next_obs_b, training=False)
             ci_next = self._critic_input(next_obs_b, next_a)
             q1_tgt  = tf.squeeze(self._c1_tgt(ci_next, training=False), -1)
             q2_tgt  = tf.squeeze(self._c2_tgt(ci_next, training=False), -1)
             min_q   = tf.minimum(q1_tgt, q2_tgt)
-            q_tgt   = rew_b + gamma * (1.0 - done_b) * (min_q - alpha * next_lp)
+            q_tgt   = rew_b + gammas_n * (1.0 - done_b) * (min_q - alpha * next_lp)
             q_tgt   = tf.stop_gradient(q_tgt)
 
             ci      = self._critic_input(obs_b, act_b)
             q1      = tf.squeeze(self._c1(ci, training=True), -1)
             q2      = tf.squeeze(self._c2(ci, training=True), -1)
-            c_loss  = tf.reduce_mean(tf.square(q1 - q_tgt)) + \
-                      tf.reduce_mean(tf.square(q2 - q_tgt))
+            td_errors = tf.stop_gradient((q1 + q2) / 2.0 - q_tgt)
+            c_loss  = tf.reduce_mean(weights * (tf.square(q1 - q_tgt) + tf.square(q2 - q_tgt)))
 
         c_vars = self._c1.trainable_variables + self._c2.trainable_variables
         c_grads = tape.gradient(c_loss, c_vars)
+        c_grads, _ = tf.clip_by_global_norm(c_grads, 10.0)
         self._critic_opt.apply_gradients(zip(c_grads, c_vars))
+        self._buffer.update_priorities(indices, np.abs(td_errors.numpy()))
 
         # ---- Actor update ----
         with tf.GradientTape() as tape:
@@ -306,6 +343,7 @@ class TFSACAgent(BaseAgent):
             a_loss = tf.reduce_mean(alpha * new_lp - tf.minimum(q1_new, q2_new))
 
         a_grads = tape.gradient(a_loss, self._actor.trainable_variables)
+        a_grads, _ = tf.clip_by_global_norm(a_grads, 10.0)
         self._actor_opt.apply_gradients(zip(a_grads, self._actor.trainable_variables))
 
         # ---- Alpha (entropy temperature) update ----

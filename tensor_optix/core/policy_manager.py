@@ -508,18 +508,20 @@ class PolicyManager:
         Returns a LoopCallback that wires PolicyManager into the loop.
 
         agent_factory: callable that returns a fresh agent shell for spawning.
-            If provided, the callback spawns variants autonomously on DORMANT.
-            Required for autonomous operation.
+            When provided, DORMANT triggers spawn-until-budget-exhausted.
+            When omitted, DORMANT stops immediately.
 
-        meta_controller: a MetaController (or any object with a
-            decide(metrics_history, pm_status) -> MetaAction interface).
-            If provided, all DORMANT decisions (spawn/prune/stop/no-op) are
-            delegated to it. If omitted, spawning always fires when budget allows.
+        meta_controller: optional MetaController that overrides spawn/stop
+            decisions with custom logic.
+
+        Decision logic at DORMANT (math-driven, no external thresholds):
+            1. Rollback to best checkpoint weights always.
+            2. Spawn budget remaining? → spawn variant, keep training.
+               Budget exhausted?       → stop. Best known weights are final.
 
         Wiring:
-            pm = PolicyManager(registry, max_spawns=3, max_ensemble_size=5)
-            cb = pm.as_callback(agent, agent_factory=lambda: MyAgent(...),
-                                meta_controller=MetaController())
+            pm = PolicyManager(registry, max_spawns=3)
+            cb = pm.as_callback(agent, agent_factory=lambda: MyAgent(...))
             opt = RLOptimizer(..., callbacks=[cb])
             cb.set_stop_fn(opt.stop)
         """
@@ -608,59 +610,101 @@ class PolicyManagerCallback(LoopCallback):
             self._metrics_history.append(eval_metrics)
 
     def on_dormant(self, episode_id: int) -> None:
-        # Step 1: rebalance weights
+        """
+        Decision tree at DORMANT — math-driven, no external thresholds:
+
+        1. Rollback to best checkpoint always.
+           If recent_mean < peak - noise_k×sigma the policy has genuinely
+           declined from its best. Restore best weights before deciding.
+
+        2. Spawn budget remaining?
+              YES → spawn variant from best weights + perturbed hyperparams,
+                    reset to ACTIVE and keep training.
+              NO  → best known weights ARE the answer. Stop.
+        """
+        # Step 1: rebalance ensemble weights from score history
         self._pm.auto_update_weights()
 
-        # Step 2: rollback if degraded
+        # Step 2: always rollback to best checkpoint weights.
+        # evolve() loads best weights if current < best, no-op otherwise.
         if self._last_score is not None:
-            rolled_back = self._pm.evolve(self._agent, self._last_score)
-            if rolled_back:
-                logger.info(
-                    "Episode %d: DORMANT — rolled back to best checkpoint",
-                    episode_id,
-                )
+            self._pm.evolve(self._agent, self._last_score)
 
-        # Step 3: autonomous decisions (only when factory is available)
-        # When no factory, this is natural convergence — print report once
-        if self._agent_factory is None and not self._reported:
-            self._reported = True
-            self._print_training_report("natural_dormant")
-
-        if self._agent_factory is not None:
+        # Step 3: spawn or stop — determined purely by budget.
+        # agent_factory is not None signals the user wants spawning enabled.
+        # _do_spawn mutates self._agent in-place (see its docstring).
+        if self._agent_factory is not None and not self._pm.budget_exhausted:
+            # Budget remaining → spawn variant into active agent, keep training.
             if self._meta is not None:
                 action = self._meta.decide(self._metrics_history, self._pm.status())
                 self._execute(action, episode_id)
-            elif not self._pm.budget_exhausted:
+            else:
                 self._do_spawn(episode_id)
-
-        # Step 4: terminate if budget exhausted
-        if self._pm.budget_exhausted:
+        elif self._pm.budget_exhausted:
+            # Spawn budget explicitly exhausted → stop cleanly.
             logger.info(
-                "Episode %d: spawn budget exhausted (%d/%d) — signalling stop",
+                "Episode %d: DORMANT — spawn budget exhausted, best weights restored, stopping",
                 episode_id,
-                self._pm._spawn_count,
-                self._pm._max_spawns,
             )
             self._print_training_report("budget_exhausted")
             if self._stop_fn is not None:
                 self._stop_fn()
+        # else: no factory provided — PolicyManager is passive; loop_controller
+        # handles convergence and stopping via its own DORMANT state.
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _do_spawn(self, episode_id: int) -> None:
-        """Clone best checkpoint into a new variant and add to ensemble."""
-        shell = self._agent_factory()
-        scale = self._pm.adaptive_noise_scale(self._metrics_history)
-        variant = self._pm.spawn_variant(shell, noise_scale=scale)
-        self._pm.add_agent(variant, weight=1.0)
-        max_size = self._pm._max_ensemble_size
-        if max_size is not None and self._pm.ensemble_size > max_size:
-            self._pm.prune(bottom_k=1)
+        """
+        Spawn a policy variant.
+
+        Two modes depending on whether agent_factory was provided:
+
+        Factory mode (agent_factory is not None):
+            Create a new agent shell via factory, load best checkpoint weights
+            into it, perturb its hyperparams and weights, add it to the ensemble.
+            The active training agent is left unchanged — spawning grows the ensemble.
+
+        In-place mode (no factory):
+            Mutate the active agent in-place from the best checkpoint.
+            Useful when the LoopController/BatchPipeline must reuse the same object.
+
+        Weight perturbation scale grows exponentially with spawn count:
+            σ_k = min(0.1, 0.01 × 2^k),  k = spawns used so far
+        """
+        hp_noise = self._pm.adaptive_noise_scale(self._metrics_history)
+
+        base_noise = 0.01
+        if len(self._metrics_history) >= 2:
+            recent_scores = [m.primary_score for m in self._metrics_history[-10:]]
+            best_recent = max(recent_scores)
+            baseline = self._metrics_history[0].primary_score
+            if abs(baseline) > 1e-8:
+                improvement_ratio = max(0.0, (best_recent - baseline) / abs(baseline))
+                weight_noise = float(np.clip(base_noise / (1.0 + improvement_ratio), 0.005, 0.1))
+            else:
+                weight_noise = base_noise
+        else:
+            k = self._pm._spawn_count
+            weight_noise = min(0.1, base_noise * (2.0 ** k))
+
+        if self._agent_factory is not None:
+            # Factory mode: create a fresh agent shell, clone best weights into it.
+            new_agent = self._agent_factory()
+            self._pm.spawn_variant(new_agent, noise_scale=hp_noise)
+            new_agent.perturb_weights(weight_noise)
+            self._pm.add_agent(new_agent, weight=1.0)
+        else:
+            # In-place mode: mutate the active agent from the best checkpoint.
+            self._pm.spawn_variant(self._agent, noise_scale=hp_noise)
+            self._agent.perturb_weights(weight_noise)
+
         logger.info(
-            "Episode %d: spawned variant (noise=%.4f ensemble_size=%d spawns=%d/%s)",
-            episode_id, scale, self._pm.ensemble_size,
+            "Episode %d: spawned variant "
+            "(hp_noise=%.4f weight_noise=%.4f spawns=%d/%s)",
+            episode_id, hp_noise, weight_noise,
             self._pm._spawn_count,
             str(self._pm._max_spawns) if self._pm._max_spawns is not None else "∞",
         )

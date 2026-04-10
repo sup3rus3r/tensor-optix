@@ -128,6 +128,9 @@ class FixedAgent:
     def set_hyperparams(self, hp):
         self._hyperparams = hp
 
+    def perturb_weights(self, noise_scale: float) -> None:
+        pass  # no-op for test mock
+
     def save_weights(self, path):
         import json, os
         os.makedirs(path, exist_ok=True)

@@ -1,53 +1,42 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
 *.so
-*.egg
-*.egg-info/
-dist/
-build/
-eggs/
-parts/
-var/
-sdist/
-develop-eggs/
-.installed.cfg
-lib/
-lib64/
 
 # Virtual environments
 .venv/
 venv/
-ENV/
 env/
 
-# uv lock (libraries don't pin lock files)
-uv.lock
+# Build / distribution
+dist/
+build/
+*.egg-info/
+*.egg
 
 # Testing
 .pytest_cache/
 .coverage
-coverage.xml
 htmlcov/
-.tox/
+*.log
 
 # Type checking
 .mypy_cache/
-.dmypy.json
 
-# IDEs
+# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+
+# Checkpoints (runtime artifacts)
+tensor_optix_checkpoints/
+checkpoints/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Project-specific
-tensor_optix_checkpoints/
-*.keras
-*.h5

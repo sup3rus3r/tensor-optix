@@ -1,3 +1,5 @@
+from collections import deque
+import numpy as np
 from .types import LoopState
 
 
@@ -5,25 +7,29 @@ class BackoffScheduler:
     """
     Controls adaptation interval and state transitions.
 
-    The scheduler is the nervous system of the loop. It decides:
-    - How long to wait between adaptation attempts
-    - When to transition between ACTIVE / COOLING / DORMANT / WATCHDOG
-    - When degradation triggers re-activation
+    Improvement and degradation are detected via **linear trend** over the
+    recent score window, not point-to-point comparison.
 
-    Backoff strategy: exponential with configurable base and cap.
-    - Each consecutive non-improvement multiplies interval by backoff_factor
-    - Interval is capped at max_interval_episodes
-    - On new improvement: interval resets to base_interval
+    Why trend instead of point:
+        Point comparison (smoothed > best) fires on every local maximum and
+        misses the actual direction of learning. A single unlucky eval (390→10)
+        looks like a collapse even if the surrounding 8 evals are rising.
+        A linear fit over the last N scores is robust to single-episode spikes
+        and gives the loop a directional signal:
+
+            slope > +floor_per_step  →  improving
+            |slope| < floor_per_step →  stuck
+            slope < -floor_per_step  →  degrading
+
+        where floor_per_step = adaptive_floor / trend_window.
+
+    Adaptive floor auto-scales to env reward range (noise_k × std of recent
+    scores), capped at 50% of |best_score| to prevent early-chaos poisoning.
 
     State transitions:
-    - ACTIVE       → COOLING  : after plateau_threshold consecutive non-improvements
-    - COOLING      → DORMANT  : after dormant_threshold consecutive non-improvements
-    - DORMANT      → WATCHDOG : automatically (DORMANT is the quiet watchdog state)
-    - any state    → ACTIVE   : on degradation or improvement
-
-    Degradation detection:
-    - If primary_score drops below (best_score * degradation_threshold),
-      transition back to ACTIVE from any state.
+        ACTIVE  → COOLING  : after plateau_threshold consecutive non-improving evals
+        COOLING → DORMANT  : after dormant_threshold consecutive non-improving evals
+        any     → ACTIVE   : on genuine improvement trend or degradation
     """
 
     def __init__(
@@ -36,20 +42,22 @@ class BackoffScheduler:
         degradation_threshold: float = 0.95,
         min_degradation_drop: float = 1e-4,
         min_episodes_before_dormant: int = 0,
+        min_episodes_before_degradation: int = 5,
+        noise_k: float = 2.0,
+        score_window: int = 20,
+        trend_window: int = 8,
     ):
         """
         Args:
-            min_degradation_drop: Minimum absolute score drop that can trigger
-                degradation detection. Guards against spurious resets when
-                best_score ≈ 0 (where the relative threshold collapses to
-                near-zero and any noise fires the watchdog).
-                Default 1e-4 is safe for normalized score ranges [0, 1].
-                Set higher (e.g. 0.01) for raw reward scales.
-            min_episodes_before_dormant: Minimum total eval episodes that must
-                occur before DORMANT can be declared. Prevents premature
-                convergence on lucky early plateaus. Default 0 (no guard).
-                Example: set to 50 to require at least 50 eval windows before
-                the loop can stop.
+            noise_k:           Adaptive floor multiplier. floor = noise_k × std(scores).
+            score_window:      Rolling window size for std / trend computation.
+            trend_window:      Number of most-recent scores used for slope fit.
+                               Must be ≤ score_window. Default 8 — enough to be
+                               robust to single-episode spikes while responding
+                               quickly to genuine trend changes.
+            min_degradation_drop: Fallback floor before enough history exists.
+            min_episodes_before_dormant:    Guard against premature DORMANT.
+            min_episodes_before_degradation: Guard against early false positives.
         """
         self._base_interval = base_interval
         self._backoff_factor = backoff_factor
@@ -59,6 +67,11 @@ class BackoffScheduler:
         self._degradation_threshold = degradation_threshold
         self._min_degradation_drop = min_degradation_drop
         self._min_episodes_before_dormant = min_episodes_before_dormant
+        self._min_episodes_before_degradation = min_episodes_before_degradation
+        self._noise_k = noise_k
+        self._trend_window = max(3, trend_window)
+        self._score_window: deque = deque(maxlen=max(score_window, self._trend_window))
+        self._dormant_fired: bool = False
 
         self._state = LoopState.ACTIVE
         self._consecutive_non_improvements = 0
@@ -66,16 +79,118 @@ class BackoffScheduler:
         self._best_score: float | None = None
         self._total_episodes: int = 0
 
+    # ------------------------------------------------------------------
+    # Adaptive floor
+    # ------------------------------------------------------------------
+
+    def _adaptive_floor(self) -> float:
+        """
+        Adaptive absolute floor for improvement margin and degradation detection.
+        Returns noise_k × std(recent scores), capped at 50% of |best_score|.
+        Falls back to min_degradation_drop until at least 5 scores exist.
+        """
+        if len(self._score_window) < 5:
+            return self._min_degradation_drop
+        floor = self._noise_k * float(np.std(list(self._score_window)))
+        if self._best_score is not None and abs(self._best_score) > 1e-8:
+            floor = min(floor, 0.5 * abs(self._best_score))
+        return max(floor, self._min_degradation_drop)
+
+    # ------------------------------------------------------------------
+    # Trend detection
+    # ------------------------------------------------------------------
+
+    def _slope(self) -> float | None:
+        """
+        Linear regression slope over the most recent trend_window scores.
+        Returns None when fewer than 3 scores exist (not enough to fit a line).
+        Units: score-change per eval step.
+        """
+        n = min(len(self._score_window), self._trend_window)
+        if n < 3:
+            return None
+        recent = list(self._score_window)[-n:]
+        x = np.arange(n, dtype=np.float64)
+        y = np.array(recent, dtype=np.float64)
+        # Simple linear regression via closed form
+        x_mean = x.mean()
+        y_mean = y.mean()
+        denom = ((x - x_mean) ** 2).sum()
+        if denom < 1e-12:
+            return 0.0
+        return float(((x - x_mean) * (y - y_mean)).sum() / denom)
+
+    def is_improving(self) -> bool:
+        """
+        True when the recent score trend is meaningfully upward.
+
+        Uses slope over the trend window. Falls back to checking whether the
+        latest score beat the best (point comparison) when window is too short.
+
+        Threshold: slope > adaptive_floor / trend_window
+        (floor_per_step scales the absolute floor into per-eval units)
+        """
+        slope = self._slope()
+        if slope is None:
+            # Not enough history — fall back to point comparison
+            if len(self._score_window) == 0:
+                return False
+            latest = self._score_window[-1]
+            if self._best_score is None:
+                return True
+            return latest > self._best_score + self._adaptive_floor()
+        floor_per_step = self._adaptive_floor() / self._trend_window
+        return slope > floor_per_step
+
+    def is_degrading(self) -> bool:
+        """
+        True when the recent score trend is meaningfully downward AND the
+        current level is well below the best known score.
+
+        Both conditions must hold simultaneously — a downward trend during
+        exploration or after a SPSA probe is not degradation unless the
+        absolute level has also dropped significantly.
+
+        Conditions:
+            slope < -floor_per_step           (trend is falling)
+            latest < best_score - allowed_drop (absolute level is low)
+        """
+        if self._best_score is None:
+            return False
+        if self._total_episodes < self._min_episodes_before_degradation:
+            return False
+
+        slope = self._slope()
+        if slope is None:
+            return False  # not enough history to call degradation
+
+        floor_per_step = self._adaptive_floor() / self._trend_window
+        if slope >= -floor_per_step:
+            return False  # trend is flat or rising — not degrading
+
+        # Trend is falling. Check absolute level.
+        latest = self._score_window[-1]
+        relative_drop = abs(self._best_score) * (1.0 - self._degradation_threshold)
+        allowed_drop = max(relative_drop, self._adaptive_floor())
+        return latest < self._best_score - allowed_drop
+
+    # ------------------------------------------------------------------
+    # State machine
+    # ------------------------------------------------------------------
+
     def record_improvement(self, score: float) -> None:
-        """Call when a new best score is achieved. Resets backoff and state."""
-        self._best_score = score
+        """Called when a new best score is recorded. Resets backoff and state."""
+        self._score_window.append(score)
+        if self._best_score is None or len(self._score_window) >= 5:
+            self._best_score = score
         self._consecutive_non_improvements = 0
         self._current_interval = self._base_interval
         self._state = LoopState.ACTIVE
+        self._dormant_fired = False
         self._total_episodes += 1
 
     def record_non_improvement(self) -> None:
-        """Call when episode did not beat best. Advances backoff and may change state."""
+        """Called when episode did not produce a new best. Advances backoff."""
         self._consecutive_non_improvements += 1
         self._total_episodes += 1
         self._current_interval = min(
@@ -89,41 +204,58 @@ class BackoffScheduler:
             self._state = LoopState.COOLING
 
     def record_degradation(self) -> None:
-        """Call when watchdog detects score drop below threshold. Resets to ACTIVE."""
+        """
+        Called when degradation is detected.
+
+        Resets to ACTIVE without resetting the interval — resetting to
+        base_interval=1 would cause the optimizer to fire every episode,
+        cascading into repeated degradation and destabilising on-policy training.
+
+        Does NOT increment total_episodes: the episode was already counted by
+        the preceding record_improvement() / record_non_improvement() call.
+        """
+        self._state = LoopState.ACTIVE
+
+    def record_restart(self) -> None:
+        """
+        Called after DORMANT fires and PolicyManager has acted.
+        Gives the new policy variant a clean slate.
+        Does NOT reset best_score — the new variant must beat the existing best.
+        """
         self._consecutive_non_improvements = 0
         self._current_interval = self._base_interval
         self._state = LoopState.ACTIVE
+        self._dormant_fired = False
+        self._score_window.clear()
+
+    def record_score(self, score: float) -> None:
+        """Append score to window without triggering state change (off-policy path)."""
+        self._score_window.append(score)
 
     def check_degradation(self, score: float) -> bool:
         """
-        Returns True if score represents degradation relative to best known score.
-        Does NOT record anything — caller decides whether to act.
+        Threshold-based degradation check called by loop_controller.
 
-        Drop threshold is the larger of:
-          - relative: abs(best_score) * (1 - degradation_threshold)
-          - absolute: min_degradation_drop
+        Returns True when `score` has dropped significantly below the best
+        known score (by more than (1 - degradation_threshold) × |best|).
 
-        Taking the max prevents spurious watchdog triggers when best_score ≈ 0,
-        where the relative term collapses to near-zero and any noise fires this.
-
-        Works for positive scores (e.g. best=100, drop=5 → threshold=5.0)
-        and negative scores (e.g. best=-100, drop=5 → threshold=-105).
+        Works correctly for both positive and negative score regimes:
+            positive best=100, threshold=0.95 → fires when score < 95
+            negative best=-100, threshold=0.95 → fires when score < -105
         """
         if self._best_score is None:
             return False
-        relative_drop = abs(self._best_score) * (1.0 - self._degradation_threshold)
-        allowed_drop = max(relative_drop, self._min_degradation_drop)
+        allowed_drop = abs(self._best_score) * (1.0 - self._degradation_threshold)
         return score < self._best_score - allowed_drop
 
     def should_adapt(self, episode_count: int) -> bool:
-        """
-        Returns True if this episode should trigger an eval+tune cycle.
-        Uses episode_count modulo current_interval.
-        Always adapts on episode 0 (cold start).
-        """
         if episode_count == 0:
             return True
         return episode_count % self._current_interval == 0
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def current_state(self) -> LoopState:

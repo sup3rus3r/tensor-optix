@@ -17,7 +17,9 @@ from .core.meta_controller import MetaController, MetaAction
 from .pipeline.batch_pipeline import BatchPipeline
 from .pipeline.live_pipeline import LivePipeline
 from .optimizers.backoff_optimizer import BackoffOptimizer
+from .optimizers.momentum_optimizer import MomentumOptimizer
 from .optimizers.pbt_optimizer import PBTOptimizer
+from .optimizers.spsa_optimizer import SPSAOptimizer
 
 __all__ = [
     "EpisodeData", "EvalMetrics", "HyperparamSet", "PolicySnapshot", "LoopState",
@@ -26,7 +28,7 @@ __all__ = [
     "PolicyManager", "PolicyManagerCallback", "EnsembleAgent",
     "RegimeDetector", "MetaController", "MetaAction",
     "BatchPipeline", "LivePipeline",
-    "BackoffOptimizer", "PBTOptimizer",
+    "BackoffOptimizer", "MomentumOptimizer", "PBTOptimizer", "SPSAOptimizer",
 ]
 
 from .core.normalizers import RunningMeanStd, ObsNormalizer, RewardNormalizer
@@ -38,6 +40,12 @@ __all__ += [
     "compute_gae", "make_minibatches",
     "VectorBatchPipeline",
 ]
+
+from .orchestrator import TrialOrchestrator
+from .exploration.rnd import RNDPipeline
+from .core.replay_buffer import PrioritizedReplayBuffer
+from .core.diagnostic_controller import DiagnosticController
+__all__ += ["TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController"]
 
 try:
     from .optimizer import RLOptimizer

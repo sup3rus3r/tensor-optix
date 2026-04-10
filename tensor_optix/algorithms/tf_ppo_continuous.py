@@ -70,6 +70,16 @@ class TFGaussianPPOAgent(BaseAgent):
         gae_lambda, n_epochs, minibatch_size, max_grad_norm
     """
 
+    default_param_bounds = {
+        "learning_rate": (1e-4, 3e-3),
+        "gamma":         (0.95, 0.999),
+        "clip_ratio":    (0.1,  0.3),
+        "entropy_coef":  (0.001, 0.05),
+        # entropy_coef lo=0.001: continuous PPO std can collapse to zero when entropy_coef=0.
+        # gamma included: SPSA can adapt the discount horizon per-environment.
+    }
+    default_log_params = ["learning_rate"]
+
     def __init__(
         self,
         actor: tf.keras.Model,
@@ -283,6 +293,17 @@ class TFGaussianPPOAgent(BaseAgent):
             v.assign(lv)
         for v, lv in zip(self._critic.trainable_variables, loaded_critic.trainable_variables):
             v.assign(lv)
+
+    def average_weights(self, paths: list) -> None:
+        for net, fname in ((self._actor, "actor.keras"), (self._critic, "critic.keras")):
+            loaded = [tf.keras.models.load_model(os.path.join(p, fname)) for p in paths]
+            for v, *lvs in zip(net.trainable_variables, *[m.trainable_variables for m in loaded]):
+                v.assign(tf.reduce_mean(tf.stack([lv for lv in lvs], axis=0), axis=0))
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        for module in (self._actor, self._critic):
+            for v in module.trainable_variables:
+                v.assign(v * (1.0 + noise_scale * tf.random.normal(v.shape)))
 
     @staticmethod
     def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:

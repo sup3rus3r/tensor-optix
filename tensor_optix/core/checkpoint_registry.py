@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import uuid
 from typing import Optional, List
 from .types import PolicySnapshot, EvalMetrics, HyperparamSet
@@ -81,6 +82,52 @@ class CheckpointRegistry:
         self._best = snapshot
         return snapshot
 
+    def load_ensemble(self, agent, top_k: int = 3, score_band: float = 0.1) -> Optional[PolicySnapshot]:
+        """
+        Average the weights of the top-k checkpoints within a score band
+        of the best, then apply the averaged weights to the agent.
+
+        Only checkpoints whose score ≥ best_score × (1 - score_band) are
+        included. This prevents averaging across checkpoints from very
+        different training stages (e.g. pre/post collapse), which would
+        produce a broken policy.
+
+        Falls back to load_best() if fewer than 2 valid checkpoints exist
+        or if the agent does not implement average_weights().
+
+        Args:
+            top_k:       Maximum number of checkpoints to average (default 3).
+            score_band:  Maximum relative score drop allowed for inclusion
+                         (default 0.1 = within 10% of best score).
+
+        Returns the best snapshot (for metadata — the weights are the average).
+        """
+        manifest = self._load_manifest()
+        if len(manifest) < 2:
+            return self.load_best(agent)
+
+        best_score = max(e["primary_score"] for e in manifest)
+        threshold  = best_score * (1.0 - score_band) if best_score > 0 else best_score - abs(best_score) * score_band
+
+        candidates = [
+            e for e in manifest
+            if e["primary_score"] >= threshold
+        ]
+        candidates.sort(key=lambda e: e["primary_score"], reverse=True)
+        candidates = candidates[:top_k]
+
+        if len(candidates) < 2 or not hasattr(agent, "average_weights"):
+            return self.load_best(agent)
+
+        paths = [e["snapshot_dir"] + "/weights" for e in candidates]
+        agent.average_weights(paths)
+
+        # Return best snapshot for metadata purposes
+        best_entry = candidates[0]
+        if self._best is None or self._best.snapshot_id != best_entry["snapshot_id"]:
+            self._best = self._load_snapshot_from_dir(best_entry["snapshot_dir"])
+        return self._best
+
     def load_best(self, agent) -> Optional[PolicySnapshot]:
         """
         Restore agent weights from the best known snapshot.
@@ -115,7 +162,6 @@ class CheckpointRegistry:
         for entry in to_remove:
             snapshot_dir = entry["snapshot_dir"]
             if os.path.isdir(snapshot_dir):
-                import shutil
                 shutil.rmtree(snapshot_dir, ignore_errors=True)
 
         self._save_manifest(to_keep)

@@ -43,3 +43,16 @@ class BaseOptimizer(ABC):
 
     def on_plateau(self, metrics_history: List[EvalMetrics]) -> None:
         """Called when a plateau is detected. Override to react."""
+
+    @property
+    def is_probing(self) -> bool:
+        """
+        Returns True when the optimizer has just applied a probe perturbation
+        and is waiting to measure the effect. During this episode the score
+        drop (or gain) is caused by the probe itself — not a genuine policy
+        collapse — so LoopController suppresses degradation detection.
+
+        Default: False (no probing). Override in optimizers that use
+        finite-difference probing (BackoffOptimizer, SPSA, etc.).
+        """
+        return False

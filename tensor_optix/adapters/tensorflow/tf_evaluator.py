@@ -5,82 +5,66 @@ from tensor_optix.core.types import EpisodeData, EvalMetrics
 
 class TFEvaluator(BaseEvaluator):
     """
-    Default evaluator for TF-based RL agents.
+    Default evaluator for TensorFlow-based RL agents.
 
-    primary_score is a weighted combination of:
-    - mean_reward:         average reward over the episode
-    - reward_stability:    negative std of rewards (lower variance = better)
-    - episode_length_score: normalized episode length (domain-dependent, 0 by default)
+    primary_score = mean episode return across completed episodes in the window.
 
-    All weights are normalized so they sum to 1.0 internally.
+    A window typically contains multiple episode fragments (the env resets
+    mid-window). Using mean episode return gives the loop a stable, meaningful
+    signal that improves monotonically with policy quality — unlike per-step
+    mean reward which is confounded by episode length and always noisy, and
+    unlike mean_reward - std_reward which actively penalises high-reward
+    terminal events (e.g. +100 landing bonus in LunarLander).
 
-    Users should subclass and override score() for domain-specific evaluation
-    (e.g. Sharpe ratio for trading, success rate for robotics).
+    Falls back to mean per-step reward when no episode completes in the window
+    (e.g. very early training or very long episodes).
 
-    A full override option is available via primary_score_fn:
+    Usage:
+        evaluator = TFEvaluator()
+        # Custom scorer:
         evaluator = TFEvaluator(primary_score_fn=lambda ep, diag: sum(ep.rewards))
     """
 
-    def __init__(
-        self,
-        reward_weight: float = 1.0,
-        stability_weight: float = 1.0,
-        length_weight: float = 0.0,
-        primary_score_fn: callable = None,
-        max_episode_length: int = 1000,
-    ):
-        total = reward_weight + stability_weight + length_weight
-        if total <= 0:
-            raise ValueError("At least one weight must be positive")
-        self._reward_w = reward_weight / total
-        self._stability_w = stability_weight / total
-        self._length_w = length_weight / total
+    def __init__(self, primary_score_fn=None):
         self._primary_score_fn = primary_score_fn
-        self._max_episode_length = max_episode_length
 
     def score(self, episode_data: EpisodeData, train_diagnostics: dict) -> EvalMetrics:
         rewards = np.array(episode_data.rewards, dtype=np.float32)
+        # Use terminated OR truncated as episode boundary (same rationale as TorchEvaluator).
+        dones = episode_data.dones
 
         if self._primary_score_fn is not None:
             primary = float(self._primary_score_fn(episode_data, train_diagnostics))
-            metrics = {
-                "primary_score": primary,
-                "total_reward": float(rewards.sum()),
-                "mean_reward": float(rewards.mean()),
-                "episode_length": episode_data.length,
-            }
-            metrics.update({k: float(v) for k, v in train_diagnostics.items() if isinstance(v, (int, float))})
-            return EvalMetrics(
-                primary_score=primary,
-                metrics=metrics,
-                episode_id=episode_data.episode_id,
-            )
-
-        mean_reward = float(rewards.mean())
-        reward_std = float(rewards.std()) if len(rewards) > 1 else 0.0
-        reward_stability = -reward_std  # lower variance = higher stability score
-
-        episode_length_score = float(episode_data.length) / self._max_episode_length
-
-        primary_score = (
-            self._reward_w * mean_reward
-            + self._stability_w * reward_stability
-            + self._length_w * episode_length_score
-        )
+        else:
+            primary = self._mean_episode_return(rewards, dones)
 
         metrics = {
-            "primary_score": primary_score,
-            "mean_reward": mean_reward,
-            "total_reward": float(rewards.sum()),
-            "reward_std": reward_std,
-            "reward_stability": reward_stability,
+            "primary_score":  primary,
+            "total_reward":   float(rewards.sum()),
+            "mean_reward":    float(rewards.mean()),
+            "reward_std":     float(rewards.std()) if len(rewards) > 1 else 0.0,
             "episode_length": episode_data.length,
-            "episode_length_score": episode_length_score,
         }
-        metrics.update({k: float(v) for k, v in train_diagnostics.items() if isinstance(v, (int, float))})
+        metrics.update({k: float(v) for k, v in train_diagnostics.items()
+                        if isinstance(v, (int, float))})
+        return EvalMetrics(primary_score=primary, metrics=metrics,
+                           episode_id=episode_data.episode_id)
 
-        return EvalMetrics(
-            primary_score=primary_score,
-            metrics=metrics,
-            episode_id=episode_data.episode_id,
-        )
+    @staticmethod
+    def _mean_episode_return(rewards: np.ndarray, dones: list) -> float:
+        """
+        Compute mean return of episodes that completed in this window.
+        dones should be terminated OR truncated — both signal an episode
+        boundary. Falls back to mean per-step reward only if the window
+        contains a single incomplete episode (very long envs, early training).
+        """
+        episode_returns = []
+        current = 0.0
+        for r, done in zip(rewards, dones):
+            current += float(r)
+            if done:
+                episode_returns.append(current)
+                current = 0.0
+        if episode_returns:
+            return float(np.mean(episode_returns))
+        return float(rewards.mean())

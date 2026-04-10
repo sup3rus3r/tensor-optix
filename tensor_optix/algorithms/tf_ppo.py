@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
@@ -48,6 +49,17 @@ class TFPPOAgent(BaseAgent):
         learning_rate, clip_ratio, entropy_coef, vf_coef, gamma,
         gae_lambda, n_epochs, minibatch_size, max_grad_norm
     """
+
+    default_param_bounds = {
+        "learning_rate": (1e-4, 3e-3),
+        "gamma":         (0.95, 0.999),
+        "clip_ratio":    (0.1,  0.3),
+        "entropy_coef":  (0.001, 0.05),
+        # entropy_coef lo=0.001: prevents SPSA from zeroing entropy and collapsing the policy.
+        # gamma included: PPO advantage estimation is sensitive to discount horizon;
+        # SPSA can adapt it per-environment consistently with DQN/SAC.
+    }
+    default_log_params = ["learning_rate"]
 
     def __init__(
         self,
@@ -222,19 +234,30 @@ class TFPPOAgent(BaseAgent):
             self._optimizer.learning_rate.assign(float(hyperparams.params["learning_rate"]))
 
     def save_weights(self, path: str) -> None:
-        import os
         os.makedirs(path, exist_ok=True)
         self._actor.save(os.path.join(path, "actor.keras"))
         self._critic.save(os.path.join(path, "critic.keras"))
 
     def load_weights(self, path: str) -> None:
-        import os
         loaded_actor  = tf.keras.models.load_model(os.path.join(path, "actor.keras"))
         loaded_critic = tf.keras.models.load_model(os.path.join(path, "critic.keras"))
         for v, lv in zip(self._actor.trainable_variables,  loaded_actor.trainable_variables):
             v.assign(lv)
         for v, lv in zip(self._critic.trainable_variables, loaded_critic.trainable_variables):
             v.assign(lv)
+
+    def average_weights(self, paths: list) -> None:
+        import numpy as np
+        n = len(paths)
+        for net, fname in ((self._actor, "actor.keras"), (self._critic, "critic.keras")):
+            loaded = [tf.keras.models.load_model(os.path.join(p, fname)) for p in paths]
+            for v, *lvs in zip(net.trainable_variables, *[m.trainable_variables for m in loaded]):
+                v.assign(tf.reduce_mean(tf.stack([lv for lv in lvs], axis=0), axis=0))
+
+    def perturb_weights(self, noise_scale: float) -> None:
+        for module in (self._actor, self._critic):
+            for v in module.trainable_variables:
+                v.assign(v * (1.0 + noise_scale * tf.random.normal(v.shape)))
 
     # ------------------------------------------------------------------
     # Internal helpers

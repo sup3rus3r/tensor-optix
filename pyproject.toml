@@ -15,9 +15,11 @@ authors = [
 
 dependencies = [
     "tensorflow>=2.18.0",
-    "gymnasium>=1.0.0",
+    "gymnasium[box2d]>=1.0.0",
     "numpy>=1.24.0",
     "nvidia-cuda-nvcc-cu12",
+    "matplotlib>=3.10.8",
+    "optuna>=4.8.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,7 @@ all = [
     "gymnasium[atari]>=1.0.0",
     "gymnasium[mujoco]>=1.0.0",
     "ale-py>=0.8",
+    "optuna>=3.0.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -61,3 +64,8 @@ testpaths = ["tests"]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
