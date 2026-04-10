@@ -392,12 +392,13 @@ class LoopController:
         that immediately drag the policy back down. Their buffers naturally
         smooth through degradations without rollback.
         """
-        logger.warning(
-            "Episode %d: DEGRADATION detected score=%.4f best=%.4f",
-            episode_id,
-            eval_metrics.primary_score,
-            self._scheduler.best_score or 0.0,
-        )
+        if self._verbose:
+            logger.debug(
+                "Episode %d: DEGRADATION detected score=%.4f best=%.4f",
+                episode_id,
+                eval_metrics.primary_score,
+                self._scheduler.best_score or 0.0,
+            )
         agent_supports_rollback = getattr(self._agent, "is_on_policy", True)
         if (
             self._rollback_on_degradation

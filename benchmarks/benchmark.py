@@ -3,7 +3,7 @@
 tensor-optix Real-World Benchmark
 ==================================
 Compares tensor-optix's autonomous training loop against an equivalent
-vanilla fixed-budget loop across four distinct problem types:
+baseline loop across four distinct problem types:
 
   1. Acrobot-v1                  - DQN, discrete, sparse rewards — natural DQN use case
   2. LunarLander-v3              - PPO, discrete, risk of local-optima collapse
@@ -12,10 +12,10 @@ vanilla fixed-budget loop across four distinct problem types:
   5. BipedalWalker-v3            - SAC, continuous, complex locomotion (24-dim obs,
                                    4-dim actions, genuinely hard — reference benchmark)
 
-The vanilla loop uses the exact same algorithm, architecture, and starting
+The baseline loop uses the exact same algorithm, architecture, and starting
 hyperparameters as tensor-optix — only the loop infrastructure differs.
 
-  Vanilla:      fixed step budget, no convergence detection, no auto-tuning
+  Baseline: fixed step budget, no convergence detection, no auto-tuning
   tensor-optix: autonomous loop, BackoffOptimizer, PolicyManager (rollback +
                 policy spawning), stops when spawn budget exhausted
 
@@ -212,7 +212,7 @@ def _collect_window(env, agent, window_size: int, carry_obs, needs_reset: bool):
 
 def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
     """
-    Fixed-budget PPO. Same agent, same arch, same hyperparams as tensor-optix.
+    Baseline PPO. Same agent, same arch, same hyperparams as tensor-optix.
     Runs until budget exhausted with no early stopping or hyperparam changes.
     """
     torch.manual_seed(seed)
@@ -252,7 +252,7 @@ def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
             score = cfg["eval_fn"](actor, cfg["env_id"], seed=seed + 10_000)
             history.append((total_steps, score))
             print(
-                f"  [vanilla   | {cfg['label']:16s} | seed={seed}]"
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
                 f"  steps={total_steps:>7,d}  score={score:>8.1f}",
                 flush=True,
             )
@@ -262,7 +262,7 @@ def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
     env.close()
     final = history[-1][1] if history else 0.0
     return {
-        "method": "Vanilla Loop", "seed": seed,
+        "method": "Baseline", "seed": seed,
         "total_steps": total_steps, "steps_to_solve": steps_to_solve,
         "final_score": final, "elapsed": time.perf_counter() - t0,
         "history": history, "solved": steps_to_solve is not None,
@@ -270,7 +270,7 @@ def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
 
 
 def train_vanilla_sac(cfg: dict, seed: int) -> dict:
-    """Fixed-budget SAC - same structure as PPO vanilla."""
+    """Baseline SAC - same structure as PPO vanilla."""
     torch.manual_seed(seed)
     np.random.seed(seed)
     random_seed = seed
@@ -341,7 +341,7 @@ def train_vanilla_sac(cfg: dict, seed: int) -> dict:
                              seed=seed + 10_000)
             history.append((total_steps, score))
             print(
-                f"  [vanilla   | {cfg['label']:16s} | seed={seed}]"
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
                 f"  steps={total_steps:>7,d}  score={score:>8.1f}",
                 flush=True,
             )
@@ -351,7 +351,7 @@ def train_vanilla_sac(cfg: dict, seed: int) -> dict:
     env.close()
     final = history[-1][1] if history else 0.0
     return {
-        "method": "Vanilla Loop", "seed": seed,
+        "method": "Baseline", "seed": seed,
         "total_steps": total_steps, "steps_to_solve": steps_to_solve,
         "final_score": final, "elapsed": time.perf_counter() - t0,
         "history": history, "solved": steps_to_solve is not None,
@@ -360,7 +360,7 @@ def train_vanilla_sac(cfg: dict, seed: int) -> dict:
 
 def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
     """
-    Fixed-budget DQN. Same agent, same arch, same hyperparams as tensor-optix.
+    Baseline DQN. Same agent, same arch, same hyperparams as tensor-optix.
     Off-policy: windows of experience feed the replay buffer continuously.
     """
     torch.manual_seed(seed)
@@ -402,7 +402,7 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
             score = cfg["eval_fn"](q_net, cfg["env_id"], seed=seed + 10_000)
             history.append((total_steps, score))
             print(
-                f"  [vanilla   | {cfg['label']:16s} | seed={seed}]"
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
                 f"  steps={total_steps:>7,d}  score={score:>8.1f}",
                 flush=True,
             )
@@ -412,7 +412,7 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
     env.close()
     final = history[-1][1] if history else 0.0
     return {
-        "method": "Vanilla Loop", "seed": seed,
+        "method": "Baseline", "seed": seed,
         "total_steps": total_steps, "steps_to_solve": steps_to_solve,
         "final_score": final, "elapsed": time.perf_counter() - t0,
         "history": history, "solved": steps_to_solve is not None,
@@ -928,7 +928,7 @@ def print_table(cfg: dict, vanilla: list[dict], optix: list[dict]) -> None:
     print(f"\n{sep}")
     print(f"  {cfg['label']}   |   {cfg['algo']}   |   {n} seed{'s' if n > 1 else ''}")
     print(sep)
-    print(f"  {'Metric':<28} {'Vanilla Loop':>16}  {'tensor-optix':>16}  {'D':>5}")
+    print(f"  {'Metric':<28} {'Baseline':>16}  {'tensor-optix':>16}  {'D':>5}")
     print(f"  {line}")
     print(f"  {'Steps to reach threshold':<28} {_fmt_k(v_solve):>16}  {_fmt_k(o_solve):>16}  {_delta(v_solve,o_solve):>5}")
     print(f"  {'Total steps used':<28} {_fmt_k(v_total):>16}  {_fmt_k(o_total):>16}  {_delta(v_total,o_total):>5}")
@@ -944,7 +944,7 @@ def print_table(cfg: dict, vanilla: list[dict], optix: list[dict]) -> None:
     if saved > 0:
         pct = saved / v_total_mean * 100
         print(f"\n  -> tensor-optix used {pct:.0f}% fewer steps ({saved/1000:.0f}k saved per run).")
-        print(f"    The vanilla loop kept running after the task was already solved.")
+        print(f"    The baseline loop kept running after the task was already solved.")
 
     o_s = [v for v in o_solve if v is not None]
     v_s = [v for v in v_solve if v is not None]
@@ -1034,10 +1034,9 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
             v_grid  = v_grids[0]
             v_mat   = np.vstack(v_scores)
             v_mean  = v_mat.mean(axis=0)
-            v_std   = v_mat.std(axis=0)
-            ax.plot(v_grid / 1000, v_mean, color=VANILLA_COLOR, lw=2, label="Vanilla Loop")
-            ax.fill_between(v_grid / 1000, v_mean - v_std, v_mean + v_std,
-                            color=VANILLA_COLOR, alpha=0.2)
+            for grid, scores in zip(v_grids, v_scores):
+                ax.plot(grid / 1000, scores, color=VANILLA_COLOR, lw=0.8, alpha=0.35)
+            ax.plot(v_grid / 1000, v_mean, color=VANILLA_COLOR, lw=2, label="Baseline")
 
         # tensor-optix
         o_grids, o_scores = zip(*[
@@ -1046,10 +1045,9 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
         o_grid = o_grids[0]
         o_mat  = np.vstack(o_scores)
         o_mean = o_mat.mean(axis=0)
-        o_std  = o_mat.std(axis=0)
+        for grid, scores in zip(o_grids, o_scores):
+            ax.plot(grid / 1000, scores, color=OPTIX_COLOR, lw=0.8, alpha=0.35)
         ax.plot(o_grid / 1000, o_mean, color=OPTIX_COLOR, lw=2, label="tensor-optix")
-        ax.fill_between(o_grid / 1000, o_mean - o_std, o_mean + o_std,
-                        color=OPTIX_COLOR, alpha=0.2)
 
         # Mark where tensor-optix stopped (mean convergence point)
         o_totals = [r["total_steps"] for r in optix]
@@ -1088,7 +1086,7 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
             v_vals = [np.mean(v_step_totals) / 1000, np.mean([r["final_score"] for r in vanilla])]
             v_errs = [np.std(v_step_totals) / 1000,  np.std([r["final_score"] for r in vanilla])]
             ax2.bar(x - w/2, v_vals, w, yerr=v_errs, capsize=4,
-                    color=VANILLA_COLOR, alpha=0.85, label="Vanilla Loop",
+                    color=VANILLA_COLOR, alpha=0.85, label="Baseline",
                     error_kw={"ecolor": "#abb2bf", "linewidth": 1})
         ax2.bar(x + w/2, o_vals, w, yerr=o_errs, capsize=4,
                 color=OPTIX_COLOR,   alpha=0.85, label="tensor-optix",
@@ -1113,8 +1111,7 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
 
     # Main title
     fig.suptitle(
-        "tensor-optix vs. Vanilla Training Loop\n"
-        "Same algorithm  |  Same architecture  |  Same starting hyperparams",
+        "tensor-optix vs. Fixed Training Loop",
         fontsize=13, fontweight="bold", color="#e5c07b", y=1.01,
     )
 
@@ -1145,7 +1142,7 @@ def run(envs: list[str], seeds: list[int], plot: bool = True, optix_only: bool =
 
         for seed in seeds:
             if not optix_only:
-                print(f"\n-- Vanilla  seed={seed} " + "-" * 50)
+                print(f"\n-- Baseline  seed={seed} " + "-" * 46)
                 vanilla_runs.append(cfg["train_vanilla"](cfg, seed))
 
             print(f"\n-- tensor-optix  seed={seed} " + "-" * 46)
@@ -1174,7 +1171,7 @@ def run(envs: list[str], seeds: list[int], plot: bool = True, optix_only: bool =
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="tensor-optix vs Vanilla training loop benchmark",
+        description="tensor-optix vs Baseline training loop benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -1195,7 +1192,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--optix-only", action="store_true",
-        help="Run tensor-optix training only (skip vanilla)",
+        help="Run tensor-optix training only (skip baseline)",
     )
     parser.add_argument(
         "--verbose", action="store_true",
