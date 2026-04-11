@@ -291,6 +291,16 @@ class TFPPOAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def reset_cache(self) -> None:
+        """
+        Discard all entries in the rollout cache without learning from them.
+        Called by LoopController after a val-pipeline window is collected, so
+        that val-rollout entries never bleed into the next training learn() call.
+        """
+        self._cache_obs.clear()
+        self._cache_log_probs.clear()
+        self._cache_values.clear()
+
     def _clear_cache(self, T: int) -> None:
         del self._cache_obs[:T]
         del self._cache_log_probs[:T]

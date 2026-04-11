@@ -319,6 +319,12 @@ class TFGaussianPPOAgent(BaseAgent):
             for v in module.trainable_variables:
                 v.assign(v * (1.0 + noise_scale * tf.random.normal(v.shape)))
 
+    def reset_cache(self) -> None:
+        """Discard all rollout cache entries without learning from them."""
+        self._cache_obs.clear()
+        self._cache_log_probs.clear()
+        self._cache_values.clear()
+
     @staticmethod
     def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:
         var_returns = float(np.var(returns))

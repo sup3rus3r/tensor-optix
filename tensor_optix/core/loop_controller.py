@@ -227,6 +227,11 @@ class LoopController:
                     val_episode = next(self._val_gen)
                     val_episode.episode_id = episode_id
                     val_metrics = self._evaluator.score_validation(val_episode)
+                    # Val pipeline calls agent.act() to collect rollouts, which
+                    # populates the on-policy rollout cache. That data must never
+                    # be consumed by the next training learn() call. Clear it now.
+                    if hasattr(self._agent, "reset_cache"):
+                        self._agent.reset_cache()
                     eval_metrics = self._evaluator.combine(train_metrics, val_metrics)
                     eval_metrics.episode_id = episode_id
                     logger.debug(
