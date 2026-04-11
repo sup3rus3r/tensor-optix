@@ -22,11 +22,24 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 # TensorFlow (default — includes PPO, DQN, SAC for TF)
 pip install tensor-optix
 
-# PyTorch support
+# PyTorch support (CUDA wheel must be installed separately — see below)
 pip install tensor-optix[torch]
 
 # Both + Atari + MuJoCo
 pip install tensor-optix[all]
+
+# Box2D environments (requires swig: apt install swig / brew install swig)
+pip install tensor-optix[box2d]
+
+# CUDA compiler tools (NVIDIA GPU only)
+pip install tensor-optix[cuda]
+```
+
+**PyTorch + CUDA:** `pip install tensor-optix[torch]` installs the CPU build of PyTorch from PyPI. For a CUDA-enabled build, install PyTorch first from the [official index](https://pytorch.org/get-started/locally/) before installing tensor-optix:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install tensor-optix
 ```
 
 **Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.

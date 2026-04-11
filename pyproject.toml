@@ -14,20 +14,24 @@ authors = [
 ]
 
 dependencies = [
-    "tensorflow[and-cuda]>=2.18.0",
-    "gymnasium[box2d]>=1.0.0",
+    "tensorflow>=2.18.0",
+    "gymnasium>=1.0.0",
     "numpy>=1.24.0",
-    "nvidia-cuda-nvcc-cu12",
-    "matplotlib>=3.10.8",
-    "optuna>=4.8.0",
-    "torch>=2.0.0",
-    "torchvision",
-    "torchaudio",
+    "matplotlib>=3.7.0",
+    "optuna>=3.0.0",
 ]
 
 [project.optional-dependencies]
 torch = [
     "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
+]
+cuda = [
+    "nvidia-cuda-nvcc-cu12",
+]
+box2d = [
+    "gymnasium[box2d]>=1.0.0",
 ]
 atari = [
     "gymnasium[atari]>=1.0.0",
@@ -38,10 +42,11 @@ mujoco = [
 ]
 all = [
     "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
     "gymnasium[atari]>=1.0.0",
     "gymnasium[mujoco]>=1.0.0",
     "ale-py>=0.8",
-    "optuna>=3.0.0",
 ]
 dev = [
     "pytest>=7.0",
