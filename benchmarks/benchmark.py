@@ -3,11 +3,11 @@
 tensor-optix Real-World Benchmark
 ==================================
 Compares tensor-optix's autonomous training loop against an equivalent
-baseline loop across four distinct problem types:
+baseline loop across five distinct problem types:
 
-  1. Acrobot-v1                  - DQN, discrete, sparse rewards — natural DQN use case
+  1. CartPole-v1                 - DQN, discrete, classic balance task
   2. LunarLander-v3              - PPO, discrete, risk of local-optima collapse
-  3. Acrobot-v1 (PPO)            - PPO, discrete, sparse rewards, hard exploration
+  3. Acrobot-v1                  - PPO, discrete, sparse rewards, hard exploration
   4. LunarLanderContinuous-v3    - SAC, continuous, same domain different paradigm
   5. BipedalWalker-v3            - SAC, continuous, complex locomotion (24-dim obs,
                                    4-dim actions, genuinely hard — reference benchmark)
@@ -20,8 +20,8 @@ hyperparameters as tensor-optix — only the loop infrastructure differs.
                 policy spawning), stops when spawn budget exhausted
 
 Usage:
-    uv run python benchmarks/benchmark.py                    # all 4 envs, 2 seeds
-    uv run python benchmarks/benchmark.py --envs lunarlander acrobot
+    uv run python benchmarks/benchmark.py                    # all 5 envs, 3 seeds
+    uv run python benchmarks/benchmark.py --envs cartpole lunarlander
     uv run python benchmarks/benchmark.py --seeds 0 1 2
 """
 
@@ -87,7 +87,6 @@ def build_ppo_nets(obs_dim: int, n_actions: int, hidden: int = 64):
 
 
 def build_dqn_net(obs_dim: int, n_actions: int, hidden: int = 128) -> nn.Sequential:
-    """Q-network for DQN. ReLU activations — standard for value functions."""
     return nn.Sequential(
         nn.Linear(obs_dim, hidden), nn.ReLU(),
         nn.Linear(hidden, hidden),  nn.ReLU(),
@@ -117,7 +116,7 @@ def _net_device(net: nn.Module):
 
 
 def eval_dqn(q_net: nn.Module, env_id: str, n_eps: int = 10, seed: int = 9000) -> float:
-    """Greedy (argmax) evaluation of a DQN Q-network. Cache-safe."""
+    """Greedy (argmax) evaluation of a DQN Q-network."""
     device = _net_device(q_net)
     env = gym.make(env_id)
     totals = []
@@ -228,6 +227,7 @@ def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
     agent = TorchPPOAgent(
         actor=actor, critic=critic, optimizer=opt,
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+        device="cpu",
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -292,6 +292,7 @@ def train_vanilla_sac(cfg: dict, seed: int) -> dict:
         ),
         alpha_optimizer=torch.optim.Adam([log_alpha], lr=cfg["lr"]),
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+        device="auto",
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -359,22 +360,18 @@ def train_vanilla_sac(cfg: dict, seed: int) -> dict:
 
 
 def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
-    """
-    Baseline DQN. Same agent, same arch, same hyperparams as tensor-optix.
-    Off-policy: windows of experience feed the replay buffer continuously.
-    """
+    """Baseline DQN — same agent, arch, and hyperparams as tensor-optix, no loop features."""
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     env = gym.make(cfg["env_id"])
-    obs_dim   = env.observation_space.shape[0]
-    n_actions = env.action_space.n
-
+    obs_dim, n_actions = env.observation_space.shape[0], env.action_space.n
     q_net = build_dqn_net(obs_dim, n_actions)
     agent = TorchDQNAgent(
         q_network=q_net, n_actions=n_actions,
         optimizer=torch.optim.Adam(q_net.parameters(), lr=cfg["lr"]),
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+        device="cpu",
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -385,9 +382,6 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
     t0 = time.perf_counter()
 
     while total_steps < cfg["max_steps"]:
-        # Collect window. DQN uses obs[t] and obs[t+1] pairs internally.
-        # BatchPipeline gives window_size obs; agent processes window_size-1
-        # transitions (last step's next_obs is carry_obs from next window).
         ep_data, carry_obs = _collect_window(
             env, agent, cfg["window_size"], carry_obs, needs_reset=False
         )
@@ -416,6 +410,94 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
         "total_steps": total_steps, "steps_to_solve": steps_to_solve,
         "final_score": final, "elapsed": time.perf_counter() - t0,
         "history": history, "solved": steps_to_solve is not None,
+    }
+
+
+def train_optix_dqn(cfg: dict, seed: int, verbose: bool = False, verbose_log_file: Optional[str] = None) -> dict:
+    """
+    tensor-optix autonomous DQN:
+      - SPSA: online adaptation (learning_rate, gamma)
+      - Exponential-backoff convergence detection
+      - PolicyManager: rollback + policy spawning (max_spawns=3)
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env_tmp = gym.make(cfg["env_id"])
+    obs_dim, n_actions = env_tmp.observation_space.shape[0], env_tmp.action_space.n
+    env_tmp.close()
+
+    ckpt_dir = f"./benchmarks/.ckpts/dqn_{cfg['key']}_{seed}"
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    pm_state: dict = {}
+    tracker_holder: dict = {}
+
+    def make_agent(params=None):
+        hp = {**cfg["hp"], **(params or {})}
+        q = build_dqn_net(obs_dim, n_actions)
+        return TorchDQNAgent(
+            q_network=q, n_actions=n_actions,
+            optimizer=torch.optim.Adam(q.parameters(), lr=hp.get("learning_rate", cfg["lr"])),
+            hyperparams=HyperparamSet(params=hp, episode_id=0),
+            device="cpu",
+        )
+
+    t0 = time.perf_counter()
+    agent = make_agent()
+    registry = CheckpointRegistry(ckpt_dir)
+    pm = PolicyManager(registry, max_spawns=3)
+    pm_cb = pm.as_callback(agent, agent_factory=make_agent)
+    tracker = _Tracker(cfg=cfg, actor=agent._q, seed=seed)
+    pm_state.update({"pm_cb": pm_cb, "q_net": agent._q})
+    tracker_holder["tracker"] = tracker
+
+    env = gym.make(cfg["env_id"])
+    pipeline = BatchPipeline(env=env, agent=agent, window_size=cfg["window_size"])
+
+    rl_opt = RLOptimizer(
+        agent=agent,
+        pipeline=pipeline,
+        evaluator=TorchEvaluator(),
+        optimizer=SPSAOptimizer(param_bounds={
+            "learning_rate": (1e-4, 1e-3),
+            "gamma":         (0.95, 0.999),
+        }, log_params=["learning_rate"], warmup_episodes=30),
+        checkpoint_dir=ckpt_dir,
+        max_episodes=cfg["max_steps"] // cfg["window_size"],
+        rollback_on_degradation=True,
+        max_interval_episodes=10,
+        dormant_threshold=10,
+        min_episodes_before_dormant=60,
+        checkpoint_score_fn=lambda a: cfg["eval_fn"](pm_state.get("q_net", a._q), cfg["env_id"], seed=seed + 10_000),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
+        verbose=verbose,
+        verbose_log_file=verbose_log_file,
+    )
+    pm_cb.set_stop_fn(rl_opt.stop)
+    rl_opt.add_callback(tracker)
+    rl_opt.add_callback(pm_cb)
+    rl_opt.run()
+
+    tracker = tracker_holder["tracker"]
+    q_net   = pm_state["q_net"]
+    final_score = cfg["eval_fn"](q_net, cfg["env_id"], seed=seed + 10_000)
+    tracker.history.append((tracker.total_steps, final_score))
+    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
+        tracker.steps_to_solve = tracker.total_steps
+    print(
+        f"  [optix     | {cfg['label']:16s} | seed={seed}]"
+        f"  steps={tracker.total_steps:>7,d}  score={final_score:>8.1f}  [final]",
+        flush=True,
+    )
+
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    return {
+        "method": "tensor-optix", "seed": seed,
+        "total_steps": tracker.total_steps,
+        "steps_to_solve": tracker.steps_to_solve,
+        "final_score": final_score, "elapsed": time.perf_counter() - t0,
+        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
     }
 
 
@@ -489,6 +571,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
                 lr=params.get("learning_rate", cfg["lr"]),
             ),
             hyperparams=HyperparamSet(params=merged, episode_id=0),
+            device="cpu",
         )
 
     def pipeline_factory():
@@ -498,6 +581,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             actor=a, critic=c,
             optimizer=torch.optim.Adam(list(a.parameters()) + list(c.parameters()), lr=cfg["lr"]),
             hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+            device="cpu",
         )
         return BatchPipeline(env=e, agent=ag, window_size=cfg["window_size"])
 
@@ -535,7 +619,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             "learning_rate": (1e-4, 3e-3),
             "clip_ratio":    (0.1,  0.3),
             "entropy_coef":  (0.0,  0.05),
-        }, log_params=["learning_rate"]),
+        }, log_params=["learning_rate"], warmup_episodes=40),
         checkpoint_dir=ckpt_dir,
         max_episodes=cfg["max_steps"] // cfg["window_size"],
         rollback_on_degradation=True,
@@ -543,6 +627,8 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         max_interval_episodes=8,
         min_episodes_before_dormant=50,
         checkpoint_score_fn=lambda agent: cfg["eval_fn"](pm_state.get("actor", agent._actor), cfg["env_id"], seed=seed + 10_000),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
         verbose=verbose,
         verbose_log_file=verbose_log_file,
     )
@@ -610,6 +696,7 @@ def train_optix_sac(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             critic_optimizer=torch.optim.Adam(list(c1.parameters()) + list(c2.parameters()), lr=lr),
             alpha_optimizer=torch.optim.Adam([la], lr=lr),
             hyperparams=HyperparamSet(params=hp, episode_id=0),
+            device="auto",
         )
 
     t0 = time.perf_counter()
@@ -633,13 +720,15 @@ def train_optix_sac(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             "learning_rate": (1e-4, 3e-3),
             "gamma":         (0.97, 0.999),
             "tau":           (1e-3, 1e-1),
-        }, log_params=["learning_rate", "tau"]),
+        }, log_params=["learning_rate", "tau"], warmup_episodes=30),
         checkpoint_dir=ckpt_dir,
         max_episodes=cfg["max_steps"] // cfg["window_size"],
         rollback_on_degradation=True,
         max_interval_episodes=8,
         dormant_threshold=8,  # recover faster from off-policy collapse
         checkpoint_score_fn=lambda a: eval_sac(pm_state.get("actor", a._actor), cfg["env_id"], action_scale, seed=seed + 10_000),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
         verbose=verbose,
         verbose_log_file=verbose_log_file,
     )
@@ -651,98 +740,6 @@ def train_optix_sac(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
     tracker = tracker_holder["tracker"]
     actor   = pm_state["actor"]
     final_score = eval_sac(actor, cfg["env_id"], action_scale, seed=seed + 10_000)
-    tracker.history.append((tracker.total_steps, final_score))
-    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
-        tracker.steps_to_solve = tracker.total_steps
-    print(
-        f"  [optix     | {cfg['label']:16s} | seed={seed}]"
-        f"  steps={tracker.total_steps:>7,d}  score={final_score:>8.1f}  [final]",
-        flush=True,
-    )
-
-    shutil.rmtree(ckpt_dir, ignore_errors=True)
-    return {
-        "method": "tensor-optix", "seed": seed,
-        "total_steps": tracker.total_steps,
-        "steps_to_solve": tracker.steps_to_solve,
-        "final_score": final_score, "elapsed": time.perf_counter() - t0,
-        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
-    }
-
-
-def train_optix_dqn(cfg: dict, seed: int, verbose: bool = False, verbose_log_file: Optional[str] = None) -> dict:
-    """
-    tensor-optix autonomous DQN:
-      - No TrialOrchestrator: DQN needs 150k+ steps before lr performance
-        differentiates. Short trials give TPE no signal — it picks randomly
-        and consistently lands near the lr floor, causing the full run to
-        stall at 9.2 for the entire budget. cfg["hp"] defaults are well-tuned.
-      - SPSA: online adaptation (learning_rate, gamma, epsilon_decay)
-      - Exponential-backoff convergence detection (ACTIVE -> COOLING -> DORMANT)
-      - PolicyManager: rollback + policy spawning (max_spawns=3)
-    """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
-    env_tmp = gym.make(cfg["env_id"])
-    obs_dim   = env_tmp.observation_space.shape[0]
-    n_actions = env_tmp.action_space.n
-    env_tmp.close()
-
-    import shutil
-    ckpt_dir = f"./benchmarks/.ckpts/dqn_{cfg['key']}_{seed}"
-    shutil.rmtree(ckpt_dir, ignore_errors=True)  # fresh start — no stale checkpoint pollution
-    pm_state: dict = {}
-    tracker_holder: dict = {}
-
-    def make_agent(params=None):
-        hp = {**cfg["hp"], **(params or {})}
-        q = build_dqn_net(obs_dim, n_actions)
-        return TorchDQNAgent(
-            q_network=q, n_actions=n_actions,
-            optimizer=torch.optim.Adam(q.parameters(), lr=hp.get("learning_rate", cfg["lr"])),
-            hyperparams=HyperparamSet(params=hp, episode_id=0),
-        )
-
-    t0 = time.perf_counter()
-    agent = make_agent()
-    registry = CheckpointRegistry(ckpt_dir)
-    pm = PolicyManager(registry, max_spawns=3)
-    pm_cb = pm.as_callback(agent, agent_factory=make_agent)
-    tracker = _Tracker(cfg=cfg, actor=agent._q, seed=seed)
-    pm_state.update({"pm_cb": pm_cb, "q_net": agent._q})
-    tracker_holder["tracker"] = tracker
-
-    env = gym.make(cfg["env_id"])
-    pipeline = BatchPipeline(env=env, agent=agent, window_size=cfg["window_size"])
-
-    rl_opt = RLOptimizer(
-        agent=agent,
-        pipeline=pipeline,
-        evaluator=TorchEvaluator(),
-        optimizer=SPSAOptimizer(param_bounds={
-            "learning_rate": (1e-4, 1e-3),
-            "gamma":         (0.95, 0.999),
-        }, log_params=["learning_rate"]),
-        checkpoint_dir=ckpt_dir,
-        max_episodes=cfg["max_steps"] // cfg["window_size"],
-        rollback_on_degradation=True,
-        max_interval_episodes=8,
-        dormant_threshold=8,
-        min_episodes_before_dormant=60,  # epsilon_decay=0.95 reaches floor at window~58; don't quit before then
-        checkpoint_score_fn=lambda a: cfg["eval_fn"](pm_state.get("q_net", a._q), cfg["env_id"], seed=seed + 10_000),
-        diag_min_episodes=50,  # DQN early losses are noisy; don't act on DIAG until buffer is warm
-        verbose=verbose,
-        verbose_log_file=verbose_log_file,
-    )
-    pm_cb.set_stop_fn(rl_opt.stop)
-    rl_opt.add_callback(tracker)
-    rl_opt.add_callback(pm_cb)
-    rl_opt.run()
-
-    tracker = tracker_holder["tracker"]
-    q_net   = pm_state["q_net"]
-    final_score = cfg["eval_fn"](q_net, cfg["env_id"], seed=seed + 10_000)
     tracker.history.append((tracker.total_steps, final_score))
     if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
         tracker.steps_to_solve = tracker.total_steps
@@ -776,36 +773,32 @@ SAC_HP = {
     "batch_size": 256, "updates_per_step": 1, "replay_capacity": 100_000,
 }
 DQN_HP = {
-    # epsilon_decay=0.95 per window (512 steps): hits epsilon_min=0.01
-    # after ~85 windows (~43K steps). DQN starts exploiting at 43K steps,
-    # leaving the remainder for greedy learning within the 500K budget.
-    "learning_rate":      5e-4,
+    "learning_rate":      1e-3,
     "gamma":              0.99,
     "epsilon":            1.0,
-    "epsilon_min":        0.01,
-    "epsilon_decay":      0.95,
+    "epsilon_min":        0.05,
+    "epsilon_decay":      0.995,
     "batch_size":         64,
-    "target_update_freq": 25,
-    "replay_capacity":    20_000,
+    "target_update_freq": 10,
+    "replay_capacity":    10_000,
 }
 
 ENV_CONFIGS = {
     "cartpole": {
-        # CartPole-v1 with DQN — demonstrates framework is algorithm-agnostic
-        # (off-policy, experience replay, epsilon-greedy). DQN learns CartPole
-        # but with noisy oscillating scores — a good stress test for the loop.
-        # Solve threshold: 475 (Gymnasium standard).
+        # CartPole-v1 with DQN — classic discrete control benchmark.
+        # The agent must balance a pole on a cart. Solve threshold: 475.
+        # DQN with replay buffer handles the short episode structure well.
         "key":             "cartpole",
         "label":           "CartPole-v1",
         "env_id":          "CartPole-v1",
-        "algo":            "DQN (discrete, off-policy)",
+        "algo":            "DQN (discrete)",
         "solve_threshold":  475.0,
-        "max_steps":        500_000,
+        "max_steps":        200_000,
         "window_size":      512,
-        "eval_every":       10_000,
+        "eval_every":       5_000,
         "lr":               1e-3,
         "hp":               DQN_HP,
-        "eval_fn": lambda net, env_id, seed=9000: eval_dqn(net, env_id, seed=seed),
+        "eval_fn":          lambda net, env_id, seed=9000: eval_dqn(net, env_id, seed=seed),
         "train_vanilla":    train_vanilla_dqn,
         "train_optix":      train_optix_dqn,
     },
@@ -908,7 +901,10 @@ def _delta(a_list, b_list) -> str:
     b = [v for v in b_list if v is not None]
     if not a or not b:
         return "  -  "
-    pct = (np.mean(b) - np.mean(a)) / abs(np.mean(a)) * 100
+    mean_a = np.mean(a)
+    if abs(mean_a) < 1e-9:
+        return "  -  "
+    pct = (np.mean(b) - mean_a) / abs(mean_a) * 100
     return f"{pct:>+.0f}%"
 
 def print_table(cfg: dict, vanilla: list[dict], optix: list[dict]) -> None:
@@ -917,8 +913,10 @@ def print_table(cfg: dict, vanilla: list[dict], optix: list[dict]) -> None:
     line = "-" * W
     n    = len(vanilla)
 
-    v_solve = [r["steps_to_solve"] for r in vanilla]
-    o_solve = [r["steps_to_solve"] for r in optix]
+    # Unsolved seeds count as full budget (DNF penalty) so the mean is honest
+    # when solve rates differ between methods.
+    v_solve = [r["steps_to_solve"] if r["steps_to_solve"] is not None else r["total_steps"] for r in vanilla]
+    o_solve = [r["steps_to_solve"] if r["steps_to_solve"] is not None else r["total_steps"] for r in optix]
     v_total = [r["total_steps"]    for r in vanilla]
     o_total = [r["total_steps"]    for r in optix]
     v_score = [r["final_score"]    for r in vanilla]
@@ -933,7 +931,6 @@ def print_table(cfg: dict, vanilla: list[dict], optix: list[dict]) -> None:
     print(sep)
     print(f"  {'Metric':<28} {'Baseline':>16}  {'tensor-optix':>16}  {'D':>5}")
     print(f"  {line}")
-    print(f"  {'Steps to reach threshold':<28} {_fmt_k(v_solve):>16}  {_fmt_k(o_solve):>16}  {_delta(v_solve,o_solve):>5}")
     print(f"  {'Total steps used':<28} {_fmt_k(v_total):>16}  {_fmt_k(o_total):>16}  {_delta(v_total,o_total):>5}")
     print(f"  {'Final eval score':<28} {_fmt_f(v_score):>16}  {_fmt_f(o_score):>16}  {_delta(v_score,o_score):>5}")
     print(f"  {'Wall time':<28} {_fmt_s(v_time):>16}  {_fmt_s(o_time):>16}  {_delta(v_time,o_time):>5}")
@@ -1182,7 +1179,7 @@ def main() -> None:
         choices=list(ENV_CONFIGS.keys()),
         default=["cartpole", "lunarlander", "acrobot", "lunarlander_continuous", "bipedalwalker"],
         metavar="ENV",
-        help="Environments (default: all four)",
+        help="Environments (default: all five)",
     )
     parser.add_argument(
         "--seeds", type=int, nargs="+",

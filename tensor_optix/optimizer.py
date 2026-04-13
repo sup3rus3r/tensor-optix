@@ -1,5 +1,7 @@
 import logging
-from typing import Optional, List, Callable, Dict, Any
+import os
+import shutil
+from typing import Optional, List, Callable, Dict, Any, Tuple
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.base_evaluator import BaseEvaluator
 from tensor_optix.core.base_optimizer import BaseOptimizer
@@ -85,6 +87,11 @@ class RLOptimizer:
         diag_epsilon_reset_value: float = 0.3,
         diag_epsilon_score_threshold: float = 20.0,
         diag_min_episodes: int = 5,
+        min_consecutive_degradations: int = 3,
+        convergence_patience: int = 5,
+        cv_threshold: float = 0.05,
+        gap_threshold: float = 0.20,
+        target_score: Optional[float] = None,
         # ── Trial-level search (TrialOrchestrator) ────────────────────────
         agent_factory: Optional[Callable[[Dict[str, Any]], BaseAgent]] = None,
         pipeline_factory: Optional[Callable[[], BasePipeline]] = None,
@@ -129,6 +136,11 @@ class RLOptimizer:
         self._loop_kwargs = dict(
             evaluator=evaluator,
             optimizer=optimizer,
+            min_consecutive_degradations=min_consecutive_degradations,
+            convergence_patience=convergence_patience,
+            cv_threshold=cv_threshold,
+            gap_threshold=gap_threshold,
+            target_score=target_score,
             checkpoint_dir=checkpoint_dir,
             max_snapshots=max_snapshots,
             rollback_on_degradation=rollback_on_degradation,
@@ -244,11 +256,22 @@ class RLOptimizer:
             verbose=kw["verbose"],
             verbose_log_file=kw.get("verbose_log_file"),
             diagnostic_controller=_diagnostic,
+            min_consecutive_degradations=kw["min_consecutive_degradations"],
+            convergence_patience=kw["convergence_patience"],
+            cv_threshold=kw["cv_threshold"],
+            gap_threshold=kw["gap_threshold"],
+            target_score=kw["target_score"],
         )
         return controller
 
-    def _run_trial_search(self) -> Dict[str, Any]:
-        """Run TrialOrchestrator and return best params."""
+    def _run_trial_search(self) -> Tuple[Dict[str, Any], Optional[str], Optional[str]]:
+        """
+        Run TrialOrchestrator and return (best_params, best_weights_path, trial_base_dir).
+
+        best_weights_path points to the best trial's saved weights on disk.
+        trial_base_dir is the root holding all trial checkpoints — the caller
+        must shutil.rmtree it after loading the weights into the main agent.
+        """
         from tensor_optix.orchestrator import TrialOrchestrator
 
         trial_steps: int
@@ -258,7 +281,6 @@ class RLOptimizer:
             total_steps = self._max_episodes * steps_per_ep
             trial_steps = max(1, int(total_steps * self._trial_steps_fraction)) // steps_per_ep
         else:
-            # No budget set — use 30 episodes per trial as a sensible default
             trial_steps = 30
 
         logger.info(
@@ -282,7 +304,7 @@ class RLOptimizer:
         if self._verbose:
             print(f"  [trial search] complete — best score={best_score:.4f}  params={best_params}", flush=True)
         logger.info("Trial search complete — best score=%.4f params=%s", best_score, best_params)
-        return best_params
+        return best_params, orch.best_weights_path, orch.run_ckpt_dir
 
     def run(self) -> None:
         """
@@ -295,8 +317,21 @@ class RLOptimizer:
           3. Runs the main loop with those params + SPSA online adaptation.
         """
         if self._agent_factory is not None and self._param_space is not None:
-            best_params = self._run_trial_search()
+            best_params, best_weights_path, trial_base_dir = self._run_trial_search()
             agent = self._agent_factory(best_params)
+            # Warm-start: load the best trial's weights into the main agent so
+            # trial compute is not wasted starting from random init.
+            if best_weights_path and os.path.exists(best_weights_path):
+                try:
+                    agent.load_weights(best_weights_path)
+                    logger.info("Warm-start: loaded trial weights from %s", best_weights_path)
+                    if self._verbose:
+                        print(f"  [warm-start] loaded best trial weights", flush=True)
+                except Exception as e:
+                    logger.warning("Warm-start failed (%s) — continuing from random init", e)
+            # Clean up all trial checkpoint dirs now that weights are in memory
+            if trial_base_dir and os.path.exists(trial_base_dir):
+                shutil.rmtree(trial_base_dir, ignore_errors=True)
             pipeline = self._pipeline_factory()
             self._controller = self._build_controller(agent, pipeline)
         elif self._controller is None:

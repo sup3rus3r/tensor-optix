@@ -75,6 +75,11 @@ class LoopController:
         verbose: bool = False,
         verbose_log_file: Optional[str] = None,
         diagnostic_controller: Optional["DiagnosticController"] = None,
+        min_consecutive_degradations: int = 3,
+        convergence_patience: int = 5,
+        cv_threshold: float = 0.05,
+        gap_threshold: float = 0.20,
+        target_score: Optional[float] = None,
     ):
         self._agent = agent
         self._evaluator = evaluator
@@ -96,6 +101,12 @@ class LoopController:
         self._metrics_history: List[EvalMetrics] = []
         self._val_gen = None
         self._rnd_eta_base: Optional[float] = None  # set on first state-aware eta call
+        self._convergence_patience = convergence_patience
+        self._cv_threshold = cv_threshold
+        self._gap_threshold = gap_threshold
+        self._target_score = target_score
+        self._consecutive_converged: int = 0
+        self._consecutive_above_target: int = 0
         # Three separate concerns — kept deliberately independent:
         #
         # 1. Checkpoint saving  → checkpoint_score (raw external eval when
@@ -118,6 +129,8 @@ class LoopController:
         self._score_window: deque = deque(maxlen=max(1, score_smoothing))
         self._best_smoothed: Optional[float] = None
         self._best_raw: Optional[float] = None
+        self._min_consecutive_degradations = min_consecutive_degradations
+        self._consecutive_degradation_count: int = 0
 
     def run(self) -> None:
         """
@@ -303,6 +316,8 @@ class LoopController:
                     self._verbose_trend(trend_improving)
                 if trend_improving:
                     self._best_smoothed = smoothed
+                    self._consecutive_degradation_count = 0
+                    self._consecutive_converged = 0
                     self._scheduler.record_improvement(smoothed)
                     self._optimizer.on_improvement(eval_metrics)
                     self._update_rnd_eta("improvement")
@@ -324,8 +339,14 @@ class LoopController:
                     # the scheduler state and triggers unnecessary rollback/recovery.
                     optimizer_is_probing = getattr(self._optimizer, "is_probing", False)
                     agent_is_on_policy = getattr(self._agent, "is_on_policy", True)
-                    if agent_is_on_policy and not optimizer_is_probing and self._scheduler.check_degradation(smoothed):
-                        self._handle_degradation(episode_id, eval_metrics)
+                    if agent_is_on_policy and not optimizer_is_probing:
+                        if self._scheduler.check_degradation(smoothed):
+                            self._consecutive_degradation_count += 1
+                            if self._consecutive_degradation_count >= self._min_consecutive_degradations:
+                                self._consecutive_degradation_count = 0
+                                self._handle_degradation(episode_id, eval_metrics)
+                        else:
+                            self._consecutive_degradation_count = 0
                     elif not agent_is_on_policy:
                         # Off-policy: skip degradation. Score already recorded
                         # above via record_score(raw) — do not record again.
@@ -372,6 +393,31 @@ class LoopController:
                         self._scheduler.current_state.name,
                         self._scheduler.current_interval,
                     )
+
+                # ── Target score early stop ───────────────────────────────────
+                # When target_score is provided, stop as soon as the checkpoint
+                # score (deterministic external eval) has held at or above it
+                # for convergence_patience consecutive evals. Uses ckpt_score
+                # rather than the noisy smoothed training score — the external
+                # eval is stable and accurately reflects true policy quality.
+                # No score is hard-coded in the library — the caller supplies
+                # the domain knowledge (e.g. env solve threshold).
+                if self._target_score is not None and not self._stop_requested:
+                    if ckpt_score >= self._target_score:
+                        self._consecutive_above_target += 1
+                        if self._consecutive_above_target >= self._convergence_patience:
+                            logger.info(
+                                "Episode %d: ckpt_score %.2f >= target %.2f held for %d evals — stopping early",
+                                episode_id, ckpt_score, self._target_score, self._convergence_patience,
+                            )
+                            if self._verbose:
+                                self._vprint(
+                                    f"  TARGET     ckpt={ckpt_score:.2f} >= {self._target_score:.2f}"
+                                    f" for {self._convergence_patience} evals — early stop"
+                                )
+                            self._stop_requested = True
+                    else:
+                        self._consecutive_above_target = 0
 
                 old_params = self._agent.get_hyperparams().params.copy()
                 new_hyperparams = self._optimizer.suggest(

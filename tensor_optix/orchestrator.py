@@ -85,6 +85,8 @@ Requires: optuna (optional dependency).
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -278,6 +280,11 @@ class TrialOrchestrator:
         _verbosity = optuna_verbosity if optuna_verbosity is not None else optuna.logging.WARNING
         optuna.logging.set_verbosity(_verbosity)
 
+        # Per-run state (populated in run())
+        self._run_ckpt_dir: Optional[str] = None
+        self._trial_weights: Dict[int, Optional[str]] = {}
+        self._best_weights_path: Optional[str] = None
+
         # Build study once so results persist across run() calls
         self._study = optuna.create_study(
             study_name=self._study_name,
@@ -309,6 +316,7 @@ class TrialOrchestrator:
 
         After all trials, the configuration that achieved the highest
         (or lowest, if direction="minimize") score is returned.
+        The best trial's weights are accessible via best_weights_path.
 
         Returns
         -------
@@ -317,6 +325,12 @@ class TrialOrchestrator:
         best_score : float
             The best score achieved by that configuration.
         """
+        # Persistent dir that survives all trials so we can warm-start from
+        # the best trial's weights after the search completes.
+        self._run_ckpt_dir = tempfile.mkdtemp(prefix="to_trials_")
+        self._trial_weights = {}
+        self._best_weights_path = None
+
         self._study.optimize(
             self._objective,
             n_trials=self._n_trials,
@@ -324,11 +338,26 @@ class TrialOrchestrator:
         )
 
         best = self._study.best_trial
+        self._best_weights_path = self._trial_weights.get(best.number)
         logger.info(
-            "TrialOrchestrator complete — best trial #%d score=%.4f params=%s",
-            best.number, best.value, best.params,
+            "TrialOrchestrator complete — best trial #%d score=%.4f params=%s weights=%s",
+            best.number, best.value, best.params, self._best_weights_path,
         )
         return best.params, best.value
+
+    @property
+    def best_weights_path(self) -> Optional[str]:
+        """
+        Path to the best trial's saved weights directory.
+        Valid only after run() has been called. The caller is responsible
+        for cleaning up self.run_ckpt_dir once weights have been loaded.
+        """
+        return self._best_weights_path
+
+    @property
+    def run_ckpt_dir(self) -> Optional[str]:
+        """Root directory holding all trial checkpoints from the last run()."""
+        return self._run_ckpt_dir
 
     @property
     def study(self) -> "optuna.Study":
@@ -383,34 +412,37 @@ class TrialOrchestrator:
             # No step hint — interpret trial_steps as episode count directly
             max_episodes = self._trial_steps
 
-        # Isolate checkpoints per trial to avoid cross-trial interference
-        with tempfile.TemporaryDirectory(prefix="to_trial_") as ckpt_dir:
-            # Build RLOptimizer — reporter callback wired in below
-            rl = RLOptimizer(
-                agent=agent,
-                pipeline=pipeline,
-                max_episodes=max_episodes,
-                checkpoint_dir=ckpt_dir,
-                val_pipeline=val_pipeline,
-                checkpoint_score_fn=self._checkpoint_score_fn,
-                **self._rloptimizer_kwargs,
-            )
+        # Persistent per-trial dir inside the run-level dir so the best
+        # trial's weights survive until the caller has loaded them.
+        ckpt_dir = os.path.join(self._run_ckpt_dir, f"trial_{trial.number}")
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-            # Attach the intermediate reporter (enables pruning)
-            reporter = _IntermediateReporter(trial, rl)
-            # Inject into the controller's callback list
-            rl._controller._callbacks.append(reporter)
+        rl = RLOptimizer(
+            agent=agent,
+            pipeline=pipeline,
+            max_episodes=max_episodes,
+            checkpoint_dir=ckpt_dir,
+            val_pipeline=val_pipeline,
+            checkpoint_score_fn=self._checkpoint_score_fn,
+            **self._rloptimizer_kwargs,
+        )
 
-            try:
-                rl.run()
-            except Exception as exc:
-                logger.warning("Trial %d raised exception: %s", trial.number, exc)
-                raise
+        # Attach the intermediate reporter (enables pruning)
+        reporter = _IntermediateReporter(trial, rl)
+        rl._controller._callbacks.append(reporter)
+
+        try:
+            rl.run()
+        except Exception as exc:
+            logger.warning("Trial %d raised exception: %s", trial.number, exc)
+            raise
 
         best = rl.best_snapshot
         if best is None:
-            # Trial produced no valid score
             return float("-inf") if self._direction == "maximize" else float("inf")
+
+        # Record weights path so run() can hand it to the main agent
+        self._trial_weights[trial.number] = best.weights_path
 
         score = best.eval_metrics.primary_score
         logger.info("Trial %d finished — score=%.4f params=%s", trial.number, score, params)

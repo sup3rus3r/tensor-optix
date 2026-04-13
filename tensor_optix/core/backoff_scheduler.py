@@ -232,6 +232,43 @@ class BackoffScheduler:
         """Append score to window without triggering state change (off-policy path)."""
         self._score_window.append(score)
 
+    def is_converged(self, cv_threshold: float = 0.05, gap_threshold: float = 0.20) -> bool:
+        """
+        True when the policy has genuinely converged:
+        flat trend AND low CV AND performing near its personal best.
+
+        Three conditions (all must hold):
+            |slope| < floor_per_step              flat — not improving or degrading
+            cv < cv_threshold                     tightly clustered — not noisy
+            |mean - best| / |best| < gap_threshold  near personal best — not just stuck
+
+        The gap condition is what separates a stuck policy (flat + stable at a
+        low level, well below its best) from a genuinely converged one (flat +
+        stable near its peak). No external solve threshold is used — purely
+        relative to the agent's own history.
+        """
+        slope = self._slope()
+        if slope is None:
+            return False
+        floor_per_step = self._adaptive_floor() / self._trend_window
+        if abs(slope) >= floor_per_step:
+            return False  # still moving — not converged
+        if len(self._score_window) < 5:
+            return False
+        scores = list(self._score_window)
+        mean = float(np.mean(scores))
+        std = float(np.std(scores))
+        cv = std / max(abs(mean), 1e-8)
+        if cv >= cv_threshold:
+            return False  # too noisy — stuck, not converged
+        # Gap check: current mean must be near personal best.
+        # Prevents firing when the policy is stuck well below its historical peak.
+        if self._best_score is not None and abs(self._best_score) > 1e-8:
+            gap = abs(mean - self._best_score) / abs(self._best_score)
+            if gap > gap_threshold:
+                return False  # performing well below personal best — stuck, not converged
+        return True
+
     def check_degradation(self, score: float) -> bool:
         """
         Threshold-based degradation check called by loop_controller.

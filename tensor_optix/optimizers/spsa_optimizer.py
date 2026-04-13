@@ -60,6 +60,7 @@ class SPSAOptimizer(BaseOptimizer):
         gradient_clip: float = 1.0,          # clip |ĝᵢ| to this in normalized space
                                              # max normalized step = alpha * clip = 0.1 * 1.0 = 10%
         log_params: Optional[List[str]] = None,  # params to normalize in log space
+        warmup_episodes: int = 0,            # episodes before SPSA starts updating
     ):
         self._param_bounds = param_bounds or {}
         self._c = perturbation_scale
@@ -67,6 +68,8 @@ class SPSAOptimizer(BaseOptimizer):
         self._min_c = min_perturbation
         self._grad_clip = gradient_clip
         self._log_params: set = set(log_params or [])
+        self._warmup_episodes = warmup_episodes
+        self._episodes_seen: int = 0
 
         self._param_names: List[str] = []
         self._phase: str = self._PHASE_IDLE
@@ -123,6 +126,11 @@ class SPSAOptimizer(BaseOptimizer):
         metrics_history: List[EvalMetrics],
     ) -> HyperparamSet:
         if not metrics_history:
+            return current_hyperparams.copy()
+
+        self._episodes_seen += 1
+        if self._episodes_seen <= self._warmup_episodes:
+            # Warmup blackout: let the policy stabilize before SPSA touches anything.
             return current_hyperparams.copy()
 
         # Initialize param list on first call
