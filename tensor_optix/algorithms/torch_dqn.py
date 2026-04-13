@@ -254,3 +254,10 @@ class TorchDQNAgent(BaseAgent):
             for param in self._q.parameters():
                 param.mul_(1.0 + noise_scale * torch.randn_like(param))
         self._q_target.load_state_dict(self._q.state_dict())
+
+    def teardown(self) -> None:
+        """Move networks to CPU and free CUDA memory."""
+        import torch
+        self._q.cpu()
+        self._q_target.cpu()
+        torch.cuda.empty_cache()

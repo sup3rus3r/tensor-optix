@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensor-optix"
-version = "1.2.3"
+version = "1.2.4"
 description = "Autonomous training loop for any sequential learning model — built-in PPO, DQN, and SAC for TensorFlow and PyTorch"
 readme = "README.md"
 license = "MIT"
@@ -15,10 +15,11 @@ authors = [
 
 dependencies = [
     "tensorflow>=2.18.0",
-    "gymnasium>=1.0.0",
+    "gymnasium[box2d]>=1.0.0",
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "optuna>=3.0.0",
+    "swig>=4.4.1",
 ]
 
 [project.optional-dependencies]

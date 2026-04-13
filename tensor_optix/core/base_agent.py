@@ -114,3 +114,12 @@ class BaseAgent(ABC):
         restores the best checkpoint — so perturbation is always relative
         to the best known weights, not the current (possibly degraded) ones.
         """
+
+    def teardown(self) -> None:
+        """
+        Release resources held by this agent (GPU memory, file handles, etc.).
+
+        Called by PolicyManager.prune() when an agent is removed from the
+        ensemble.  Override in framework-specific subclasses to move networks
+        to CPU and free CUDA memory.  Default: no-op.
+        """

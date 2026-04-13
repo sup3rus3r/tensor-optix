@@ -31,13 +31,17 @@ class TorchAgent(BaseAgent):
             model=model,
             optimizer=torch.optim.Adam(model.parameters(), lr=3e-4),
             hyperparams=HyperparamSet(params={"learning_rate": 3e-4, "gamma": 0.99}, episode_id=0),
+            device="auto",  # "cuda" if available, else "cpu"
         )
     """
 
-    def __init__(self, model, optimizer, hyperparams: HyperparamSet, compute_loss_fn=None):
+    def __init__(self, model, optimizer, hyperparams: HyperparamSet, compute_loss_fn=None, device: str = "auto"):
         import torch
         self._torch = torch
-        self.model = model
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._device = torch.device(device)
+        self.model = model.to(self._device)
         self.optimizer = optimizer
         self._hyperparams = hyperparams.copy()
         self._compute_loss_fn = compute_loss_fn
@@ -48,7 +52,7 @@ class TorchAgent(BaseAgent):
         Override for continuous actions or custom sampling strategies.
         """
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32)
+        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
         with torch.no_grad():
             logits = self.model(obs)
         action = int(torch.argmax(logits, dim=-1).item())
@@ -140,5 +144,11 @@ class TorchAgent(BaseAgent):
 
     def load_weights(self, path: str) -> None:
         import torch
-        state = torch.load(os.path.join(path, "model.pt"), map_location="cpu")
+        state = torch.load(os.path.join(path, "model.pt"), map_location=self._device)
         self.model.load_state_dict(state)
+
+    def teardown(self) -> None:
+        """Move model to CPU and free CUDA memory."""
+        import torch
+        self.model.cpu()
+        torch.cuda.empty_cache()

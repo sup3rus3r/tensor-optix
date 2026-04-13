@@ -511,6 +511,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         registry = CheckpointRegistry(ckpt_dir)
         pm = PolicyManager(registry, max_spawns=3)
         pm_cb = pm.as_callback(agent, agent_factory=lambda: agent_factory(params))
+        pm_cb.set_stop_fn(rl_opt.stop)
         tracker = _Tracker(cfg=cfg, actor=agent._actor, seed=seed)
         pm_state.update({"pm_cb": pm_cb, "actor": agent._actor})
         tracker_holder["tracker"] = tracker
@@ -545,7 +546,6 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         verbose=verbose,
         verbose_log_file=verbose_log_file,
     )
-    pm_state["rl_opt"] = rl_opt  # allow pm_cb stop_fn to reference rl_opt after construction
     rl_opt.run()
 
     tracker = tracker_holder["tracker"]
@@ -643,6 +643,7 @@ def train_optix_sac(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         verbose=verbose,
         verbose_log_file=verbose_log_file,
     )
+    pm_cb.set_stop_fn(rl_opt.stop)
     rl_opt.add_callback(tracker)
     rl_opt.add_callback(pm_cb)
     rl_opt.run()
@@ -734,6 +735,7 @@ def train_optix_dqn(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         verbose=verbose,
         verbose_log_file=verbose_log_file,
     )
+    pm_cb.set_stop_fn(rl_opt.stop)
     rl_opt.add_callback(tracker)
     rl_opt.add_callback(pm_cb)
     rl_opt.run()

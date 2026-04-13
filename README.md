@@ -884,6 +884,86 @@ tensor_optix/
 
 ---
 
+## Common Pitfalls & Best Practices
+
+### Device management
+
+Every built-in Torch agent (`TorchPPOAgent`, `TorchGaussianPPOAgent`, `TorchDQNAgent`, `TorchSACAgent`) accepts a `device` parameter and moves its networks there on construction. The default is `"auto"`, which selects CUDA if available.
+
+```python
+agent = TorchPPOAgent(actor=actor, critic=critic, optimizer=opt,
+                      hyperparams=hp, device="cuda")   # or "cpu", "auto"
+```
+
+The base `TorchAgent` adapter now also accepts `device="auto"` and applies it consistently in `act()` and `load_weights()`. If you subclass `TorchAgent` directly, pass `device` to `super().__init__()` — otherwise obs tensors and loaded checkpoints default to CPU even on a CUDA machine.
+
+**Watch out:** constructing the optimizer _before_ calling `.to(device)` on the model is safe because optimizers hold references to parameter tensors, not copies. But creating the optimizer _after_ `agent.load_weights()` restores weights to the wrong device can leave parameters split between CPU and GPU, which causes a silent slowdown rather than an error.
+
+### Ensemble memory on GPU
+
+Spawning agents with `PolicyManager.spawn_variant()` or `agent_factory` mode creates new networks on the target device. Calling `prune()` removes agents from the ensemble and automatically calls `agent.teardown()` on each removed agent, which moves its networks to CPU and calls `torch.cuda.empty_cache()`.
+
+If you remove agents from the ensemble by any other means (e.g., rebuilding `_ensemble` manually), call `teardown()` yourself:
+
+```python
+removed = pm.prune(bottom_k=2)   # teardown() is called automatically
+
+# If removing manually:
+agent.teardown()
+```
+
+For long PBT-style runs with frequent spawning, monitor GPU memory with `torch.cuda.memory_allocated()`. If memory grows despite pruning, the likely cause is optimizer state — gradient moments accumulate per parameter. Re-creating the optimizer on each spawn (as the built-in `agent_factory` pattern does) avoids this.
+
+### On-policy vs. off-policy rollback
+
+`rollback_on_degradation=True` is safe for PPO but harmful for DQN and SAC. Off-policy agents accumulate experience in a replay buffer across many policies. Rolling back weights without clearing the buffer means the restored policy immediately trains on transitions it never generated — corrupted Bellman targets drag it back down.
+
+The framework handles this automatically: any agent where `is_on_policy` returns `False` skips the weight rollback even when `rollback_on_degradation=True`. If you write a custom off-policy agent, override the property:
+
+```python
+@property
+def is_on_policy(self) -> bool:
+    return False
+```
+
+### Wiring PolicyManager early stopping
+
+`PolicyManager.as_callback()` returns a `PolicyManagerCallback` that stops training when the spawn budget is exhausted — but only if you wire the stop function:
+
+```python
+pm_cb = pm.as_callback(agent, agent_factory=my_factory)
+rl_opt = RLOptimizer(...)
+pm_cb.set_stop_fn(rl_opt.stop)   # required — without this, training runs the full budget
+rl_opt.add_callback(pm_cb)
+rl_opt.run()
+```
+
+Without `set_stop_fn`, the callback prints the training report when the budget runs out but cannot halt the loop. Training continues until `max_episodes` is reached.
+
+For the factory-mode PPO path (where `agent_factory` is passed to `RLOptimizer` and `pm_cb` is created inside the factory), wire the stop function inside the factory — `rl_opt` is already bound in the enclosing scope by the time the factory is called:
+
+```python
+def agent_factory_full(params):
+    agent = make_agent(params)
+    pm_cb = pm.as_callback(agent, agent_factory=lambda: make_agent(params))
+    pm_cb.set_stop_fn(rl_opt.stop)   # rl_opt is bound before run() calls this factory
+    rl_opt.add_callback(pm_cb)
+    return agent
+
+rl_opt = RLOptimizer(agent_factory=agent_factory_full, ...)
+rl_opt.run()
+```
+
+### Checkpoint directory hygiene
+
+Each run writes checkpoints to `checkpoint_dir`. If you reuse the same directory across restarts without clearing it, `CheckpointRegistry` will load stale snapshots from a previous run and roll back to them during training. Either pass a unique directory per run (include seed and timestamp) or call `shutil.rmtree(ckpt_dir, ignore_errors=True)` at the start of each run.
+
+### State dict key mismatches during weight averaging / spawning
+
+`average_weights()` and `load_weights()` use PyTorch `state_dict` keys. If the architecture passed to a spawned agent shell differs from the one that was checkpointed (different layer names, sizes, or number of layers), `load_state_dict()` will raise a `RuntimeError` with a key mismatch message. The framework does not catch this — it is user responsibility to pass a compatible shell. The safest pattern is to use the same `agent_factory` for both the primary agent and all spawned variants.
+
+---
+
 ## Math & Science Reference
 
 ### SPSA Gradient Estimate (`SPSAOptimizer`)

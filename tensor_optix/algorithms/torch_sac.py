@@ -265,6 +265,13 @@ class TorchSACAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def teardown(self) -> None:
+        """Move all networks to CPU and free CUDA memory."""
+        import torch
+        for module in (self._actor, self._c1, self._c2, self._c1_tgt, self._c2_tgt):
+            module.cpu()
+        torch.cuda.empty_cache()
+
     def _sample_action(self, obs):
         import torch
         out     = self._actor(obs)

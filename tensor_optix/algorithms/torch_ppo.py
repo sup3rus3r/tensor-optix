@@ -281,6 +281,13 @@ class TorchPPOAgent(BaseAgent):
         self._cache_log_probs.clear()
         self._cache_values.clear()
 
+    def teardown(self) -> None:
+        """Move networks to CPU and free CUDA memory."""
+        import torch
+        self._actor.cpu()
+        self._critic.cpu()
+        torch.cuda.empty_cache()
+
     @staticmethod
     def _explained_variance(values: np.ndarray, returns: np.ndarray) -> float:
         var_returns = float(np.var(returns))

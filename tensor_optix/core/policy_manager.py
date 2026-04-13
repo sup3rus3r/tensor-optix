@@ -215,6 +215,9 @@ class PolicyManager:
         self._score_history = new_score_history
         self._prune_count += bottom_k
 
+        for agent in removed_agents:
+            agent.teardown()
+
         logger.info(
             "PolicyManager.prune: removed %d agent(s), ensemble size now %d",
             len(removed_agents),
