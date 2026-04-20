@@ -64,6 +64,9 @@ from tensor_optix.adapters.pytorch.torch_evaluator import TorchEvaluator
 from tensor_optix.algorithms.torch_dqn import TorchDQNAgent
 from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
 from tensor_optix.algorithms.torch_sac import TorchSACAgent
+from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
+from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
 from tensor_optix.core.checkpoint_registry import CheckpointRegistry
 from tensor_optix.optimizer import RLOptimizer
 
@@ -101,6 +104,124 @@ def build_sac_nets(obs_dim: int, action_dim: int, hidden: int = 256):
     critic1 = _mlp(obs_dim + action_dim, hidden, 1, act=nn.ReLU)
     critic2 = _mlp(obs_dim + action_dim, hidden, 1, act=nn.ReLU)
     return actor, critic1, critic2
+
+
+def build_td3_nets(obs_dim: int, action_dim: int, hidden: int = 256):
+    actor = nn.Sequential(
+        nn.Linear(obs_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden),  nn.ReLU(),
+        nn.Linear(hidden, action_dim), nn.Tanh(),
+    )
+    critic1 = nn.Sequential(
+        nn.Linear(obs_dim + action_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(),
+        nn.Linear(hidden, 1),
+    )
+    critic2 = nn.Sequential(
+        nn.Linear(obs_dim + action_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(),
+        nn.Linear(hidden, 1),
+    )
+    return actor, critic1, critic2
+
+
+def build_rppo_nets(obs_dim: int, n_actions: int, hidden: int = 64):
+    rnn         = nn.LSTM(obs_dim, hidden, batch_first=True)
+    actor_head  = nn.Linear(hidden, n_actions)
+    critic_head = nn.Linear(hidden, 1)
+    return rnn, actor_head, critic_head
+
+
+class _POMDPCartPoleWrapper(gym.ObservationWrapper):
+    """Mask velocity components (indices 1, 3) — obs_dim shrinks from 4 to 2."""
+    def __init__(self, env):
+        super().__init__(env)
+        import gymnasium.spaces as _spaces
+        low  = env.observation_space.low[[0, 2]]
+        high = env.observation_space.high[[0, 2]]
+        self.observation_space = _spaces.Box(
+            low=low, high=high, dtype=env.observation_space.dtype
+        )
+
+    def observation(self, obs):
+        return obs[[0, 2]]
+
+
+from tensor_optix.core.base_pipeline import BasePipeline as _BasePipeline
+
+
+class _RecurrentBatchPipeline(_BasePipeline):
+    """Window pipeline that calls agent.reset_hidden() at episode boundaries."""
+
+    def __init__(self, env, agent=None, window_size: int = 1024):
+        self._env          = env
+        self._agent        = agent
+        self._window_size  = window_size
+        self._window_id    = 0
+        self._obs          = None
+        self._needs_reset  = True
+
+    @property
+    def is_live(self) -> bool:
+        return False
+
+    def set_agent(self, agent) -> None:
+        self._agent = agent
+
+    def setup(self) -> None:
+        self._needs_reset = True
+
+    def episodes(self):
+        while True:
+            if self._needs_reset:
+                self._obs, _ = self._env.reset()
+                if hasattr(self._agent, "reset_hidden"):
+                    self._agent.reset_hidden()
+                self._needs_reset = False
+
+            observations, actions, rewards = [], [], []
+            terminated_flags, truncated_flags, infos = [], [], []
+            episode_starts = [0]
+
+            for i in range(self._window_size):
+                obs = self._obs
+                observations.append(obs)
+                action = self._agent.act(obs)
+                actions.append(action)
+                next_obs, reward, term, trunc, info = self._env.step(action)
+                rewards.append(float(reward))
+                terminated_flags.append(bool(term))
+                truncated_flags.append(bool(trunc))
+                infos.append(info)
+                if term or trunc:
+                    self._obs, _ = self._env.reset()
+                    if hasattr(self._agent, "reset_hidden"):
+                        self._agent.reset_hidden()
+                    if i + 1 < self._window_size:
+                        episode_starts.append(i + 1)
+                else:
+                    self._obs = next_obs
+
+            last_done = terminated_flags[-1] or truncated_flags[-1]
+            yield EpisodeData(
+                observations=np.array(observations),
+                actions=np.array(actions),
+                rewards=rewards,
+                terminated=terminated_flags,
+                truncated=truncated_flags,
+                infos=infos,
+                episode_id=self._window_id,
+                episode_starts=episode_starts,
+                final_obs=None if last_done else self._obs,
+            )
+            self._window_id += 1
+
+    def teardown(self) -> None:
+        self._env.close()
+
+    @property
+    def window_size(self) -> int:
+        return self._window_size
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -178,6 +299,75 @@ def eval_sac(actor: nn.Module, env_id: str, action_scale: float,
     return float(np.mean(totals))
 
 
+def eval_rainbow(q_net: nn.Module, env_id: str, n_eps: int = 10, seed: int = 9000) -> float:
+    """Greedy eval of Rainbow Q-network (eval mode disables noisy exploration)."""
+    device = _net_device(q_net)
+    q_net.eval()
+    env = gym.make(env_id)
+    totals = []
+    for ep in range(n_eps):
+        obs, _ = env.reset(seed=seed + ep)
+        total, done = 0.0, False
+        while not done:
+            obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(device)
+            with torch.no_grad():
+                log_probs = q_net(obs_t)                     # (1, n_actions, n_atoms)
+                q_vals    = log_probs.exp().sum(-1)           # (1, n_actions)
+                action    = int(q_vals.argmax(dim=-1).item())
+            obs, r, term, trunc, _ = env.step(action)
+            total += r
+            done = term or trunc
+        totals.append(total)
+    env.close()
+    q_net.train()
+    return float(np.mean(totals))
+
+
+def eval_td3(actor: nn.Module, env_id: str, action_scale: float,
+             n_eps: int = 10, seed: int = 9000) -> float:
+    """Deterministic eval of TD3 actor (already tanh-bounded, scaled to env range)."""
+    device = _net_device(actor)
+    env = gym.make(env_id)
+    totals = []
+    for ep in range(n_eps):
+        obs, _ = env.reset(seed=seed + ep)
+        total, done = 0.0, False
+        while not done:
+            obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(device)
+            with torch.no_grad():
+                action = (actor(obs_t).cpu().numpy()[0] * action_scale)
+            obs, r, term, trunc, _ = env.step(action)
+            total += r
+            done = term or trunc
+        totals.append(total)
+    env.close()
+    return float(np.mean(totals))
+
+
+def eval_recurrent_ppo(agent, env_factory, n_eps: int = 10, seed: int = 9000) -> float:
+    """Eval TorchRecurrentPPOAgent; resets hidden state per episode."""
+    totals = []
+    for ep in range(n_eps):
+        env = env_factory()
+        obs, _ = env.reset(seed=seed + ep)
+        agent.reset_hidden()
+        total, done = 0.0, False
+        while not done:
+            action = agent.act(obs)
+            obs, r, term, trunc, _ = env.step(action)
+            total += r
+            done = term or trunc
+        env.close()
+        totals.append(total)
+    # Clear caches filled by act() during eval
+    agent._cache_obs.clear()
+    agent._cache_lp.clear()
+    agent._cache_values.clear()
+    agent._cache_hidden.clear()
+    agent.reset_hidden()
+    return float(np.mean(totals))
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Vanilla training loop  (no tensor-optix loop features)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -207,6 +397,32 @@ def _collect_window(env, agent, window_size: int, carry_obs, needs_reset: bool):
         infos=[{}] * window_size,
         episode_id=0,
     ), obs
+
+
+def _collect_episode_recurrent(env, agent, seed: int) -> EpisodeData:
+    """Collect one full episode, resetting hidden state at the start."""
+    obs, _ = env.reset(seed=seed)
+    agent.reset_hidden()
+    obs_list, act_list, rew_list, term_list, trunc_list = [], [], [], [], []
+    done = False
+    while not done:
+        obs_list.append(obs.copy())
+        action = agent.act(obs)
+        act_list.append(action)
+        obs, reward, terminated, truncated, _ = env.step(action)
+        rew_list.append(float(reward))
+        term_list.append(bool(terminated))
+        trunc_list.append(bool(truncated))
+        done = terminated or truncated
+    return EpisodeData(
+        observations=np.array(obs_list),
+        actions=act_list,
+        rewards=rew_list,
+        terminated=term_list,
+        truncated=trunc_list,
+        infos=[{}] * len(rew_list),
+        episode_id=0,
+    )
 
 
 def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
@@ -371,7 +587,7 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
         q_network=q_net, n_actions=n_actions,
         optimizer=torch.optim.Adam(q_net.parameters(), lr=cfg["lr"]),
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
-        device="auto",
+
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -394,6 +610,196 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
         if since_eval >= cfg["eval_every"] or total_steps >= cfg["max_steps"]:
             since_eval = 0
             score = cfg["eval_fn"](q_net, cfg["env_id"], seed=seed + 10_000)
+            history.append((total_steps, score))
+            print(
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
+                f"  steps={total_steps:>7,d}  score={score:>8.1f}",
+                flush=True,
+            )
+            if steps_to_solve is None and score >= cfg["solve_threshold"]:
+                steps_to_solve = total_steps
+
+    env.close()
+    final = history[-1][1] if history else 0.0
+    return {
+        "method": "Baseline", "seed": seed,
+        "total_steps": total_steps, "steps_to_solve": steps_to_solve,
+        "final_score": final, "elapsed": time.perf_counter() - t0,
+        "history": history, "solved": steps_to_solve is not None,
+    }
+
+
+def train_vanilla_rainbow(cfg: dict, seed: int) -> dict:
+    """Baseline Rainbow DQN — all 6 improvements, no tensor-optix loop features."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env = gym.make(cfg["env_id"])
+    obs_dim, n_actions = env.observation_space.shape[0], env.action_space.n
+    q_net = RainbowQNetwork.build(obs_dim, n_actions)
+    agent = TorchRainbowDQNAgent(
+        q_network=q_net, n_actions=n_actions, obs_dim=obs_dim,
+        optimizer=torch.optim.Adam(q_net.parameters(), lr=cfg["lr"]),
+        hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+        device="cpu",
+    )
+
+    carry_obs, _ = env.reset(seed=seed)
+    total_steps, since_eval = 0, 0
+    steps_to_solve: Optional[int] = None
+    history: list[tuple[int, float]] = []
+    window_id = 0
+    t0 = time.perf_counter()
+
+    while total_steps < cfg["max_steps"]:
+        ep_data, carry_obs = _collect_window(env, agent, cfg["window_size"], carry_obs, needs_reset=False)
+        ep_data.episode_id = window_id
+        agent.learn(ep_data)
+        total_steps += cfg["window_size"]
+        since_eval  += cfg["window_size"]
+        window_id   += 1
+
+        if since_eval >= cfg["eval_every"] or total_steps >= cfg["max_steps"]:
+            since_eval = 0
+            score = eval_rainbow(q_net, cfg["env_id"], seed=seed + 10_000)
+            history.append((total_steps, score))
+            print(
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
+                f"  steps={total_steps:>7,d}  score={score:>8.1f}",
+                flush=True,
+            )
+            if steps_to_solve is None and score >= cfg["solve_threshold"]:
+                steps_to_solve = total_steps
+
+    env.close()
+    final = history[-1][1] if history else 0.0
+    return {
+        "method": "Baseline", "seed": seed,
+        "total_steps": total_steps, "steps_to_solve": steps_to_solve,
+        "final_score": final, "elapsed": time.perf_counter() - t0,
+        "history": history, "solved": steps_to_solve is not None,
+    }
+
+
+def train_vanilla_td3(cfg: dict, seed: int) -> dict:
+    """Baseline TD3 — fixed hyperparams, no tensor-optix loop features."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env = gym.make(cfg["env_id"])
+    obs_dim   = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    action_scale = float(env.action_space.high[0])
+
+    actor, c1, c2 = build_td3_nets(obs_dim, action_dim)
+    agent = TorchTD3Agent(
+        actor=actor, critic1=c1, critic2=c2, action_dim=action_dim,
+        actor_optimizer=torch.optim.Adam(actor.parameters(), lr=cfg["lr"]),
+        critic_optimizer=torch.optim.Adam(
+            list(c1.parameters()) + list(c2.parameters()), lr=cfg["lr"]
+        ),
+        hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+        device="auto",
+    )
+
+    carry_obs, _ = env.reset(seed=seed)
+    total_steps, since_eval = 0, 0
+    steps_to_solve: Optional[int] = None
+    history: list[tuple[int, float]] = []
+    window_id = 0
+    t0 = time.perf_counter()
+
+    while total_steps < cfg["max_steps"]:
+        observations, actions, rewards, terminated, truncated = [], [], [], [], []
+        obs = carry_obs
+        for _ in range(cfg["window_size"]):
+            observations.append(obs)
+            raw_action = agent.act(obs)                     # in [-1, 1]
+            action = raw_action * action_scale
+            next_obs, reward, term, trunc, _ = env.step(action)
+            rewards.append(float(reward))
+            terminated.append(bool(term))
+            truncated.append(bool(trunc))
+            actions.append(raw_action)
+            obs = next_obs if not (term or trunc) else env.reset()[0]
+        carry_obs = obs
+        observations.append(carry_obs)
+
+        ep_data = EpisodeData(
+            observations=np.array(observations),
+            actions=np.array(actions),
+            rewards=rewards,
+            terminated=terminated,
+            truncated=truncated,
+            infos=[{}] * cfg["window_size"],
+            episode_id=window_id,
+        )
+        agent.learn(ep_data)
+        total_steps += cfg["window_size"]
+        since_eval  += cfg["window_size"]
+        window_id   += 1
+
+        if since_eval >= cfg["eval_every"] or total_steps >= cfg["max_steps"]:
+            since_eval = 0
+            score = eval_td3(actor, cfg["env_id"], action_scale, seed=seed + 10_000)
+            history.append((total_steps, score))
+            print(
+                f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
+                f"  steps={total_steps:>7,d}  score={score:>8.1f}",
+                flush=True,
+            )
+            if steps_to_solve is None and score >= cfg["solve_threshold"]:
+                steps_to_solve = total_steps
+
+    env.close()
+    final = history[-1][1] if history else 0.0
+    return {
+        "method": "Baseline", "seed": seed,
+        "total_steps": total_steps, "steps_to_solve": steps_to_solve,
+        "final_score": final, "elapsed": time.perf_counter() - t0,
+        "history": history, "solved": steps_to_solve is not None,
+    }
+
+
+def train_vanilla_recurrent_ppo(cfg: dict, seed: int) -> dict:
+    """Baseline Recurrent PPO on POMDP — fixed HP, episode-based collection."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env_factory = cfg["env_factory"]
+    env = env_factory()
+    obs_dim   = env.observation_space.shape[0]
+    n_actions = env.action_space.n
+
+    rnn, actor_head, critic_head = build_rppo_nets(obs_dim, n_actions)
+    agent = TorchRecurrentPPOAgent(
+        rnn=rnn, actor_head=actor_head, critic_head=critic_head,
+        n_actions=n_actions,
+        optimizer=torch.optim.Adam(
+            list(rnn.parameters()) + list(actor_head.parameters()) + list(critic_head.parameters()),
+            lr=cfg["lr"],
+        ),
+        hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
+    )
+
+    total_steps, since_eval = 0, 0
+    steps_to_solve: Optional[int] = None
+    history: list[tuple[int, float]] = []
+    ep_id = 0
+    t0 = time.perf_counter()
+
+    while total_steps < cfg["max_steps"]:
+        ep_data = _collect_episode_recurrent(env, agent, seed + ep_id)
+        ep_data.episode_id = ep_id
+        agent.learn(ep_data)
+        n_steps = len(ep_data.rewards)
+        total_steps += n_steps
+        since_eval  += n_steps
+        ep_id += 1
+
+        if since_eval >= cfg["eval_every"] or total_steps >= cfg["max_steps"]:
+            since_eval = 0
+            score = eval_recurrent_ppo(agent, env_factory, seed=seed + 10_000)
             history.append((total_steps, score))
             print(
                 f"  [baseline  | {cfg['label']:16s} | seed={seed}]"
@@ -759,6 +1165,298 @@ def train_optix_sac(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
     }
 
 
+def train_optix_rainbow(cfg: dict, seed: int, verbose: bool = False, verbose_log_file: Optional[str] = None) -> dict:
+    """
+    tensor-optix autonomous Rainbow DQN:
+      - SPSA: online adaptation (learning_rate, gamma)
+      - Exponential-backoff convergence detection
+      - PolicyManager: rollback + policy spawning (max_spawns=3)
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env_tmp = gym.make(cfg["env_id"])
+    obs_dim, n_actions = env_tmp.observation_space.shape[0], env_tmp.action_space.n
+    env_tmp.close()
+
+    ckpt_dir = f"./benchmarks/.ckpts/rainbow_{cfg['key']}_{seed}"
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    pm_state: dict = {}
+    tracker_holder: dict = {}
+
+    def make_agent(params=None):
+        hp = {**cfg["hp"], **(params or {})}
+        q = RainbowQNetwork.build(obs_dim, n_actions)
+        return TorchRainbowDQNAgent(
+            q_network=q, n_actions=n_actions, obs_dim=obs_dim,
+            optimizer=torch.optim.Adam(q.parameters(), lr=hp.get("learning_rate", cfg["lr"])),
+            hyperparams=HyperparamSet(params=hp, episode_id=0),
+            device="auto",
+        )
+
+    t0 = time.perf_counter()
+    agent = make_agent()
+    registry = CheckpointRegistry(ckpt_dir)
+    pm = PolicyManager(registry, max_spawns=3)
+    pm_cb = pm.as_callback(agent, agent_factory=make_agent)
+    tracker = _Tracker(cfg=cfg, actor=agent._q, seed=seed)
+    pm_state.update({"pm_cb": pm_cb, "q_net": agent._q})
+    tracker_holder["tracker"] = tracker
+
+    env = gym.make(cfg["env_id"])
+    pipeline = BatchPipeline(env=env, agent=agent, window_size=cfg["window_size"])
+
+    rl_opt = RLOptimizer(
+        agent=agent,
+        pipeline=pipeline,
+        evaluator=TorchEvaluator(),
+        optimizer=SPSAOptimizer(param_bounds={
+            "learning_rate": (1e-5, 1e-4),
+            "gamma":         (0.97, 0.999),
+        }, log_params=["learning_rate"], warmup_episodes=30),
+        checkpoint_dir=ckpt_dir,
+        max_episodes=cfg["max_steps"] // cfg["window_size"],
+        rollback_on_degradation=True,
+        max_interval_episodes=10,
+        dormant_threshold=10,
+        min_episodes_before_dormant=60,
+        checkpoint_score_fn=lambda a: eval_rainbow(
+            pm_state.get("q_net", a._q), cfg["env_id"], seed=seed + 10_000
+        ),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
+        verbose=verbose,
+        verbose_log_file=verbose_log_file,
+    )
+    pm_cb.set_stop_fn(rl_opt.stop)
+    rl_opt.add_callback(tracker)
+    rl_opt.add_callback(pm_cb)
+    rl_opt.run()
+
+    tracker   = tracker_holder["tracker"]
+    q_net     = pm_state["q_net"]
+    final_score = eval_rainbow(q_net, cfg["env_id"], seed=seed + 10_000)
+    tracker.history.append((tracker.total_steps, final_score))
+    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
+        tracker.steps_to_solve = tracker.total_steps
+    print(
+        f"  [optix     | {cfg['label']:16s} | seed={seed}]"
+        f"  steps={tracker.total_steps:>7,d}  score={final_score:>8.1f}  [final]",
+        flush=True,
+    )
+
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    return {
+        "method": "tensor-optix", "seed": seed,
+        "total_steps": tracker.total_steps,
+        "steps_to_solve": tracker.steps_to_solve,
+        "final_score": final_score, "elapsed": time.perf_counter() - t0,
+        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
+    }
+
+
+def train_optix_td3(cfg: dict, seed: int, verbose: bool = False, verbose_log_file: Optional[str] = None) -> dict:
+    """
+    tensor-optix autonomous TD3:
+      - SPSA: online adaptation (learning_rate, gamma, tau)
+      - Exponential-backoff convergence detection
+      - PolicyManager: rollback + policy spawning (max_spawns=3)
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env_tmp = gym.make(cfg["env_id"])
+    obs_dim    = env_tmp.observation_space.shape[0]
+    action_dim = env_tmp.action_space.shape[0]
+    action_scale = float(env_tmp.action_space.high[0])
+    env_tmp.close()
+
+    ckpt_dir = f"./benchmarks/.ckpts/td3_{cfg['key']}_{seed}"
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    cfg_for_tracker = dict(cfg)
+    cfg_for_tracker["eval_fn"] = lambda a, env_id, seed=9000: eval_td3(a, env_id, action_scale, seed=seed)
+
+    pm_state: dict = {}
+    tracker_holder: dict = {}
+
+    def make_agent(params=None):
+        hp = {**cfg["hp"], **(params or {})}
+        a, c1, c2 = build_td3_nets(obs_dim, action_dim)
+        lr = hp.get("learning_rate", cfg["lr"])
+        return TorchTD3Agent(
+            actor=a, critic1=c1, critic2=c2, action_dim=action_dim,
+            actor_optimizer=torch.optim.Adam(a.parameters(), lr=lr),
+            critic_optimizer=torch.optim.Adam(
+                list(c1.parameters()) + list(c2.parameters()), lr=lr
+            ),
+            hyperparams=HyperparamSet(params=hp, episode_id=0),
+            device="auto",
+        )
+
+    t0 = time.perf_counter()
+    agent = make_agent()
+    registry = CheckpointRegistry(ckpt_dir)
+    pm = PolicyManager(registry, max_spawns=3)
+    pm_cb = pm.as_callback(agent, agent_factory=make_agent)
+    tracker = _Tracker(cfg=cfg_for_tracker, actor=agent._actor, seed=seed)
+    pm_state.update({"pm_cb": pm_cb, "actor": agent._actor})
+    tracker_holder["tracker"] = tracker
+
+    env = gym.make(cfg["env_id"])
+    wrapped = gym.wrappers.RescaleAction(env, -1.0, 1.0)
+    pipeline = BatchPipeline(env=wrapped, agent=agent, window_size=cfg["window_size"])
+
+    rl_opt = RLOptimizer(
+        agent=agent,
+        pipeline=pipeline,
+        evaluator=TorchEvaluator(),
+        optimizer=SPSAOptimizer(param_bounds={
+            "learning_rate": (1e-4, 1e-3),
+            "gamma":         (0.97, 0.999),
+            "tau":           (1e-3, 1e-1),
+        }, log_params=["learning_rate", "tau"], warmup_episodes=30),
+        checkpoint_dir=ckpt_dir,
+        max_episodes=cfg["max_steps"] // cfg["window_size"],
+        rollback_on_degradation=True,
+        max_interval_episodes=8,
+        dormant_threshold=8,
+        checkpoint_score_fn=lambda a: eval_td3(
+            pm_state.get("actor", a._actor), cfg["env_id"], action_scale, seed=seed + 10_000
+        ),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
+        verbose=verbose,
+        verbose_log_file=verbose_log_file,
+    )
+    pm_cb.set_stop_fn(rl_opt.stop)
+    rl_opt.add_callback(tracker)
+    rl_opt.add_callback(pm_cb)
+    rl_opt.run()
+
+    tracker = tracker_holder["tracker"]
+    actor   = pm_state["actor"]
+    final_score = eval_td3(actor, cfg["env_id"], action_scale, seed=seed + 10_000)
+    tracker.history.append((tracker.total_steps, final_score))
+    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
+        tracker.steps_to_solve = tracker.total_steps
+    print(
+        f"  [optix     | {cfg['label']:16s} | seed={seed}]"
+        f"  steps={tracker.total_steps:>7,d}  score={final_score:>8.1f}  [final]",
+        flush=True,
+    )
+
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    return {
+        "method": "tensor-optix", "seed": seed,
+        "total_steps": tracker.total_steps,
+        "steps_to_solve": tracker.steps_to_solve,
+        "final_score": final_score, "elapsed": time.perf_counter() - t0,
+        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
+    }
+
+
+def train_optix_recurrent_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_file: Optional[str] = None) -> dict:
+    """
+    tensor-optix autonomous Recurrent PPO (POMDP):
+      - SPSA: online adaptation (learning_rate, clip_ratio, entropy_coef)
+      - Exponential-backoff convergence detection
+      - PolicyManager: rollback + policy spawning (max_spawns=3)
+      - _RecurrentBatchPipeline: resets hidden state at episode boundaries
+    """
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env_factory = cfg["env_factory"]
+    env_tmp = env_factory()
+    obs_dim   = env_tmp.observation_space.shape[0]
+    n_actions = env_tmp.action_space.n
+    env_tmp.close()
+
+    ckpt_dir = f"./benchmarks/.ckpts/rppo_{cfg['key']}_{seed}"
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    cfg_for_tracker = dict(cfg)
+    cfg_for_tracker["eval_fn"] = (
+        lambda agent, env_id, seed=9000:
+        eval_recurrent_ppo(agent, env_factory, seed=seed)
+    )
+
+    pm_state: dict = {}
+    tracker_holder: dict = {}
+
+    def make_agent(params=None):
+        hp = {**cfg["hp"], **(params or {})}
+        rnn, ah, ch = build_rppo_nets(obs_dim, n_actions)
+        return TorchRecurrentPPOAgent(
+            rnn=rnn, actor_head=ah, critic_head=ch, n_actions=n_actions,
+            optimizer=torch.optim.Adam(
+                list(rnn.parameters()) + list(ah.parameters()) + list(ch.parameters()),
+                lr=hp.get("learning_rate", cfg["lr"]),
+            ),
+            hyperparams=HyperparamSet(params=hp, episode_id=0),
+        )
+
+    t0 = time.perf_counter()
+    agent = make_agent()
+    registry = CheckpointRegistry(ckpt_dir)
+    pm = PolicyManager(registry, max_spawns=3)
+    pm_cb = pm.as_callback(agent, agent_factory=make_agent)
+    tracker = _Tracker(cfg=cfg_for_tracker, actor=agent, seed=seed)
+    pm_state.update({"pm_cb": pm_cb, "agent": agent})
+    tracker_holder["tracker"] = tracker
+
+    env = env_factory()
+    pipeline = _RecurrentBatchPipeline(env=env, agent=agent, window_size=cfg["window_size"])
+
+    rl_opt = RLOptimizer(
+        agent=agent,
+        pipeline=pipeline,
+        evaluator=TorchEvaluator(),
+        optimizer=SPSAOptimizer(param_bounds={
+            "learning_rate": (1e-4, 3e-3),
+            "clip_ratio":    (0.1,  0.3),
+            "entropy_coef":  (0.0,  0.05),
+        }, log_params=["learning_rate"], warmup_episodes=30),
+        checkpoint_dir=ckpt_dir,
+        max_episodes=cfg["max_steps"] // cfg["window_size"],
+        rollback_on_degradation=True,
+        max_interval_episodes=8,
+        dormant_threshold=8,
+        min_episodes_before_dormant=30,
+        checkpoint_score_fn=lambda a: eval_recurrent_ppo(
+            pm_state.get("agent", a), env_factory, seed=seed + 10_000
+        ),
+        target_score=cfg["solve_threshold"],
+        convergence_patience=5,
+        verbose=verbose,
+        verbose_log_file=verbose_log_file,
+    )
+    pm_cb.set_stop_fn(rl_opt.stop)
+    rl_opt.add_callback(tracker)
+    rl_opt.add_callback(pm_cb)
+    rl_opt.run()
+
+    tracker = tracker_holder["tracker"]
+    ag      = pm_state["agent"]
+    final_score = eval_recurrent_ppo(ag, env_factory, seed=seed + 10_000)
+    tracker.history.append((tracker.total_steps, final_score))
+    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
+        tracker.steps_to_solve = tracker.total_steps
+    print(
+        f"  [optix     | {cfg['label']:16s} | seed={seed}]"
+        f"  steps={tracker.total_steps:>7,d}  score={final_score:>8.1f}  [final]",
+        flush=True,
+    )
+
+    shutil.rmtree(ckpt_dir, ignore_errors=True)
+    return {
+        "method": "tensor-optix", "seed": seed,
+        "total_steps": tracker.total_steps,
+        "steps_to_solve": tracker.steps_to_solve,
+        "final_score": final_score, "elapsed": time.perf_counter() - t0,
+        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
+    }
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Environment configs
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -781,6 +1479,43 @@ DQN_HP = {
     "batch_size":         64,
     "target_update_freq": 10,
     "replay_capacity":    10_000,
+}
+RAINBOW_HP = {
+    "learning_rate":      6.25e-5,
+    "gamma":              0.99,
+    "batch_size":         32,
+    "target_update_freq": 200,
+    "replay_capacity":    100_000,
+    "per_alpha":          0.5,
+    "per_beta":           0.4,
+    "n_step":             3,
+    "v_min":              0.0,
+    "v_max":              500.0,
+    "n_atoms":            51,
+}
+TD3_HP = {
+    "learning_rate":      3e-4,
+    "gamma":              0.99,
+    "tau":                0.005,
+    "batch_size":         256,
+    "updates_per_step":   1,
+    "replay_capacity":    200_000,
+    "policy_delay":       2,
+    "target_noise":       0.2,
+    "target_noise_clip":  0.5,
+    "per_alpha":          0.0,
+    "per_beta":           0.4,
+}
+RPPO_HP = {
+    "learning_rate":  3e-4,
+    "clip_ratio":     0.2,
+    "entropy_coef":   0.01,
+    "vf_coef":        0.5,
+    "gamma":          0.99,
+    "gae_lambda":     0.95,
+    "n_epochs":       4,
+    "bptt_len":       16,
+    "max_grad_norm":  0.5,
 }
 
 ENV_CONFIGS = {
@@ -870,6 +1605,71 @@ ENV_CONFIGS = {
         "eval_fn": lambda actor, env_id, seed=9000: eval_sac(actor, env_id, 1.0, seed=seed),
         "train_vanilla":    train_vanilla_sac,
         "train_optix":      train_optix_sac,
+    },
+    "cartpole_rainbow": {
+        # CartPole-v1 with Rainbow DQN — all 6 improvements to DQN:
+        # double-Q, PER, n-step returns, dueling networks, noisy nets, C51.
+        # Demonstrates that the full Rainbow stack converges faster and more
+        # reliably than vanilla DQN on the same environment.
+        "key":             "cartpole_rainbow",
+        "label":           "CartPole Rainbow",
+        "env_id":          "CartPole-v1",
+        "algo":            "Rainbow DQN (all 6 improvements)",
+        "solve_threshold":  475.0,
+        "max_steps":        200_000,
+        "window_size":      512,
+        "eval_every":       5_000,
+        "lr":               6.25e-5,
+        "hp":               RAINBOW_HP,
+        "eval_fn":          lambda net, env_id, seed=9000: eval_rainbow(net, env_id, seed=seed),
+        "train_vanilla":    train_vanilla_rainbow,
+        "train_optix":      train_optix_rainbow,
+    },
+    "pendulum_td3": {
+        # Pendulum-v1 with TD3 — the canonical continuous control benchmark.
+        # TD3's three fixes (twin critics, delayed updates, target smoothing)
+        # address overestimation bias that causes DDPG to diverge here.
+        # Solve threshold: −150 (from Gymnasium leaderboard).
+        "key":             "pendulum_td3",
+        "label":           "Pendulum TD3",
+        "env_id":          "Pendulum-v1",
+        "algo":            "TD3 (continuous, twin-delayed)",
+        "solve_threshold":  -150.0,
+        "max_steps":        300_000,
+        "window_size":      1_000,
+        "eval_every":       10_000,
+        "lr":               3e-4,
+        "hp":               TD3_HP,
+        "eval_fn":          lambda actor, env_id, seed=9000: eval_td3(actor, env_id, 2.0, seed=seed),
+        "train_vanilla":    train_vanilla_td3,
+        "train_optix":      train_optix_td3,
+    },
+    "pomdp_cartpole": {
+        # CartPole-v1 with velocity observations masked (indices 1, 3 removed).
+        # The feedforward PPO cannot infer velocity from position alone;
+        # the LSTM in RecurrentPPO integrates past observations into a belief
+        # state, giving it a decisive advantage in this POMDP setting.
+        "key":             "pomdp_cartpole",
+        "label":           "POMDP CartPole",
+        "env_id":          "CartPole-v1",
+        "env_factory":     lambda: _POMDPCartPoleWrapper(gym.make("CartPole-v1")),
+        "algo":            "Recurrent PPO (LSTM, partial observability)",
+        "solve_threshold":  350.0,
+        "max_steps":        300_000,
+        "window_size":      1_024,
+        "eval_every":       10_000,
+        "lr":               3e-4,
+        "hp":               RPPO_HP,
+        "eval_fn": (
+            lambda agent, env_id, seed=9000:
+            eval_recurrent_ppo(
+                agent,
+                lambda: _POMDPCartPoleWrapper(gym.make("CartPole-v1")),
+                seed=seed,
+            )
+        ),
+        "train_vanilla":    train_vanilla_recurrent_ppo,
+        "train_optix":      train_optix_recurrent_ppo,
     },
 }
 
@@ -1379,7 +2179,10 @@ def main() -> None:
         choices=list(ENV_CONFIGS.keys()),
         default=["cartpole", "lunarlander", "acrobot", "lunarlander_continuous", "bipedalwalker"],
         metavar="ENV",
-        help="Environments (default: all five)",
+        help=(
+            "Environments to benchmark (default: original 5). "
+            "New: cartpole_rainbow, pendulum_td3, pomdp_cartpole"
+        ),
     )
     parser.add_argument(
         "--seeds", type=int, nargs="+",

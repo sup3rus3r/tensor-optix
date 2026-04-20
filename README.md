@@ -21,7 +21,162 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 
 ---
 
-## Install
+## Real-World Use Cases
+
+tensor-optix was designed for production environments where training can't be babysat. Here are the patterns it solves well.
+
+### Algorithmic Trading
+
+A trading agent faces non-stationary markets: a strategy that works in a trending regime collapses in a ranging one. tensor-optix handles this via live streaming, train/val split across time, and automatic rollback when out-of-sample performance degrades.
+
+```python
+from tensor_optix import RLOptimizer, BatchPipeline, PolicyManager
+from tensor_optix import LivePipeline
+
+# Train on rolling window, validate on the next period (never seen during training)
+train_pipeline = LivePipeline(data_source=MarketFeed(), agent=agent,
+                               episode_boundary_fn=LivePipeline.every_n_seconds(300))
+val_pipeline   = LivePipeline(data_source=MarketFeed(offset="1d"), agent=agent,
+                               episode_boundary_fn=LivePipeline.every_n_seconds(300))
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=train_pipeline,
+    val_pipeline=val_pipeline,        # all checkpoint + rollback decisions use val score
+    rollback_on_degradation=True,     # restore best weights the moment val drops
+    checkpoint_score_fn=lambda a: backtest(a, held_out_period),  # external scoring
+)
+
+pm = PolicyManager(registry, max_spawns=4)
+cb = pm.as_callback(agent, agent_factory=make_agent)
+cb.set_stop_fn(opt.stop)
+opt.add_callback(cb)
+opt.run()
+# When market regime shifts, DORMANT fires → MetaController spawns a variant
+# with perturbed hyperparams → ensemble diversifies across regime hypotheses
+```
+
+**What tensor-optix provides here:** val-driven checkpointing prevents saving a model that overfits recent price action; rollback catches regime breaks before they compound; policy spawning creates ensemble variants that collectively cover multiple regimes.
+
+---
+
+### Robotics & Continuous Control
+
+Locomotion tasks (BipedalWalker, MuJoCo Ant, custom robot) collapse mid-training when the critic diverges. A fixed training loop has no recovery path. tensor-optix detects the collapse and rolls back automatically.
+
+```python
+from tensor_optix.algorithms.torch_sac import TorchSACAgent
+from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
+
+# SAC for stochastic envs, TD3 for dense-reward deterministic locomotion
+agent = TorchSACAgent(actor=actor, critic1=c1, critic2=c2, action_dim=action_dim,
+                      actor_optimizer=..., critic_optimizer=..., alpha_optimizer=...,
+                      hyperparams=hp, device="auto")
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=pipeline,
+    rollback_on_degradation=True,
+    dormant_threshold=8,              # recover fast — off-policy collapse is sharp
+    min_episodes_before_dormant=30,   # let Q-function stabilise before evaluating plateau
+    checkpoint_score_fn=lambda a: eval_deterministic(a, env_id, n_eps=5, seed=42),
+)
+pm = PolicyManager(registry, max_spawns=3)
+cb = pm.as_callback(agent, agent_factory=make_agent)
+cb.set_stop_fn(opt.stop)
+opt.run()
+```
+
+**What tensor-optix provides here:** collapse detection + rollback replaces the "restart and hope" workflow; adaptive SPSA tunes `tau` and `gamma` online as the Q-function matures; external `checkpoint_score_fn` avoids saving mid-collapse snapshots.
+
+---
+
+### Game AI & Atari
+
+Discrete action games benefit from sample-efficient algorithms. Rainbow DQN with all six improvements is one line. The async actor-learner scales throughput linearly with CPU cores.
+
+```python
+from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+from tensor_optix.distributed import AsyncActorLearner
+
+# Option A: Rainbow DQN — best sample efficiency for discrete action games
+q_net = RainbowQNetwork(obs_dim=obs_dim, n_actions=n_actions,
+                         hidden_size=256, n_atoms=51, v_min=-10.0, v_max=10.0)
+agent = TorchRainbowDQNAgent(q_network=q_net, n_actions=n_actions,
+                              optimizer=torch.optim.Adam(q_net.parameters(), lr=6.25e-5),
+                              hyperparams=hp, n_atoms=51, v_min=-10.0, v_max=10.0)
+
+# Option B: IMPALA async actor-learner — 4× throughput, same convergence
+learner = AsyncActorLearner(
+    actor=actor, critic=critic, optimizer=optimizer,
+    env_factory=lambda: gym.make("ALE/Pong-v5"),
+    n_actors=8, trajectory_len=64, seed=0,
+)
+stats = learner.run(max_steps=10_000_000)
+print(f"{stats['steps_per_second']:.0f} steps/s")
+```
+
+**What tensor-optix provides here:** Rainbow handles the exploration/exploitation problem across sparse-reward levels; the async learner saturates CPU cores without any infrastructure code; convergence detection stops training once the agent has solved the game rather than running a fixed 10M step budget.
+
+---
+
+### Industrial & HVAC Control
+
+Control systems have slow, expensive simulators and no tolerance for parameter drift. SPSA adapts hyperparams online in just two episodes per update — no grid search needed.
+
+```python
+class HVACAgent(BaseAgent):
+    """Custom control agent — tensor-optix owns the loop, you own the policy."""
+    def act(self, obs): ...
+    def learn(self, episode_data): ...
+    def get_hyperparams(self): ...
+    def set_hyperparams(self, hp): ...
+    def save_weights(self, path): ...
+    def load_weights(self, path): ...
+
+opt = RLOptimizer(
+    agent=HVACAgent(),
+    pipeline=BatchPipeline(env=HVACSimulator(), agent=agent, window_size=96),  # 96 = 8h @ 5min steps
+    optimizer=SPSAOptimizer(param_bounds={
+        "setpoint_gain":  (0.1, 2.0),
+        "integral_coef":  (0.01, 0.5),
+        "comfort_weight": (0.5, 5.0),
+    }),
+    checkpoint_score_fn=lambda a: simulate_week(a, seed=0),  # week-long holdout eval
+    verbose=True,
+)
+opt.run()
+```
+
+**What tensor-optix provides here:** SPSA tunes control parameters with only 2 simulator rollouts per gradient estimate — far cheaper than grid search over a slow HVAC sim; checkpoint scoring on a full held-out week prevents saving a policy that game-theorises the training schedule.
+
+---
+
+### Partially Observable Environments
+
+Environments where the agent can't see the full state (POMDPs, multi-step signal processing, robotics with proprioception only) need memory. Recurrent PPO carries LSTM hidden state across steps automatically.
+
+```python
+from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
+
+agent = TorchRecurrentPPOAgent(
+    obs_dim=obs_dim,
+    n_actions=n_actions,
+    hidden_size=128,       # LSTM hidden dimension
+    hyperparams=hp,
+    device="auto",
+)
+
+# act() and learn() carry hidden state internally — same interface as all other agents
+pipeline = BatchPipeline(env=gym.make("PartiallyObservableMaze-v0"),
+                          agent=agent, window_size=512)
+opt = RLOptimizer(agent=agent, pipeline=pipeline)
+opt.run()
+```
+
+**What tensor-optix provides here:** hidden state is stored per step in the rollout buffer and reset at episode boundaries automatically — no BPTT truncation bookkeeping; the same `RLOptimizer` loop, callbacks, and `PolicyManager` work unchanged with recurrent agents.
+
+---
 
 ```bash
 # TensorFlow (default — includes PPO, DQN, SAC for TF)

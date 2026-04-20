@@ -92,9 +92,9 @@ class NoisyLinear(nn.Module):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _factorized_noise(size: int) -> torch.Tensor:
+    def _factorized_noise(size: int, device=None) -> torch.Tensor:
         """Draw size samples, apply f(x) = sgn(x)·√|x|."""
-        x = torch.randn(size)
+        x = torch.randn(size, device=device)
         return x.sign() * x.abs().sqrt()
 
     def reset_noise(self) -> None:
@@ -105,8 +105,9 @@ class NoisyLinear(nn.Module):
         Sharing a single noise sample across the entire forward pass is the
         factorized Gaussian approximation from §3.2 of the paper.
         """
-        eps_i = self._factorized_noise(self.in_features)
-        eps_j = self._factorized_noise(self.out_features)
+        device = self.mu_w.device
+        eps_i = self._factorized_noise(self.in_features, device=device)
+        eps_j = self._factorized_noise(self.out_features, device=device)
         # ε_w_ij = f(ε_i) ⊗ f(ε_j)   [outer product]
         self.eps_w = eps_j.unsqueeze(1) * eps_i.unsqueeze(0)
         self.eps_b = eps_j
