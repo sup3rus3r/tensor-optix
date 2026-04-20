@@ -666,7 +666,7 @@ from tensor_optix.distributed import AsyncActorLearner, compute_vtrace_targets
 
 ```mermaid
 flowchart LR
-    SM["🧠 Shared Memory\nactor weights\ncritic weights\n(share_memory=True)"]
+    SM["Shared Memory\nactor weights\ncritic weights\n(share_memory=True)"]
 
     subgraph Actors["Actor Processes (×N)"]
         A0[Actor 0]
