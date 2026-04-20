@@ -1,3 +1,27 @@
+import sys
+import importlib.machinery
+from unittest.mock import MagicMock
+
+# Stub TensorFlow before any tensor_optix import can trigger the real TF C++
+# library.  When TF is properly installed the stub is never used (the
+# `if mod_name not in sys.modules` guard is a no-op).  When TF is absent or
+# broken (e.g. during a CUDA-enabled reinstall), the stub prevents a hard
+# segfault from TF's native initialisation code.
+def _make_tf_mock(name: str) -> MagicMock:
+    m = MagicMock()
+    m.__spec__    = importlib.machinery.ModuleSpec(name=name, loader=None, origin=None)
+    m.__version__ = "2.18.0"
+    m.__name__    = name
+    m.__package__ = name.split(".")[0]
+    m.__path__    = []
+    m.__loader__  = None
+    return m
+
+for _tf_mod in ["tensorflow", "tensorflow.keras", "tensorflow.keras.layers",
+                "tensorflow.keras.optimizers", "tensorflow.keras.models"]:
+    if _tf_mod not in sys.modules:
+        sys.modules[_tf_mod] = _make_tf_mock(_tf_mod)
+
 import pytest
 import numpy as np
 from tensor_optix.core.types import EpisodeData, EvalMetrics, HyperparamSet

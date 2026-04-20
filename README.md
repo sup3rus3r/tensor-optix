@@ -1,6 +1,6 @@
 # tensor-optix
 
-Autonomous training loop for any sequential learning model — built-in PPO, DQN, and SAC for TensorFlow and PyTorch.
+Autonomous training loop for any sequential learning model — built-in PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax.
 
 ---
 
@@ -8,9 +8,14 @@ Autonomous training loop for any sequential learning model — built-in PPO, DQN
 
 tensor-optix is a framework-agnostic autonomous training loop. It owns evaluation, checkpointing, hyperparameter tuning, policy evolution, and ensemble management for **any model that can act and learn from sequential data** — reinforcement learning agents, online forecasters, trading systems, robotics controllers, or any custom architecture that fits the six-method `BaseAgent` interface.
 
-The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop — it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, and SAC** for both TensorFlow and PyTorch so you can start training without writing a single algorithm line.
+The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop — it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO** for TensorFlow and PyTorch, plus a **JAX/Flax PPO adapter**, so you can start training without writing a single algorithm line.
 
 **The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision — not training alone.
+
+**New in 1.9.0:**
+- **Distributed async actor-learner** (IMPALA + V-trace) — N actors run in parallel POSIX shared-memory processes, learner applies V-trace off-policy correction, 4× sample throughput on CPU
+- **JAX/Flax PPO adapter** — `FlaxPPOAgent` and `FlaxAgent` base class; XLA-compiled updates, optax optimisers, pickle-safe weight serialisation; convergence-parity with `TorchPPOAgent`
+- **Live terminal dashboard** — `RichDashboardCallback` renders a real-time Rich panel (score sparkline, hyperparams, loop state) with zero extra dependencies
 
 **Core philosophy:** We own the loop. You own the model.
 
@@ -25,7 +30,10 @@ pip install tensor-optix
 # PyTorch support (CUDA wheel must be installed separately — see below)
 pip install tensor-optix[torch]
 
-# Both + Atari + MuJoCo
+# JAX/Flax support (FlaxAgent, FlaxPPOAgent)
+pip install tensor-optix[jax]
+
+# Everything: PyTorch + JAX + Atari + MuJoCo
 pip install tensor-optix[all]
 
 # Box2D environments (requires swig: apt install swig / brew install swig)
@@ -43,7 +51,43 @@ pip install tensor-optix
 ```
 
 **Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
-TensorFlow >= 2.18 is required for TF algorithms. PyTorch >= 2.0 is required for Torch algorithms. The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
+TensorFlow >= 2.18 is required for TF algorithms. PyTorch >= 2.0 is required for Torch algorithms. JAX >= 0.10 + Flax >= 0.12.6 + optax >= 0.2.8 required for JAX algorithms. The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
+
+---
+
+## Benchmarks
+
+### Feature showcase (~5 min, CPU)
+
+Demonstrates the JAX/Flax adapter (convergence parity with PyTorch PPO) and the async actor-learner throughput (4× actors vs 1):
+
+```bash
+uv run python benchmarks/benchmark.py --demo
+```
+
+### Core benchmark — tensor-optix vs fixed loop (fast, 1 seed)
+
+CartPole + LunarLander, 1 seed each:
+
+```bash
+uv run python benchmarks/benchmark.py --envs cartpole lunarlander --seeds 0
+```
+
+### Full benchmark — all 5 environments, 3 seeds
+
+CartPole (DQN), LunarLander (PPO), Acrobot (PPO), LunarLanderContinuous (SAC), BipedalWalker (SAC):
+
+```bash
+uv run python benchmarks/benchmark.py
+```
+
+Additional flags:
+```
+--optix-only       skip baseline, run tensor-optix only
+--no-plot          skip matplotlib chart
+--verbose          print per-episode output
+--seeds 0 1 2      override seeds
+```
 
 ---
 
@@ -283,6 +327,270 @@ agent = TFSACAgent(
     }, episode_id=0),
 )
 ```
+
+---
+
+### TD3 — Twin Delayed Deep Deterministic Policy Gradient
+
+Continuous action spaces. Deterministic actor, twin critics, target policy smoothing, delayed actor updates.
+
+```python
+from tensor_optix.algorithms.torch_td3 import TorchTD3Agent  # PyTorch
+```
+
+**What it adds over SAC:**
+- Deterministic policy (no entropy term) — lower variance, better on dense-reward locomotion
+- Target policy smoothing: adds clipped Gaussian noise to target actions to prevent value over-fitting to narrow peaks
+- Delayed actor updates: critic updated every step, actor updated every `policy_delay` steps (default 2)
+- Twin-Q minimization over both critics (same as SAC)
+
+```python
+import torch.nn as nn
+from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
+
+obs_dim, act_dim = 24, 4   # e.g. BipedalWalker-v3
+
+actor   = nn.Sequential(nn.Linear(obs_dim, 256), nn.ReLU(), nn.Linear(256, act_dim), nn.Tanh())
+critic1 = nn.Sequential(nn.Linear(obs_dim + act_dim, 256), nn.ReLU(), nn.Linear(256, 1))
+critic2 = nn.Sequential(nn.Linear(obs_dim + act_dim, 256), nn.ReLU(), nn.Linear(256, 1))
+
+agent = TorchTD3Agent(
+    actor=actor, critic1=critic1, critic2=critic2,
+    action_dim=act_dim,
+    actor_optimizer=torch.optim.Adam(actor.parameters(), lr=3e-4),
+    critic_optimizer=torch.optim.Adam(
+        list(critic1.parameters()) + list(critic2.parameters()), lr=3e-4
+    ),
+    hyperparams=HyperparamSet(params={
+        "learning_rate": 3e-4, "gamma": 0.99, "tau": 0.005,
+        "batch_size": 256, "policy_delay": 2,
+        "target_noise": 0.2, "noise_clip": 0.5,
+        "expl_noise": 0.1, "replay_capacity": 1_000_000,
+    }, episode_id=0),
+)
+```
+
+---
+
+### Rainbow DQN
+
+Discrete action spaces. Combines six DQN improvements: Double Q, Dueling networks, Prioritized Experience Replay, n-step returns, Noisy Networks, and Distributional RL.
+
+```python
+from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+```
+
+**What it implements (all six Rainbow components):**
+- **Double Q** — target actions from online net, values from target net (reduces overestimation)
+- **Dueling** — separate value and advantage streams; advantage-mean subtraction prevents identifiability issues
+- **PER** — SumTree prioritized replay with IS-weight correction; priority exponent `α`, correction exponent `β`
+- **n-step** — multi-step bootstrap targets; trades variance for bias, dramatically speeds up sparse-reward environments
+- **Noisy Nets** — factorized Gaussian noise on linear layers replaces ε-greedy; exploration driven by learned uncertainty
+- **Categorical / C51** — distributional Q as a 51-atom categorical distribution; KL loss instead of MSE
+
+```python
+obs_dim, n_actions = 8, 4
+
+q_net = RainbowQNetwork(obs_dim=obs_dim, n_actions=n_actions,
+                         hidden_size=256, n_atoms=51,
+                         v_min=-10.0, v_max=10.0)
+
+agent = TorchRainbowDQNAgent(
+    q_network=q_net, n_actions=n_actions,
+    optimizer=torch.optim.Adam(q_net.parameters(), lr=6.25e-5),
+    hyperparams=HyperparamSet(params={
+        "learning_rate": 6.25e-5, "gamma": 0.99,
+        "n_step": 3,            # multi-step return length
+        "per_alpha": 0.5,       # PER priority exponent
+        "per_beta": 0.4,        # IS-weight correction exponent
+        "batch_size": 32,
+        "target_update_freq": 1000,
+        "replay_capacity": 100_000,
+    }, episode_id=0),
+    n_atoms=51, v_min=-10.0, v_max=10.0,
+)
+```
+
+---
+
+### Recurrent PPO — LSTM Actor-Critic
+
+Discrete action spaces. Hidden state carried across episode steps; handles partial observability and sequence-structured tasks.
+
+```python
+from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
+```
+
+**What it adds over standard PPO:**
+- `LSTMActorCritic` module — shared LSTM trunk, separate actor/critic heads
+- Hidden state `(h, c)` carried across episode steps and reset at episode boundaries
+- Rollout buffer stores per-step hidden states — no BPTT truncation artifacts
+- Same clipped surrogate objective as PPO; hidden state dimension configurable
+
+```python
+from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
+
+obs_dim, n_actions, hidden_size = 4, 2, 64
+
+agent = TorchRecurrentPPOAgent(
+    obs_dim=obs_dim,
+    n_actions=n_actions,
+    hidden_size=hidden_size,
+    hyperparams=HyperparamSet(params={
+        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
+        "vf_coef": 0.5, "gamma": 0.99, "gae_lambda": 0.95,
+        "n_epochs": 4, "minibatch_size": 64,
+    }, episode_id=0),
+    device="auto",
+)
+# act() carries hidden state internally — same BaseAgent interface
+action = agent.act(obs)
+```
+
+---
+
+### JAX / Flax Adapter
+
+Discrete action spaces. `FlaxAgent` base and `FlaxPPOAgent` implement the same `BaseAgent` interface as all PyTorch/TF algorithms using Flax NNX + optax.
+
+```python
+# pip install tensor-optix[jax]
+from tensor_optix.adapters.jax.flax_agent    import FlaxAgent
+from tensor_optix.adapters.jax.flax_evaluator import FlaxEvaluator
+from tensor_optix.algorithms.flax_ppo         import FlaxPPOAgent
+```
+
+**Key properties:**
+- `nnx.value_and_grad` differentiates through the combined actor+critic in one pass — no separate backward calls per head
+- `nnx.Optimizer(model, optax.adam(lr), wrt=nnx.Param)` — only trainable `Param` variables are updated
+- Weights serialised as a plain nested `dict` via `nnx.to_pure_dict(nnx.state(model))` and restored with `nnx.replace_by_pure_dict` + `nnx.update` — pickle-safe, version-stable
+- Convergence-parity with `TorchPPOAgent` on CartPole-v1 (within 10%, verified by test suite)
+
+```python
+import gymnasium as gym
+from tensor_optix import HyperparamSet
+from tensor_optix.algorithms.flax_ppo import FlaxPPOAgent
+
+env = gym.make("CartPole-v1")
+obs_dim  = env.observation_space.shape[0]   # 4
+n_actions = env.action_space.n              # 2
+
+agent = FlaxPPOAgent(
+    obs_dim=obs_dim,
+    n_actions=n_actions,
+    hyperparams=HyperparamSet(params={
+        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
+        "vf_coef": 0.5, "gamma": 0.99, "gae_lambda": 0.95,
+        "n_epochs": 10, "minibatch_size": 64,
+    }, episode_id=0),
+    hidden_size=64,
+    seed=0,
+)
+
+# Drop-in with any existing tensor-optix loop:
+from tensor_optix import BatchPipeline, RLOptimizer
+from tensor_optix.adapters.jax.flax_evaluator import FlaxEvaluator
+
+pipeline = BatchPipeline(env=env, agent=agent, window_size=2048)
+opt = RLOptimizer(agent=agent, pipeline=pipeline, evaluator=FlaxEvaluator())
+opt.run()
+```
+
+---
+
+### Distributed Training — Async Actor-Learner (IMPALA + V-trace)
+
+IMPALA-style asynchronous actor-learner for PyTorch discrete policies. N actor processes collect trajectories in parallel using POSIX shared memory — learner weight updates are instantly visible to all actors with zero serialization overhead.
+
+```python
+# pip install tensor-optix[torch]
+from tensor_optix.distributed import AsyncActorLearner, compute_vtrace_targets
+```
+
+**Architecture:**
+```
+shared memory   ┌─────────────────────────────────────────┐
+                │  actor nn.Module  (share_memory=True)   │
+                │  critic nn.Module (share_memory=True)   │
+                └─────────────────────────────────────────┘
+                     ↑ reads (lock-free)  ↑ optimizer.step()
+  ┌─────────┐        │               ┌───────────────────┐
+  │ Actor 0 │────────┘               │ Learner (main)    │
+  │ Actor 1 │──── traj_queue ───────►│ V-trace targets   │
+  │ ...     │                        │ gradient update   │
+  │ Actor N │                        └───────────────────┘
+  └─────────┘
+```
+
+**Off-policy correction (V-trace):**
+```
+ρ̄_t = min(ρ̄, π_θ(a_t|s_t) / π_μ(a_t|s_t))   ← clipped IS weight
+v_t  = V(s_t) + δ_t + γ c̄_t (v_{t+1} − V(s_{t+1}))
+```
+Actors may lag behind the current learner policy (μ ≠ θ). V-trace corrects for this staleness so the learner can safely train on trajectories from any actor generation.
+
+**Throughput:** 4 actors achieve ≥ 2× single-actor sample throughput in tests on CartPole-v1.
+
+```python
+import torch.nn as nn
+import gymnasium as gym
+from tensor_optix.distributed import AsyncActorLearner
+
+obs_dim, n_actions = 4, 2
+
+actor  = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, n_actions))
+critic = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, 1))
+optimizer = torch.optim.Adam(
+    list(actor.parameters()) + list(critic.parameters()), lr=3e-4
+)
+
+learner = AsyncActorLearner(
+    actor=actor,
+    critic=critic,
+    optimizer=optimizer,
+    env_factory=lambda: gym.make("CartPole-v1"),
+    n_actors=4,
+    trajectory_len=64,
+    gamma=0.99,
+    rho_bar=1.0,   # V-trace IS clip ρ̄
+    c_bar=1.0,     # V-trace trace clip c̄
+    entropy_coef=0.01,
+    seed=0,
+)
+
+stats = learner.run(max_steps=500_000)
+# stats: {total_steps, total_updates, steps_per_second, elapsed}
+print(f"Throughput: {stats['steps_per_second']:.0f} steps/s")
+```
+
+**Platform note:** uses `mp.get_context("fork")` — designed for Linux. On macOS or Windows (spawn start method), pass picklable factory callables.
+
+---
+
+### Live Terminal Dashboard
+
+`RichDashboardCallback` renders a live terminal panel during training using the [Rich](https://github.com/Textualize/rich) library.
+
+```python
+# pip install rich   (optional dependency)
+from tensor_optix.callbacks import RichDashboardCallback
+
+opt = RLOptimizer(
+    agent=agent,
+    pipeline=pipeline,
+    callbacks=[RichDashboardCallback(refresh_rate=2)],
+)
+opt.run()
+```
+
+The dashboard shows:
+- Real-time score sparkline (last 20 eval points)
+- Current loop state (ACTIVE / COOLING / DORMANT)
+- Live hyperparameter values
+- Smoothed score, best score, episode count
+- Estimated convergence progress
+
+No extra configuration required — pass it as a callback and it wires itself to the `LoopCallback` hooks automatically.
 
 ---
 
@@ -741,6 +1049,26 @@ pipeline = LivePipeline(
 
 ## Callbacks
 
+### Built-in callbacks
+
+```python
+from tensor_optix.callbacks import WandbCallback, TensorBoardCallback, RichDashboardCallback
+
+# Weights & Biases — logs every on_episode_end and on_improvement event
+opt = RLOptimizer(agent=agent, pipeline=pipeline,
+                  callbacks=[WandbCallback(project="my-project")])
+
+# TensorBoard — writes to ./runs/ by default
+opt = RLOptimizer(agent=agent, pipeline=pipeline,
+                  callbacks=[TensorBoardCallback(log_dir="./runs/cartpole")])
+
+# Live terminal dashboard (requires `pip install rich`)
+opt = RLOptimizer(agent=agent, pipeline=pipeline,
+                  callbacks=[RichDashboardCallback(refresh_rate=2)])
+```
+
+### Custom callbacks
+
 ```python
 from tensor_optix import LoopCallback
 
@@ -832,29 +1160,49 @@ tensor_optix/
 │   ├── checkpoint_registry.py  # Snapshot storage and manifest
 │   ├── normalizers.py          # RunningMeanStd, ObsNormalizer, RewardNormalizer
 │   ├── trajectory_buffer.py    # compute_gae(), make_minibatches()
+│   ├── noisy_linear.py         # NoisyLinear — factorized Gaussian noise (Rainbow)
 │   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
 │   ├── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
 │   ├── regime_detector.py      # RegimeDetector — score-based regime classification
-│   └── meta_controller.py      # MetaController — SPAWN/PRUNE/STOP/NO_OP decisions
+│   ├── meta_controller.py      # MetaController — SPAWN/PRUNE/STOP/NO_OP decisions
+│   ├── her_buffer.py           # HERReplayBuffer — Hindsight Experience Replay
+│   └── diagnostic_controller.py# DiagnosticController — per-episode metric aggregation
 ├── optimizers/
 │   ├── spsa_optimizer.py       # SPSAOptimizer — default, all params in 2 episodes
-│   └── backoff_optimizer.py    # BackoffOptimizer — single-param finite difference
+│   ├── backoff_optimizer.py    # BackoffOptimizer — single-param finite difference
+│   ├── momentum_optimizer.py   # MomentumOptimizer — gradient-signed momentum
+│   └── pbt_optimizer.py        # PBTOptimizer — population-based exploit/explore
 ├── adapters/
 │   ├── tensorflow/
 │   │   ├── tf_agent.py         # TFAgent — generic REINFORCE / A2C base
 │   │   └── tf_evaluator.py     # TFEvaluator — default scorer
-│   └── pytorch/
-│       ├── torch_agent.py      # TorchAgent — generic REINFORCE / A2C base
-│       └── torch_evaluator.py  # TorchEvaluator — default scorer (no TF dep)
+│   ├── pytorch/
+│   │   ├── torch_agent.py      # TorchAgent — generic REINFORCE / A2C base
+│   │   └── torch_evaluator.py  # TorchEvaluator — default scorer (no TF dep)
+│   └── jax/                    # NEW — JAX/Flax adapter
+│       ├── flax_agent.py       # FlaxAgent — REINFORCE base, nnx.Optimizer, pickle weights
+│       └── flax_evaluator.py   # FlaxEvaluator — total reward scorer
 ├── algorithms/
 │   ├── tf_ppo.py               # TFPPOAgent — clipped surrogate, GAE-λ, n-epoch minibatch
-│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent — continuous action PPO, squashed Gaussian
+│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent — continuous PPO, squashed Gaussian
 │   ├── tf_dqn.py               # TFDQNAgent — PER replay, target net, ε-greedy
 │   ├── tf_sac.py               # TFSACAgent — twin critics, squashed Gaussian, auto-α
+│   ├── tf_td3.py               # TFTDDAgent — deterministic policy, delayed actor, target smoothing
 │   ├── torch_ppo.py            # TorchPPOAgent (CUDA auto-detect)
 │   ├── torch_ppo_continuous.py # TorchGaussianPPOAgent — continuous PPO (CUDA auto-detect)
 │   ├── torch_dqn.py            # TorchDQNAgent (CUDA auto-detect)
-│   └── torch_sac.py            # TorchSACAgent (CUDA auto-detect)
+│   ├── torch_sac.py            # TorchSACAgent (CUDA auto-detect)
+│   ├── torch_td3.py            # TorchTD3Agent — TD3: twin critics, delayed actor, noise smoothing
+│   ├── torch_recurrent_ppo.py  # TorchRecurrentPPOAgent — LSTM actor-critic, stateful act()
+│   ├── torch_rainbow_dqn.py    # TorchRainbowDQNAgent — Double/Dueling/PER/n-step/Noisy/C51
+│   └── flax_ppo.py             # FlaxPPOAgent — PPO via flax.nnx + optax (JAX backend)
+├── distributed/                # NEW — async actor-learner
+│   ├── async_learner.py        # AsyncActorLearner — IMPALA-style, POSIX shared memory
+│   └── vtrace.py               # compute_vtrace_targets — pure-numpy V-trace IS correction
+├── callbacks/
+│   ├── wandb_callback.py       # WandbCallback — logs to Weights & Biases
+│   ├── tensorboard_callback.py # TensorBoardCallback — logs to TensorBoard
+│   └── rich_dashboard.py       # RichDashboardCallback — live terminal panel (requires rich)
 └── pipeline/
     ├── batch_pipeline.py       # Continuous stepping, fixed windows
     ├── live_pipeline.py        # Real-time streaming with reconnect
@@ -866,7 +1214,14 @@ tensor_optix/
 | `TFPPOAgent` / `TorchPPOAgent` | Discrete PPO — GAE, clipping, entropy, n-epoch minibatch |
 | `TFGaussianPPOAgent` / `TorchGaussianPPOAgent` | Continuous PPO — squashed Gaussian actor, same PPO core |
 | `TFDQNAgent` / `TorchDQNAgent` | DQN with PER replay, n-step returns, target net, ε-greedy |
-| `TFSACAgent` / `TorchSACAgent` | SAC with twin critics, auto-entropy, soft target updates |
+| `TFSACAgent` / `TorchSACAgent` | SAC — twin critics, auto-entropy, soft target updates |
+| `TFTDDAgent` / `TorchTD3Agent` | TD3 — deterministic actor, twin critics, delayed updates, target smoothing |
+| `TorchRecurrentPPOAgent` | LSTM actor-critic PPO — hidden state carried across steps, handles partial observability |
+| `TorchRainbowDQNAgent` | Rainbow DQN — Double/Dueling/PER/n-step/Noisy Nets/C51 (all six improvements) |
+| `FlaxPPOAgent` | PPO via Flax NNX + optax — XLA-compiled, convergence-parity with TorchPPOAgent |
+| `FlaxAgent` | Base agent for any `nnx.Module` — REINFORCE update, pickle-safe weight I/O |
+| `AsyncActorLearner` | IMPALA-style N-actor learner — POSIX shared memory, V-trace off-policy correction |
+| `compute_vtrace_targets` | Pure-numpy V-trace IS correction (Espeholt et al. 2018) |
 | `LoopController` | State machine, episode orchestration, eval, checkpoint |
 | `BackoffScheduler` | Adaptive eval scheduling + convergence detection |
 | `CheckpointRegistry` | Snapshot storage, best-checkpoint manifest |
@@ -878,6 +1233,9 @@ tensor_optix/
 | `MetaController` | Rule-based SPAWN/PRUNE/STOP/NO_OP decisions |
 | `EnsembleAgent` | Weighted-average action combining across multiple agents |
 | `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
+| `WandbCallback` | Logs scores, hyperparams, and diagnostics to Weights & Biases |
+| `TensorBoardCallback` | Logs to TensorBoard SummaryWriter |
+| `RichDashboardCallback` | Live terminal panel — sparkline, state, hyperparams (requires `rich`) |
 | `VectorBatchPipeline` | Parallel environment rollouts via gymnasium.vector |
 | `ObsNormalizer` | Online running mean/std observation normalization |
 | `RewardNormalizer` | Return-std reward scaling |
@@ -1049,6 +1407,49 @@ slope = linear_regression_slope(gap₀, ..., gapₙ)
 slope > threshold → PRUNE
 ```
 Detects active overfitting progression before gap level alone triggers.
+
+### V-trace Off-Policy Correction (`compute_vtrace_targets` / `AsyncActorLearner`)
+
+Espeholt et al. 2018 ([IMPALA](https://arxiv.org/abs/1802.01561)). Corrects actor-lag bias when actors run an older policy μ while the learner updates to θ.
+
+```
+ρ_t   = π_θ(a_t|s_t) / π_μ(a_t|s_t)          ← IS ratio
+ρ̄_t  = min(ρ̄, ρ_t)                            ← clipped IS weight
+c̄_t  = min(c̄, ρ_t)                            ← trace coefficient
+
+δ_t   = ρ̄_t · (r_t + γ·(1−done_t)·V(s_{t+1}) − V(s_t))
+
+v_t   = V(s_t) + δ_t + γ·(1−done_t)·c̄_t·(v_{t+1} − V(s_{t+1}))
+                                               ← backward recursion
+
+A_t   = ρ̄_t · (r_t + γ·(1−done_t)·v_{t+1} − V(s_t))
+                                               ← policy gradient advantage
+```
+
+With ρ̄ = c̄ = 1 and synchronous actors (μ = θ), reduces to standard on-policy GAE. The clip ρ̄ bounds the maximum IS weight, preventing gradient spikes from stale trajectories.
+
+### TD3 Target Policy Smoothing (`TorchTD3Agent` / `TFTDDAgent`)
+
+```
+a_noise = clip(N(0, σ), −c, c)              ← clipped Gaussian noise
+a_target = clip(π_θ_tgt(s') + a_noise, a_lo, a_hi)
+
+y = r + γ · min(Q_tgt1(s', a_target), Q_tgt2(s', a_target))
+```
+
+Smoothing prevents the critic from over-fitting to narrow deterministic action peaks. The actor is updated every `policy_delay` critic steps (default 2), giving the critic time to stabilise before actor gradients are computed.
+
+### Rainbow Categorical Distribution (`TorchRainbowDQNAgent`)
+
+Distributional Bellman target (Bellemare et al. 2017):
+```
+atoms: z_i ∈ {v_min + i·Δz},   i = 0..N-1,   Δz = (v_max − v_min) / (N-1)
+
+y     = r + γ · z_i   (projected onto support)
+
+L     = KL(target_dist ‖ Q_dist(s, a))       ← cross-entropy loss
+```
+The 51-atom categorical distribution represents the full return distribution rather than its mean, enabling value-based agents to reason about risk.
 
 ---
 

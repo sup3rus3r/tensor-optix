@@ -1169,10 +1169,210 @@ def run(envs: list[str], seeds: list[int], plot: bool = True, optix_only: bool =
     print()
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Feature showcase  (--demo)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _demo_jax(seed: int = 0) -> None:
+    """Demo: FlaxPPOAgent vs TorchPPOAgent on CartPole-v1 (200 episodes each)."""
+    try:
+        import jax  # noqa: F401
+        from flax import nnx  # noqa: F401
+        import optax  # noqa: F401
+    except ImportError:
+        print("  [demo-jax] skipped — install tensor-optix[jax] to enable")
+        return
+
+    from tensor_optix.algorithms.flax_ppo import FlaxPPOAgent
+    from tensor_optix.core.types import EpisodeData, HyperparamSet
+
+    hp = HyperparamSet(params=dict(
+        learning_rate=3e-4, clip_ratio=0.2, entropy_coef=0.01,
+        vf_coef=0.5, gamma=0.99, gae_lambda=0.95,
+        n_epochs=4, minibatch_size=32,
+    ), episode_id=0)
+
+    W = 64
+
+    print("\n" + "=" * W)
+    print("  JAX/Flax Adapter  |  FlaxPPOAgent vs TorchPPOAgent")
+    print("  Environment: CartPole-v1  |  200 training episodes  |  5 eval episodes")
+    print("=" * W)
+
+    # ── Flax ──
+    import gymnasium as gym
+    agent_flax = FlaxPPOAgent(obs_dim=4, n_actions=2, hyperparams=hp, seed=seed)
+    env = gym.make("CartPole-v1")
+    t0 = time.perf_counter()
+    for ep_i in range(200):
+        obs_t, _ = env.reset(seed=seed)
+        obs_list, act_list, rew_list = [], [], []
+        done = False
+        while not done:
+            action = agent_flax.act(obs_t)
+            obs_list.append(obs_t.copy())
+            act_list.append(action)
+            obs_t, reward, terminated, truncated, _ = env.step(action)
+            rew_list.append(float(reward))
+            done = terminated or truncated
+        ep = EpisodeData(
+            observations=np.array(obs_list, dtype=np.float32),
+            actions=act_list, rewards=rew_list,
+            terminated=[False] * (len(rew_list) - 1) + [bool(terminated)],
+            truncated=[False] * (len(rew_list) - 1) + [bool(truncated)],
+            infos=[{}] * len(rew_list), episode_id=ep_i,
+        )
+        agent_flax.learn(ep)
+    env.close()
+    flax_train_t = time.perf_counter() - t0
+
+    eval_env = gym.make("CartPole-v1")
+    flax_rewards = []
+    for _ in range(5):
+        obs_e, _ = eval_env.reset(seed=seed + 1000)
+        total, done = 0.0, False
+        while not done:
+            action = agent_flax.act(obs_e)
+            obs_e, r, term, trunc, _ = eval_env.step(action)
+            total += r; done = term or trunc
+        agent_flax.reset_cache()
+        flax_rewards.append(total)
+    eval_env.close()
+    flax_score = float(np.mean(flax_rewards))
+
+    # ── Torch ──
+    torch.manual_seed(seed)
+    actor  = nn.Sequential(nn.Linear(4, 64), nn.Tanh(), nn.Linear(64, 2))
+    critic = nn.Sequential(nn.Linear(4, 64), nn.Tanh(), nn.Linear(64, 1))
+    from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
+    agent_torch = TorchPPOAgent(
+        actor=actor, critic=critic,
+        optimizer=torch.optim.Adam(
+            list(actor.parameters()) + list(critic.parameters()), lr=3e-4
+        ),
+        hyperparams=hp, device="cpu",
+    )
+    env = gym.make("CartPole-v1")
+    t0 = time.perf_counter()
+    for ep_i in range(200):
+        obs_t, _ = env.reset(seed=seed)
+        obs_list, act_list, rew_list = [], [], []
+        done = False
+        while not done:
+            action = agent_torch.act(obs_t)
+            obs_list.append(obs_t.copy())
+            act_list.append(action)
+            obs_t, reward, terminated, truncated, _ = env.step(action)
+            rew_list.append(float(reward))
+            done = terminated or truncated
+        ep = EpisodeData(
+            observations=np.array(obs_list, dtype=np.float32),
+            actions=act_list, rewards=rew_list,
+            terminated=[False] * (len(rew_list) - 1) + [bool(terminated)],
+            truncated=[False] * (len(rew_list) - 1) + [bool(truncated)],
+            infos=[{}] * len(rew_list), episode_id=ep_i,
+        )
+        agent_torch.learn(ep)
+    env.close()
+    torch_train_t = time.perf_counter() - t0
+
+    eval_env = gym.make("CartPole-v1")
+    torch_rewards = []
+    for _ in range(5):
+        obs_e, _ = eval_env.reset(seed=seed + 1000)
+        total, done = 0.0, False
+        while not done:
+            action = agent_torch.act(obs_e)
+            obs_e, r, term, trunc, _ = eval_env.step(action)
+            total += r; done = term or trunc
+        agent_torch.reset_cache()
+        torch_rewards.append(total)
+    eval_env.close()
+    torch_score = float(np.mean(torch_rewards))
+
+    gap = abs(flax_score - torch_score) / max(torch_score, 1.0) * 100
+    print(f"  {'':30s} {'FlaxPPO':>12}  {'TorchPPO':>12}")
+    print(f"  {'-'*56}")
+    print(f"  {'Mean eval reward (5 ep)':30s} {flax_score:>12.1f}  {torch_score:>12.1f}")
+    print(f"  {'Training time (200 ep)':30s} {flax_train_t:>11.1f}s  {torch_train_t:>11.1f}s")
+    print(f"  {'Relative score gap':30s} {gap:>11.1f}%")
+    if gap < 10:
+        print(f"\n  -> Parity confirmed: gap {gap:.1f}% < 10% threshold.")
+    else:
+        print(f"\n  -> Gap {gap:.1f}% — may need more episodes for full convergence.")
+    print()
+
+
+def _demo_async(seed: int = 0) -> None:
+    """Demo: AsyncActorLearner throughput on CartPole-v1 (4 actors vs 1)."""
+    import gymnasium as gym
+    from tensor_optix.distributed import AsyncActorLearner
+
+    W = 64
+    print("\n" + "=" * W)
+    print("  Distributed Async Actor-Learner  |  IMPALA + V-trace")
+    print("  Environment: CartPole-v1  |  30k steps  |  1 actor vs 4 actors")
+    print("=" * W)
+
+    def make_nets():
+        actor  = nn.Sequential(nn.Linear(4, 64), nn.Tanh(), nn.Linear(64, 2))
+        critic = nn.Sequential(nn.Linear(4, 64), nn.Tanh(), nn.Linear(64, 1))
+        opt = torch.optim.Adam(
+            list(actor.parameters()) + list(critic.parameters()), lr=3e-4
+        )
+        return actor, critic, opt
+
+    results = {}
+    for n_actors in (1, 4):
+        actor, critic, opt = make_nets()
+        learner = AsyncActorLearner(
+            actor=actor, critic=critic, optimizer=opt,
+            env_factory=lambda: gym.make("CartPole-v1"),
+            n_actors=n_actors, trajectory_len=64,
+            max_queue_size=500, seed=seed,
+        )
+        stats = learner.run(max_steps=30_000)
+        results[n_actors] = stats
+        print(
+            f"  n_actors={n_actors}  steps={stats['total_steps']:>7,d}"
+            f"  updates={stats['total_updates']:>5,d}"
+            f"  {stats['steps_per_second']:>7.0f} steps/s"
+            f"  ({stats['elapsed']:.1f}s)"
+        )
+
+    ratio = results[4]["steps_per_second"] / max(results[1]["steps_per_second"], 1.0)
+    print(f"\n  -> 4-actor throughput: {ratio:.2f}× single-actor")
+    if ratio >= 2.0:
+        print(f"  -> ≥ 2.0× threshold achieved.")
+    print()
+
+
+def run_demo(seed: int = 0) -> None:
+    """Run a fast multi-feature showcase (~5 minutes on CPU)."""
+    print("\n" + "━" * 64)
+    print("  tensor-optix  Feature Showcase  (--demo)")
+    print("  Demonstrates: JAX/Flax adapter + Async actor-learner")
+    print("━" * 64)
+    _demo_jax(seed=seed)
+    _demo_async(seed=seed)
+    print("━" * 64)
+    print("  Demo complete.")
+    print("  Full benchmark: uv run python benchmarks/benchmark.py --envs cartpole lunarlander --seeds 0")
+    print("━" * 64 + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="tensor-optix vs Baseline training loop benchmark",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--demo", action="store_true",
+        help="Run a fast feature showcase (~5 min): JAX/Flax parity + async throughput",
+    )
+    parser.add_argument(
+        "--demo-seed", type=int, default=0,
+        help="Random seed for --demo (default: 0)",
     )
     parser.add_argument(
         "--envs", nargs="+",
@@ -1209,6 +1409,10 @@ def main() -> None:
     print(f"  gymnasium {gym.__version__}")
     if device == "cpu":
         print("  Note: CPU device detected. Install torch+cuda for faster runs.")
+
+    if args.demo:
+        run_demo(seed=args.demo_seed)
+        return
 
     run(envs=args.envs, seeds=args.seeds, plot=not args.no_plot, optix_only=args.optix_only, verbose=args.verbose, verbose_log_file=args.verbose_log_file)
 

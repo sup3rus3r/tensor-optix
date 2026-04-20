@@ -115,6 +115,27 @@ class BaseAgent(ABC):
         to the best known weights, not the current (possibly degraded) ones.
         """
 
+    def export_onnx(self, path: str) -> None:
+        """
+        Export the actor (policy) network to ONNX format for deployment.
+
+        Only the actor network is exported — learn(), get_hyperparams(),
+        save_weights() are training-time operations that have no place in
+        an ONNX inference graph.
+
+        Default: raises NotImplementedError.
+        Override in framework-specific subclasses that support ONNX export
+        (currently all Torch agents: TorchPPOAgent, TorchSACAgent,
+        TorchTD3Agent, TorchDQNAgent, TorchRecurrentPPOAgent).
+
+        Requires the ``onnx`` optional dependency:
+            pip install tensor-optix[onnx]
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support ONNX export. "
+            f"ONNX export is available on all Torch agents."
+        )
+
     def teardown(self) -> None:
         """
         Release resources held by this agent (GPU memory, file handles, etc.).

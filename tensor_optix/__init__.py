@@ -45,11 +45,30 @@ from .orchestrator import TrialOrchestrator
 from .exploration.rnd import RNDPipeline
 from .core.replay_buffer import PrioritizedReplayBuffer
 from .core.diagnostic_controller import DiagnosticController
-from .callbacks import WandbCallback, TensorBoardCallback
+from .callbacks import WandbCallback, TensorBoardCallback, RichDashboardCallback
+from .factory import make_agent
+from .core.her_buffer import HERReplayBuffer
+from .config import TrainConfig, load_config, apply_overrides, config_to_dict, build_agent_from_config
 __all__ += [
     "TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController",
-    "WandbCallback", "TensorBoardCallback",
+    "WandbCallback", "TensorBoardCallback", "RichDashboardCallback",
+    "make_agent", "HERReplayBuffer",
+    "TrainConfig", "load_config", "apply_overrides", "config_to_dict", "build_agent_from_config",
 ]
+
+try:
+    from .distributed import AsyncActorLearner, compute_vtrace_targets
+    __all__ += ["AsyncActorLearner", "compute_vtrace_targets"]
+except (ImportError, RuntimeError):
+    pass
+
+try:
+    from .adapters.jax.flax_agent    import FlaxAgent
+    from .adapters.jax.flax_evaluator import FlaxEvaluator
+    from .algorithms.flax_ppo         import FlaxPPOAgent
+    __all__ += ["FlaxAgent", "FlaxEvaluator", "FlaxPPOAgent"]
+except (ImportError, RuntimeError):
+    pass
 
 try:
     from .optimizer import RLOptimizer
@@ -59,8 +78,10 @@ try:
     from .algorithms.tf_dqn import TFDQNAgent
     from .algorithms.tf_sac import TFSACAgent
     from .algorithms.tf_ppo_continuous import TFGaussianPPOAgent
+    from .algorithms.tf_td3 import TFTDDAgent
     __all__ += ["RLOptimizer", "TFAgent", "TFEvaluator",
-                "TFPPOAgent", "TFDQNAgent", "TFSACAgent", "TFGaussianPPOAgent"]
+                "TFPPOAgent", "TFDQNAgent", "TFSACAgent", "TFGaussianPPOAgent",
+                "TFTDDAgent"]
 except (ImportError, RuntimeError):
     pass
 
@@ -71,7 +92,13 @@ try:
     from .algorithms.torch_dqn import TorchDQNAgent
     from .algorithms.torch_sac import TorchSACAgent
     from .algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
+    from .algorithms.torch_td3 import TorchTD3Agent
+    from .algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
+    from .algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+    from .core.noisy_linear import NoisyLinear
     __all__ += ["TorchAgent", "TorchEvaluator",
-                "TorchPPOAgent", "TorchDQNAgent", "TorchSACAgent", "TorchGaussianPPOAgent"]
+                "TorchPPOAgent", "TorchDQNAgent", "TorchSACAgent", "TorchGaussianPPOAgent",
+                "TorchTD3Agent", "TorchRecurrentPPOAgent",
+                "TorchRainbowDQNAgent", "RainbowQNetwork", "NoisyLinear"]
 except (ImportError, RuntimeError):
     pass

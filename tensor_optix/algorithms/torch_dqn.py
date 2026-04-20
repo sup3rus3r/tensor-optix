@@ -255,6 +255,45 @@ class TorchDQNAgent(BaseAgent):
                 param.mul_(1.0 + noise_scale * torch.randn_like(param))
         self._q_target.load_state_dict(self._q.state_dict())
 
+    def export_onnx(self, path: str) -> None:
+        """
+        Export the Q-network to ONNX.
+
+        Input  — "observation": (batch_size, obs_dim)    float32
+        Output — "q_values":    (batch_size, n_actions)  float32
+
+        At inference, select argmax(q_values) for the greedy action.
+
+        Requires the ``onnx`` optional dependency:
+            pip install tensor-optix[onnx]
+        """
+        import torch
+        obs_dim = None
+        for m in self._q.modules():
+            if hasattr(m, "in_features"):
+                obs_dim = m.in_features
+                break
+        if obs_dim is None:
+            raise RuntimeError(
+                "export_onnx: cannot infer obs_dim — no nn.Linear found in q_network."
+            )
+        was_training = self._q.training
+        self._q.eval().cpu()
+        dummy = torch.zeros(1, obs_dim, dtype=torch.float32)
+        torch.onnx.export(
+            self._q,
+            dummy,
+            str(path),
+            input_names=["observation"],
+            output_names=["q_values"],
+            dynamic_axes={
+                "observation": {0: "batch_size"},
+                "q_values":    {0: "batch_size"},
+            },
+            opset_version=17,
+        )
+        self._q.train(was_training).to(self._device)
+
     def teardown(self) -> None:
         """Move networks to CPU and free CUDA memory."""
         import torch

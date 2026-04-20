@@ -40,6 +40,11 @@ class EpisodeData:
     # None when the window ended at a terminal state (done[-1] is True).
     # Set by BatchPipeline and used by on-policy agents to bootstrap V(s_T)
     # correctly when the window ends mid-episode.
+    hidden_states: Optional[List] = None
+    # Per-step hidden state tuples stored by recurrent agents.
+    # Shape: List[T] of (h, c) for LSTM, or List[T] of h for GRU.
+    # Each h / c has shape [num_layers, hidden_size] (batch dim squeezed).
+    # None for non-recurrent agents — existing agents are unaffected.
 
     @property
     def dones(self) -> List[bool]:

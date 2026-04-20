@@ -281,6 +281,48 @@ class TorchPPOAgent(BaseAgent):
         self._cache_log_probs.clear()
         self._cache_values.clear()
 
+    def export_onnx(self, path: str) -> None:
+        """
+        Export the discrete actor to ONNX.
+
+        Input  — "observation": (batch_size, obs_dim)   float32
+        Output — "logits":      (batch_size, n_actions)  float32
+
+        The exported logits are raw pre-softmax scores.  Apply softmax at
+        inference time to obtain a probability distribution; use argmax
+        for the greedy/deterministic action.
+
+        Requires the ``onnx`` optional dependency:
+            pip install tensor-optix[onnx]
+        """
+        import torch
+        # Infer obs_dim from the first Linear layer
+        obs_dim = None
+        for m in self._actor.modules():
+            if hasattr(m, "in_features"):
+                obs_dim = m.in_features
+                break
+        if obs_dim is None:
+            raise RuntimeError(
+                "export_onnx: cannot infer obs_dim — no nn.Linear found in actor."
+            )
+        was_training = self._actor.training
+        self._actor.eval().cpu()
+        dummy = torch.zeros(1, obs_dim, dtype=torch.float32)
+        torch.onnx.export(
+            self._actor,
+            dummy,
+            str(path),
+            input_names=["observation"],
+            output_names=["logits"],
+            dynamic_axes={
+                "observation": {0: "batch_size"},
+                "logits":      {0: "batch_size"},
+            },
+            opset_version=17,
+        )
+        self._actor.train(was_training).to(self._device)
+
     def teardown(self) -> None:
         """Move networks to CPU and free CUDA memory."""
         import torch

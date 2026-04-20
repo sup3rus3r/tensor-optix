@@ -265,6 +265,49 @@ class TorchSACAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def export_onnx(self, path: str) -> None:
+        """
+        Export the continuous stochastic actor to ONNX.
+
+        Input  — "observation":  (batch_size, obs_dim)          float32
+        Output — "mean_logstd":  (batch_size, 2 * action_dim)   float32
+
+        The first ``action_dim`` elements are the Gaussian means (μ);
+        the last ``action_dim`` elements are the log standard deviations (log σ).
+
+        Deterministic deployment policy:   a = tanh(μ)
+        Stochastic deployment policy:      a = tanh(μ + exp(log σ) · ε),  ε ~ N(0, I)
+
+        Requires the ``onnx`` optional dependency:
+            pip install tensor-optix[onnx]
+        """
+        import torch
+        obs_dim = None
+        for m in self._actor.modules():
+            if hasattr(m, "in_features"):
+                obs_dim = m.in_features
+                break
+        if obs_dim is None:
+            raise RuntimeError(
+                "export_onnx: cannot infer obs_dim — no nn.Linear found in actor."
+            )
+        was_training = self._actor.training
+        self._actor.eval().cpu()
+        dummy = torch.zeros(1, obs_dim, dtype=torch.float32)
+        torch.onnx.export(
+            self._actor,
+            dummy,
+            str(path),
+            input_names=["observation"],
+            output_names=["mean_logstd"],
+            dynamic_axes={
+                "observation": {0: "batch_size"},
+                "mean_logstd": {0: "batch_size"},
+            },
+            opset_version=17,
+        )
+        self._actor.train(was_training).to(self._device)
+
     def teardown(self) -> None:
         """Move all networks to CPU and free CUDA memory."""
         import torch
