@@ -190,17 +190,17 @@ from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch (auto-det
 
 **Hyperparams exposed to the tuner:**
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `learning_rate` | `3e-4` | Adam learning rate |
-| `clip_ratio` | `0.2` | PPO clipping epsilon (ε) |
-| `entropy_coef` | `0.01` | Entropy bonus weight |
-| `vf_coef` | `0.5` | Value loss weight |
-| `gamma` | `0.99` | Discount factor |
-| `gae_lambda` | `0.95` | GAE smoothing (0 = TD, 1 = MC) |
-| `n_epochs` | `10` | Update epochs per rollout |
-| `minibatch_size` | `64` | Minibatch size |
-| `max_grad_norm` | `0.5` | Gradient clipping norm |
+| Key | Default | Tune range | Notes |
+|-----|---------|------------|-------|
+| `learning_rate` | `3e-4` | `1e-4 – 3e-3` | Log-scale; most sensitive param — use `log_float` in `TrialOrchestrator` |
+| `clip_ratio` | `0.2` | `0.1 – 0.3` | Higher = larger policy steps; >0.3 destabilises training |
+| `entropy_coef` | `0.01` | `0.0 – 0.05` | Keep ≥ 0.001 to prevent premature entropy collapse |
+| `vf_coef` | `0.5` | `0.25 – 1.0` | Weight of value loss relative to policy loss |
+| `gamma` | `0.99` | `0.95 – 0.999` | Lower for short-horizon or dense-reward tasks |
+| `gae_lambda` | `0.95` | `0.9 – 1.0` | 0 = pure TD bootstrap, 1 = full Monte Carlo return |
+| `n_epochs` | `10` | `3 – 15` | More epochs = better sample use; too many = rollout overfitting |
+| `minibatch_size` | `64` | `32 – 256` | Larger = less gradient noise, better GPU utilisation |
+| `max_grad_norm` | `0.5` | `0.3 – 1.0` | Raise if gradients are consistently hitting the clip |
 
 ---
 
@@ -508,18 +508,28 @@ from tensor_optix.distributed import AsyncActorLearner, compute_vtrace_targets
 ```
 
 **Architecture:**
-```
-shared memory   ┌─────────────────────────────────────────┐
-                │  actor nn.Module  (share_memory=True)   │
-                │  critic nn.Module (share_memory=True)   │
-                └─────────────────────────────────────────┘
-                     ↑ reads (lock-free)  ↑ optimizer.step()
-  ┌─────────┐        │               ┌───────────────────┐
-  │ Actor 0 │────────┘               │ Learner (main)    │
-  │ Actor 1 │──── traj_queue ───────►│ V-trace targets   │
-  │ ...     │                        │ gradient update   │
-  │ Actor N │                        └───────────────────┘
-  └─────────┘
+
+```mermaid
+flowchart LR
+    SM["🧠 Shared Memory\nactor weights\ncritic weights\n(share_memory=True)"]
+
+    subgraph Actors["Actor Processes (×N)"]
+        A0[Actor 0]
+        A1[Actor 1]
+        AN[Actor N]
+    end
+
+    subgraph Learner["Learner (main process)"]
+        VT[V-trace targets]
+        GU[gradient update]
+        OS[optimizer.step]
+    end
+
+    SM -->|lock-free reads| Actors
+    A0 -->|trajectory| VT
+    A1 -->|trajectory| VT
+    AN -->|trajectory| VT
+    VT --> GU --> OS -->|write new weights| SM
 ```
 
 **Off-policy correction (V-trace):**
@@ -676,6 +686,45 @@ class BaseAgent(ABC):
 ```
 
 Any model — RL algorithms, evolutionary strategies, supervised sequence models, online forecasters — plugs in by implementing these six methods. No specific framework, action space, or learning paradigm is assumed.
+
+---
+
+## How the Autonomous Loop Works
+
+Every episode flows through four components in sequence. Understanding this pipeline is the key to configuring tensor-optix effectively.
+
+```mermaid
+flowchart TD
+    A([Episode N]) --> B[agent.learn + evaluator.score]
+    B --> C{BackoffScheduler}
+
+    C -->|improvement detected| D[ACTIVE\ninterval resets to 1]
+    C -->|no improvement| E[COOLING\ninterval ×= backoff_factor]
+    E -->|consecutive plateau\n≥ dormant_threshold| F[DORMANT]
+
+    D -->|next episode| A
+    E -->|next episode| A
+
+    F --> G{MetaController}
+    G -->|val improving| H[SPAWN]
+    G -->|gap high & worsening| I[PRUNE]
+    G -->|budget exhausted| J[STOP]
+    G -->|otherwise| K[NO_OP — resume training]
+    K -->|next episode| A
+
+    H --> L[PolicyManager]
+    L --> L1[1. rollback if degraded]
+    L1 --> L2[2. clone best checkpoint]
+    L2 --> L3[3. perturb hyperparams σ]
+    L3 --> L4[4. add variant to ensemble]
+    L4 --> L5[5. prune if over size limit]
+    L5 -->|budget remaining| A
+    L5 -->|budget exhausted| J
+
+    J --> M([best weights restored\ntraining complete])
+```
+
+**Key insight:** `BackoffScheduler` only fires DORMANT events — it has no opinion on what to do next. `MetaController` makes that decision based on generalization signals. `PolicyManager` executes it. This separation means you can swap or bypass any layer without touching the others.
 
 ---
 

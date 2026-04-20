@@ -227,7 +227,7 @@ def train_vanilla_ppo(cfg: dict, seed: int) -> dict:
     agent = TorchPPOAgent(
         actor=actor, critic=critic, optimizer=opt,
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
-        device="cpu",
+        device="auto",
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -371,7 +371,7 @@ def train_vanilla_dqn(cfg: dict, seed: int) -> dict:
         q_network=q_net, n_actions=n_actions,
         optimizer=torch.optim.Adam(q_net.parameters(), lr=cfg["lr"]),
         hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
-        device="cpu",
+        device="auto",
     )
 
     carry_obs, _ = env.reset(seed=seed)
@@ -439,7 +439,7 @@ def train_optix_dqn(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             q_network=q, n_actions=n_actions,
             optimizer=torch.optim.Adam(q.parameters(), lr=hp.get("learning_rate", cfg["lr"])),
             hyperparams=HyperparamSet(params=hp, episode_id=0),
-            device="cpu",
+            device="auto",
         )
 
     t0 = time.perf_counter()
@@ -571,7 +571,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
                 lr=params.get("learning_rate", cfg["lr"]),
             ),
             hyperparams=HyperparamSet(params=merged, episode_id=0),
-            device="cpu",
+            device="auto",
         )
 
     def pipeline_factory():
@@ -581,7 +581,7 @@ def train_optix_ppo(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
             actor=a, critic=c,
             optimizer=torch.optim.Adam(list(a.parameters()) + list(c.parameters()), lr=cfg["lr"]),
             hyperparams=HyperparamSet(params=cfg["hp"].copy(), episode_id=0),
-            device="cpu",
+            device="auto",
         )
         return BatchPipeline(env=e, agent=ag, window_size=cfg["window_size"])
 
@@ -1250,7 +1250,7 @@ def _demo_jax(seed: int = 0) -> None:
         optimizer=torch.optim.Adam(
             list(actor.parameters()) + list(critic.parameters()), lr=3e-4
         ),
-        hyperparams=hp, device="cpu",
+        hyperparams=hp, device="auto",
     )
     env = gym.make("CartPole-v1")
     t0 = time.perf_counter()
