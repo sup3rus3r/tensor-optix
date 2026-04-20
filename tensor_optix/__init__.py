@@ -45,7 +45,11 @@ from .orchestrator import TrialOrchestrator
 from .exploration.rnd import RNDPipeline
 from .core.replay_buffer import PrioritizedReplayBuffer
 from .core.diagnostic_controller import DiagnosticController
-__all__ += ["TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController"]
+from .callbacks import WandbCallback, TensorBoardCallback
+__all__ += [
+    "TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController",
+    "WandbCallback", "TensorBoardCallback",
+]
 
 try:
     from .optimizer import RLOptimizer
