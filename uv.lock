@@ -1141,6 +1141,7 @@ dependencies = [
     { name = "opt-einsum" },
     { name = "scipy" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/50/f0/bcb81d28267d2054d0daed766c7fa16bcee5e481331b4d1e14f5fbe662be/jax-0.10.0.tar.gz", hash = "sha256:0119c767de1645f407df72345d28a3837dc904f1d698911c121d8f2b396fdece", size = 2663397, upload-time = "2026-04-22T13:22:28.563Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/70/aa/dfac6d72cc35bc07e7587115b6946e333ef4ccb2e6cd26ecf639438c5d26/jax-0.10.0-py3-none-any.whl", hash = "sha256:76c42ba163c8db3dc2e449e225b888c0edfb623ded31efdc96d85e0fda1d26e8", size = 3094950, upload-time = "2026-04-16T12:32:11.576Z" },
 ]
@@ -3286,7 +3287,7 @@ wheels = [
 
 [[package]]
 name = "tensor-optix"
-version = "1.10.0"
+version = "1.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium", extra = ["box2d"] },

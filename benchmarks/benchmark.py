@@ -49,6 +49,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tensor_optix import (
+    AdaptiveOptimizer,
     BackoffOptimizer,
     SPSAOptimizer,
     MomentumOptimizer,
@@ -864,10 +865,10 @@ def train_optix_dqn(cfg: dict, seed: int, verbose: bool = False, verbose_log_fil
         agent=agent,
         pipeline=pipeline,
         evaluator=TorchEvaluator(),
-        optimizer=SPSAOptimizer(param_bounds={
+        optimizer=AdaptiveOptimizer(param_bounds={
             "learning_rate": (1e-4, 1e-3),
             "gamma":         (0.95, 0.999),
-        }, log_params=["learning_rate"], warmup_episodes=30),
+        }, log_params=["learning_rate"], spsa_warmup_episodes=30),
         checkpoint_dir=ckpt_dir,
         max_episodes=cfg["max_steps"] // cfg["window_size"],
         rollback_on_degradation=True,

@@ -16,6 +16,7 @@ from .core.regime_detector import RegimeDetector
 from .core.meta_controller import MetaController, MetaAction
 from .pipeline.batch_pipeline import BatchPipeline
 from .pipeline.live_pipeline import LivePipeline
+from .optimizers.adaptive_optimizer import AdaptiveOptimizer
 from .optimizers.backoff_optimizer import BackoffOptimizer
 from .optimizers.momentum_optimizer import MomentumOptimizer
 from .optimizers.pbt_optimizer import PBTOptimizer
@@ -28,7 +29,7 @@ __all__ = [
     "PolicyManager", "PolicyManagerCallback", "EnsembleAgent",
     "RegimeDetector", "MetaController", "MetaAction",
     "BatchPipeline", "LivePipeline",
-    "BackoffOptimizer", "MomentumOptimizer", "PBTOptimizer", "SPSAOptimizer",
+    "AdaptiveOptimizer", "BackoffOptimizer", "MomentumOptimizer", "PBTOptimizer", "SPSAOptimizer",
 ]
 
 from .core.normalizers import RunningMeanStd, ObsNormalizer, RewardNormalizer
