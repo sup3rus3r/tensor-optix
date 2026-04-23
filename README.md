@@ -178,35 +178,80 @@ opt.run()
 
 ---
 
-```bash
-# TensorFlow (default — includes PPO, DQN, SAC for TF)
-pip install tensor-optix
+**Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
+The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
+Install the ML framework extra(s) that match your platform — do not rely on the bare `pip install tensor-optix` to pull in a framework.
 
-# PyTorch support (CUDA wheel must be installed separately — see below)
+---
+
+### Installation by platform
+
+#### Linux / WSL2 — NVIDIA GPU (CUDA)
+
+```bash
+# TensorFlow with CUDA
+pip install tensor-optix[tensorflow-gpu,cuda]
+
+# PyTorch with CUDA 12.8
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 pip install tensor-optix[torch]
 
-# JAX/Flax support (FlaxAgent, FlaxPPOAgent)
-pip install tensor-optix[jax]
-
-# Everything: PyTorch + JAX + Atari + MuJoCo
-pip install tensor-optix[all]
-
-# Box2D environments (requires swig: apt install swig / brew install swig)
-pip install tensor-optix[box2d]
-
-# CUDA compiler tools (NVIDIA GPU only)
-pip install tensor-optix[cuda]
+# Both frameworks + CUDA tools
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install tensor-optix[tensorflow-gpu,torch,cuda]
 ```
 
-**PyTorch + CUDA:** `pip install tensor-optix[torch]` installs the CPU build of PyTorch from PyPI. For a CUDA-enabled build, install PyTorch first from the [official index](https://pytorch.org/get-started/locally/) before installing tensor-optix:
+#### Linux / WSL2 — CPU only
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install tensor-optix
+# TensorFlow (CPU)
+pip install tensor-optix[tensorflow]
+
+# PyTorch (CPU)
+pip install tensor-optix[torch]
+
+# Both frameworks
+pip install tensor-optix[tensorflow,torch]
 ```
 
-**Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
-TensorFlow >= 2.18 is required for TF algorithms. PyTorch >= 2.0 is required for Torch algorithms. JAX >= 0.10 + Flax >= 0.12.6 + optax >= 0.2.8 required for JAX algorithms. The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
+#### Windows — NVIDIA GPU (CUDA)
+
+> **Note:** `tensorflow[and-cuda]` is not supported on native Windows. Use the CPU TensorFlow build or run under WSL2 for GPU TensorFlow support.
+
+```bash
+# PyTorch with CUDA 12.8 (cmd / PowerShell)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install tensor-optix[torch]
+
+# TensorFlow CPU on Windows
+pip install tensor-optix[tensorflow]
+```
+
+#### Windows — CPU only
+
+```bash
+pip install tensor-optix[tensorflow,torch]
+```
+
+#### JAX / Flax (any platform)
+
+```bash
+pip install tensor-optix[jax]
+```
+
+#### Environment extras (Atari, MuJoCo, Box2D)
+
+```bash
+pip install tensor-optix[atari]
+pip install tensor-optix[mujoco]
+pip install tensor-optix[box2d]   # also requires: apt install swig  /  brew install swig
+```
+
+#### Everything (CPU builds, all environments)
+
+```bash
+pip install tensor-optix[all]
+```
 
 ---
 

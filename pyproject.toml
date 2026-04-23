@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensor-optix"
-version = "1.10.2"
+version = "1.11.0"
 description = "Autonomous training loop for any sequential learning model — PPO, DQN, SAC, TD3, Rainbow DQN, Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax; distributed async actor-learner (IMPALA + V-trace)"
 readme = "README.md"
 license = "MIT"
@@ -14,28 +14,41 @@ authors = [
 ]
 
 dependencies = [
-    "tensorflow[and-cuda]>=2.18.0",
     "gymnasium[box2d]>=1.0.0",
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "optuna>=3.0.0",
     "swig>=4.4.1",
     "pyyaml>=6.0",
-    "torch>=2.11.0",
 ]
 
 [project.scripts]
 tensor-optix = "tensor_optix.cli:main"
 
 [project.optional-dependencies]
+# ML frameworks — install the one(s) matching your platform (see README)
+tensorflow = [
+    "tensorflow>=2.18.0",
+]
+tensorflow-gpu = [
+    "tensorflow[and-cuda]>=2.18.0",
+]
 torch = [
-    "torch>=2.0.0",
+    "torch>=2.11.0",
     "torchvision",
     "torchaudio",
 ]
+jax = [
+    "flax>=0.12.6",
+    "jax>=0.10.0",
+    "optax>=0.2.8",
+]
+# CUDA compiler tools — Linux/WSL2 with NVIDIA GPU only
 cuda = [
     "nvidia-cuda-nvcc-cu12",
+    "tensorflow[and-cuda]>=2.18.0",
 ]
+# Gymnasium environment extras
 box2d = [
     "gymnasium[box2d]>=1.0.0",
 ]
@@ -46,8 +59,10 @@ atari = [
 mujoco = [
     "gymnasium[mujoco]>=1.0.0",
 ]
+# Convenience bundles
 all = [
-    "torch>=2.0.0",
+    "tensorflow>=2.18.0",
+    "torch>=2.11.0",
     "torchvision",
     "torchaudio",
     "gymnasium[atari]>=1.0.0",
@@ -66,7 +81,7 @@ wandb = [
     "wandb>=0.16",
 ]
 tensorboard = [
-    "torch>=2.0.0",
+    "torch>=2.11.0",
     "tensorboard>=2.14",
 ]
 dev = [
@@ -76,12 +91,7 @@ dev = [
     "ruff",
     "mypy",
     "twine>=5.0",
-    "torch>=2.0.0",
-]
-jax = [
-    "flax>=0.12.6",
-    "jax>=0.10.0",
-    "optax>=0.2.8",
+    "torch>=2.11.0",
 ]
 
 [tool.setuptools]
@@ -90,15 +100,6 @@ license-files = []
 [tool.setuptools.packages.find]
 include = ["tensor_optix*"]
 
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
 
 [tool.ruff]
 line-length = 100
