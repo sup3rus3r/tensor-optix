@@ -103,3 +103,23 @@ try:
                 "TorchRainbowDQNAgent", "RainbowQNetwork", "NoisyLinear"]
 except (ImportError, RuntimeError):
     pass
+
+try:
+    from .neuroevo import (
+        NeuronGraph, Edge, Neuron,
+        insert_neuron_on_edge, split_neuron, add_input_neuron, add_free_edge,
+        prune_edge, prune_neuron, merge_neurons,
+        neuron_importance, edge_importance, cosine_similarity_neurons,
+        GraphAgent,
+        TopologyController,
+    )
+    __all__ += [
+        "NeuronGraph", "Edge", "Neuron",
+        "insert_neuron_on_edge", "split_neuron", "add_input_neuron", "add_free_edge",
+        "prune_edge", "prune_neuron", "merge_neurons",
+        "neuron_importance", "edge_importance", "cosine_similarity_neurons",
+        "GraphAgent",
+        "TopologyController",
+    ]
+except (ImportError, RuntimeError):
+    pass

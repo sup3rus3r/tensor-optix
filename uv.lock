@@ -3398,7 +3398,7 @@ wheels = [
 
 [[package]]
 name = "tensor-optix"
-version = "1.11.0"
+version = "1.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium", extra = ["box2d"] },
@@ -3407,6 +3407,7 @@ dependencies = [
     { name = "optuna" },
     { name = "pyyaml" },
     { name = "swig" },
+    { name = "tensorflow", extra = ["and-cuda"] },
 ]
 
 [package.optional-dependencies]
@@ -3448,6 +3449,9 @@ jax = [
 ]
 mujoco = [
     { name = "gymnasium", extra = ["mujoco"] },
+]
+neuroevo = [
+    { name = "torch" },
 ]
 onnx = [
     { name = "onnx" },
@@ -3511,10 +3515,12 @@ requires-dist = [
     { name = "tensorboard", marker = "extra == 'tensorboard'", specifier = ">=2.14" },
     { name = "tensorflow", marker = "extra == 'all'", specifier = ">=2.18.0" },
     { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = ">=2.18.0" },
+    { name = "tensorflow", extras = ["and-cuda"], specifier = ">=2.21.0" },
     { name = "tensorflow", extras = ["and-cuda"], marker = "extra == 'cuda'", specifier = ">=2.18.0" },
     { name = "tensorflow", extras = ["and-cuda"], marker = "extra == 'tensorflow-gpu'", specifier = ">=2.18.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.11.0" },
     { name = "torch", marker = "extra == 'dev'", specifier = ">=2.11.0" },
+    { name = "torch", marker = "extra == 'neuroevo'", specifier = ">=2.11.0" },
     { name = "torch", marker = "extra == 'tensorboard'", specifier = ">=2.11.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.11.0" },
     { name = "torchaudio", marker = "extra == 'all'" },
@@ -3524,7 +3530,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.16" },
 ]
-provides-extras = ["tensorflow", "tensorflow-gpu", "torch", "jax", "cuda", "box2d", "atari", "mujoco", "all", "onnx", "wandb", "tensorboard", "dev"]
+provides-extras = ["tensorflow", "tensorflow-gpu", "torch", "jax", "cuda", "box2d", "atari", "mujoco", "all", "neuroevo", "onnx", "wandb", "tensorboard", "dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]

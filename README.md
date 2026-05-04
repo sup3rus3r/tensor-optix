@@ -1,21 +1,24 @@
 # tensor-optix
 
-Autonomous training loop for any sequential learning model — built-in PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax.
+Autonomous training loop for any sequential learning model  -  built-in PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax.
 
 ---
 
 ## About
 
-tensor-optix is a framework-agnostic autonomous training loop. It owns evaluation, checkpointing, hyperparameter tuning, policy evolution, and ensemble management for **any model that can act and learn from sequential data** — reinforcement learning agents, online forecasters, trading systems, robotics controllers, or any custom architecture that fits the six-method `BaseAgent` interface.
+tensor-optix is a framework-agnostic autonomous training loop. It owns evaluation, checkpointing, hyperparameter tuning, policy evolution, and ensemble management for **any model that can act and learn from sequential data**  -  reinforcement learning agents, online forecasters, trading systems, robotics controllers, or any custom architecture that fits the six-method `BaseAgent` interface.
 
-The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop — it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO** for TensorFlow and PyTorch, plus a **JAX/Flax PPO adapter**, so you can start training without writing a single algorithm line.
+The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop  -  it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO** for TensorFlow and PyTorch, plus a **JAX/Flax PPO adapter**, so you can start training without writing a single algorithm line.
 
-**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision — not training alone.
+**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision  -  not training alone.
+
+**New in 1.12.0:**
+- **neuroevo**  -  free-form topology evolution: `NeuronGraph`, `GraphAgent`, `TopologyController`. Grow, prune, split, and merge neurons at runtime with function-preserving operations. Variable-delay recurrent edges. Hooks into the existing loop via `LoopCallback` on COOLING state. `pip install tensor-optix[neuroevo]`
 
 **New in 1.9.0:**
-- **Distributed async actor-learner** (IMPALA + V-trace) — N actors run in parallel POSIX shared-memory processes, learner applies V-trace off-policy correction, 4× sample throughput on CPU
-- **JAX/Flax PPO adapter** — `FlaxPPOAgent` and `FlaxAgent` base class; XLA-compiled updates, optax optimisers, pickle-safe weight serialisation; convergence-parity with `TorchPPOAgent`
-- **Live terminal dashboard** — `RichDashboardCallback` renders a real-time Rich panel (score sparkline, hyperparams, loop state) with zero extra dependencies
+- **Distributed async actor-learner** (IMPALA + V-trace)  -  N actors run in parallel POSIX shared-memory processes, learner applies V-trace off-policy correction, 4× sample throughput on CPU
+- **JAX/Flax PPO adapter**  -  `FlaxPPOAgent` and `FlaxAgent` base class; XLA-compiled updates, optax optimisers, pickle-safe weight serialisation; convergence-parity with `TorchPPOAgent`
+- **Live terminal dashboard**  -  `RichDashboardCallback` renders a real-time Rich panel (score sparkline, hyperparams, loop state) with zero extra dependencies
 
 **Core philosophy:** We own the loop. You own the model.
 
@@ -77,7 +80,7 @@ opt = RLOptimizer(
     agent=agent,
     pipeline=pipeline,
     rollback_on_degradation=True,
-    dormant_threshold=8,              # recover fast — off-policy collapse is sharp
+    dormant_threshold=8,              # recover fast  -  off-policy collapse is sharp
     min_episodes_before_dormant=30,   # let Q-function stabilise before evaluating plateau
     checkpoint_score_fn=lambda a: eval_deterministic(a, env_id, n_eps=5, seed=42),
 )
@@ -99,14 +102,14 @@ Discrete action games benefit from sample-efficient algorithms. Rainbow DQN with
 from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
 from tensor_optix.distributed import AsyncActorLearner
 
-# Option A: Rainbow DQN — best sample efficiency for discrete action games
+# Option A: Rainbow DQN  -  best sample efficiency for discrete action games
 q_net = RainbowQNetwork(obs_dim=obs_dim, n_actions=n_actions,
                          hidden_size=256, n_atoms=51, v_min=-10.0, v_max=10.0)
 agent = TorchRainbowDQNAgent(q_network=q_net, n_actions=n_actions,
                               optimizer=torch.optim.Adam(q_net.parameters(), lr=6.25e-5),
                               hyperparams=hp, n_atoms=51, v_min=-10.0, v_max=10.0)
 
-# Option B: IMPALA async actor-learner — 4× throughput, same convergence
+# Option B: IMPALA async actor-learner  -  4× throughput, same convergence
 learner = AsyncActorLearner(
     actor=actor, critic=critic, optimizer=optimizer,
     env_factory=lambda: gym.make("ALE/Pong-v5"),
@@ -122,11 +125,11 @@ print(f"{stats['steps_per_second']:.0f} steps/s")
 
 ### Industrial & HVAC Control
 
-Control systems have slow, expensive simulators and no tolerance for parameter drift. SPSA adapts hyperparams online in just two episodes per update — no grid search needed.
+Control systems have slow, expensive simulators and no tolerance for parameter drift. SPSA adapts hyperparams online in just two episodes per update  -  no grid search needed.
 
 ```python
 class HVACAgent(BaseAgent):
-    """Custom control agent — tensor-optix owns the loop, you own the policy."""
+    """Custom control agent  -  tensor-optix owns the loop, you own the policy."""
     def act(self, obs): ...
     def learn(self, episode_data): ...
     def get_hyperparams(self): ...
@@ -148,7 +151,7 @@ opt = RLOptimizer(
 opt.run()
 ```
 
-**What tensor-optix provides here:** SPSA tunes control parameters with only 2 simulator rollouts per gradient estimate — far cheaper than grid search over a slow HVAC sim; checkpoint scoring on a full held-out week prevents saving a policy that game-theorises the training schedule.
+**What tensor-optix provides here:** SPSA tunes control parameters with only 2 simulator rollouts per gradient estimate  -  far cheaper than grid search over a slow HVAC sim; checkpoint scoring on a full held-out week prevents saving a policy that game-theorises the training schedule.
 
 ---
 
@@ -167,26 +170,26 @@ agent = TorchRecurrentPPOAgent(
     device="auto",
 )
 
-# act() and learn() carry hidden state internally — same interface as all other agents
+# act() and learn() carry hidden state internally  -  same interface as all other agents
 pipeline = BatchPipeline(env=gym.make("PartiallyObservableMaze-v0"),
                           agent=agent, window_size=512)
 opt = RLOptimizer(agent=agent, pipeline=pipeline)
 opt.run()
 ```
 
-**What tensor-optix provides here:** hidden state is stored per step in the rollout buffer and reset at episode boundaries automatically — no BPTT truncation bookkeeping; the same `RLOptimizer` loop, callbacks, and `PolicyManager` work unchanged with recurrent agents.
+**What tensor-optix provides here:** hidden state is stored per step in the rollout buffer and reset at episode boundaries automatically  -  no BPTT truncation bookkeeping; the same `RLOptimizer` loop, callbacks, and `PolicyManager` work unchanged with recurrent agents.
 
 ---
 
 **Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
 The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
-Install the ML framework extra(s) that match your platform — do not rely on the bare `pip install tensor-optix` to pull in a framework.
+Install the ML framework extra(s) that match your platform  -  do not rely on the bare `pip install tensor-optix` to pull in a framework.
 
 ---
 
 ### Installation by platform
 
-#### Linux / WSL2 — NVIDIA GPU (CUDA)
+#### Linux / WSL2  -  NVIDIA GPU (CUDA)
 
 ```bash
 # TensorFlow with CUDA
@@ -201,7 +204,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install tensor-optix[tensorflow-gpu,torch,cuda]
 ```
 
-#### Linux / WSL2 — CPU only
+#### Linux / WSL2  -  CPU only
 
 ```bash
 # TensorFlow (CPU)
@@ -214,7 +217,7 @@ pip install tensor-optix[torch]
 pip install tensor-optix[tensorflow,torch]
 ```
 
-#### Windows — NVIDIA GPU (CUDA)
+#### Windows  -  NVIDIA GPU (CUDA)
 
 > **Note:** `tensorflow[and-cuda]` is not supported on native Windows. Use the CPU TensorFlow build or run under WSL2 for GPU TensorFlow support.
 
@@ -227,7 +230,7 @@ pip install tensor-optix[torch]
 pip install tensor-optix[tensorflow]
 ```
 
-#### Windows — CPU only
+#### Windows  -  CPU only
 
 ```bash
 pip install tensor-optix[tensorflow,torch]
@@ -262,14 +265,14 @@ pip install tensor-optix[all]
 All runs: 3 seeds, same architecture, same starting hyperparameters.  
 Baseline = fixed step budget, no auto-tuning. tensor-optix = autonomous loop with AdaptiveOptimizer.
 
-**CartPole-v1 — DQN (discrete)**
+**CartPole-v1  -  DQN (discrete)**
 
 | Metric | Baseline | tensor-optix | Δ |
 |---|---|---|---|
 | Final eval score | 241.9 | 499.3 | +106% |
 | Solved (≥ 475) | 2 / 3 | 3 / 3 | |
 
-**Acrobot-v1 — PPO (discrete)**
+**Acrobot-v1  -  PPO (discrete)**
 
 | Metric | Baseline | tensor-optix | Δ |
 |---|---|---|---|
@@ -284,10 +287,10 @@ stabilising training across seeds that vanilla PPO handles inconsistently.
 ### Run it yourself
 
 ```bash
-# Quick — CartPole + Acrobot, 1 seed each
+# Quick  -  CartPole + Acrobot, 1 seed each
 uv run python benchmarks/benchmark.py --envs cartpole acrobot --seeds 0
 
-# Full — all 5 environments, 3 seeds
+# Full  -  all 5 environments, 3 seeds
 uv run python benchmarks/benchmark.py
 ```
 
@@ -381,7 +384,7 @@ opt.run()
 
 ## Built-in Algorithms
 
-### PPO — Proximal Policy Optimization
+### PPO  -  Proximal Policy Optimization
 
 Discrete action spaces. Actor + critic are separate models.
 
@@ -402,7 +405,7 @@ from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch (auto-det
 
 | Key | Default | Tune range | Notes |
 |-----|---------|------------|-------|
-| `learning_rate` | `3e-4` | `1e-4 – 3e-3` | Log-scale; most sensitive param — use `log_float` in `TrialOrchestrator` |
+| `learning_rate` | `3e-4` | `1e-4 – 3e-3` | Log-scale; most sensitive param  -  use `log_float` in `TrialOrchestrator` |
 | `clip_ratio` | `0.2` | `0.1 – 0.3` | Higher = larger policy steps; >0.3 destabilises training |
 | `entropy_coef` | `0.01` | `0.0 – 0.05` | Keep ≥ 0.001 to prevent premature entropy collapse |
 | `vf_coef` | `0.5` | `0.25 – 1.0` | Weight of value loss relative to policy loss |
@@ -414,7 +417,7 @@ from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch (auto-det
 
 ---
 
-### PPO Continuous — Gaussian Policy (Continuous Actions)
+### PPO Continuous  -  Gaussian Policy (Continuous Actions)
 
 Continuous action spaces. Squashed Gaussian actor with learned log-std.
 
@@ -424,7 +427,7 @@ from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent  
 ```
 
 **What it adds over discrete PPO:**
-- Gaussian policy head outputs `[mean || log_std]` — `action_dim * 2` outputs
+- Gaussian policy head outputs `[mean || log_std]`  -  `action_dim * 2` outputs
 - Actions sampled as `a = tanh(mean + std * ε)`, squashed to `(−1, 1)`
 - Log-prob corrected for tanh squashing (numerically stable)
 - `action_dim` required at construction
@@ -453,7 +456,7 @@ agent = TorchGaussianPPOAgent(
 
 ---
 
-### DQN — Deep Q-Network
+### DQN  -  Deep Q-Network
 
 Discrete action spaces. Single Q-network; target network updated periodically.
 
@@ -493,7 +496,7 @@ agent = TFDQNAgent(
 
 ---
 
-### SAC — Soft Actor-Critic
+### SAC  -  Soft Actor-Critic
 
 Continuous action spaces. Squashed Gaussian actor, twin critics, auto-entropy tuning.
 
@@ -540,7 +543,7 @@ agent = TFSACAgent(
 
 ---
 
-### TD3 — Twin Delayed Deep Deterministic Policy Gradient
+### TD3  -  Twin Delayed Deep Deterministic Policy Gradient
 
 Continuous action spaces. Deterministic actor, twin critics, target policy smoothing, delayed actor updates.
 
@@ -549,7 +552,7 @@ from tensor_optix.algorithms.torch_td3 import TorchTD3Agent  # PyTorch
 ```
 
 **What it adds over SAC:**
-- Deterministic policy (no entropy term) — lower variance, better on dense-reward locomotion
+- Deterministic policy (no entropy term)  -  lower variance, better on dense-reward locomotion
 - Target policy smoothing: adds clipped Gaussian noise to target actions to prevent value over-fitting to narrow peaks
 - Delayed actor updates: critic updated every step, actor updated every `policy_delay` steps (default 2)
 - Twin-Q minimization over both critics (same as SAC)
@@ -591,12 +594,12 @@ from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, Rain
 ```
 
 **What it implements (all six Rainbow components):**
-- **Double Q** — target actions from online net, values from target net (reduces overestimation)
-- **Dueling** — separate value and advantage streams; advantage-mean subtraction prevents identifiability issues
-- **PER** — SumTree prioritized replay with IS-weight correction; priority exponent `α`, correction exponent `β`
-- **n-step** — multi-step bootstrap targets; trades variance for bias, dramatically speeds up sparse-reward environments
-- **Noisy Nets** — factorized Gaussian noise on linear layers replaces ε-greedy; exploration driven by learned uncertainty
-- **Categorical / C51** — distributional Q as a 51-atom categorical distribution; KL loss instead of MSE
+- **Double Q**  -  target actions from online net, values from target net (reduces overestimation)
+- **Dueling**  -  separate value and advantage streams; advantage-mean subtraction prevents identifiability issues
+- **PER**  -  SumTree prioritized replay with IS-weight correction; priority exponent `α`, correction exponent `β`
+- **n-step**  -  multi-step bootstrap targets; trades variance for bias, dramatically speeds up sparse-reward environments
+- **Noisy Nets**  -  factorized Gaussian noise on linear layers replaces ε-greedy; exploration driven by learned uncertainty
+- **Categorical / C51**  -  distributional Q as a 51-atom categorical distribution; KL loss instead of MSE
 
 ```python
 obs_dim, n_actions = 8, 4
@@ -623,7 +626,7 @@ agent = TorchRainbowDQNAgent(
 
 ---
 
-### Recurrent PPO — LSTM Actor-Critic
+### Recurrent PPO  -  LSTM Actor-Critic
 
 Discrete action spaces. Hidden state carried across episode steps; handles partial observability and sequence-structured tasks.
 
@@ -632,9 +635,9 @@ from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
 ```
 
 **What it adds over standard PPO:**
-- `LSTMActorCritic` module — shared LSTM trunk, separate actor/critic heads
+- `LSTMActorCritic` module  -  shared LSTM trunk, separate actor/critic heads
 - Hidden state `(h, c)` carried across episode steps and reset at episode boundaries
-- Rollout buffer stores per-step hidden states — no BPTT truncation artifacts
+- Rollout buffer stores per-step hidden states  -  no BPTT truncation artifacts
 - Same clipped surrogate objective as PPO; hidden state dimension configurable
 
 ```python
@@ -653,7 +656,7 @@ agent = TorchRecurrentPPOAgent(
     }, episode_id=0),
     device="auto",
 )
-# act() carries hidden state internally — same BaseAgent interface
+# act() carries hidden state internally  -  same BaseAgent interface
 action = agent.act(obs)
 ```
 
@@ -671,9 +674,9 @@ from tensor_optix.algorithms.flax_ppo         import FlaxPPOAgent
 ```
 
 **Key properties:**
-- `nnx.value_and_grad` differentiates through the combined actor+critic in one pass — no separate backward calls per head
-- `nnx.Optimizer(model, optax.adam(lr), wrt=nnx.Param)` — only trainable `Param` variables are updated
-- Weights serialised as a plain nested `dict` via `nnx.to_pure_dict(nnx.state(model))` and restored with `nnx.replace_by_pure_dict` + `nnx.update` — pickle-safe, version-stable
+- `nnx.value_and_grad` differentiates through the combined actor+critic in one pass  -  no separate backward calls per head
+- `nnx.Optimizer(model, optax.adam(lr), wrt=nnx.Param)`  -  only trainable `Param` variables are updated
+- Weights serialised as a plain nested `dict` via `nnx.to_pure_dict(nnx.state(model))` and restored with `nnx.replace_by_pure_dict` + `nnx.update`  -  pickle-safe, version-stable
 - Convergence-parity with `TorchPPOAgent` on CartPole-v1 (within 10%, verified by test suite)
 
 ```python
@@ -708,9 +711,9 @@ opt.run()
 
 ---
 
-### Distributed Training — Async Actor-Learner (IMPALA + V-trace)
+### Distributed Training  -  Async Actor-Learner (IMPALA + V-trace)
 
-IMPALA-style asynchronous actor-learner for PyTorch discrete policies. N actor processes collect trajectories in parallel using POSIX shared memory — learner weight updates are instantly visible to all actors with zero serialization overhead.
+IMPALA-style asynchronous actor-learner for PyTorch discrete policies. N actor processes collect trajectories in parallel using POSIX shared memory  -  learner weight updates are instantly visible to all actors with zero serialization overhead.
 
 ```python
 # pip install tensor-optix[torch]
@@ -783,7 +786,7 @@ stats = learner.run(max_steps=500_000)
 print(f"Throughput: {stats['steps_per_second']:.0f} steps/s")
 ```
 
-**Platform note:** uses `mp.get_context("fork")` — designed for Linux. On macOS or Windows (spawn start method), pass picklable factory callables.
+**Platform note:** uses `mp.get_context("fork")`  -  designed for Linux. On macOS or Windows (spawn start method), pass picklable factory callables.
 
 ---
 
@@ -810,11 +813,11 @@ The dashboard shows:
 - Smoothed score, best score, episode count
 - Estimated convergence progress
 
-No extra configuration required — pass it as a callback and it wires itself to the `LoopCallback` hooks automatically.
+No extra configuration required  -  pass it as a callback and it wires itself to the `LoopCallback` hooks automatically.
 
 ---
 
-### Parallel Environments — VectorBatchPipeline
+### Parallel Environments  -  VectorBatchPipeline
 
 Run N environments simultaneously. Increases sample throughput N× over a single `BatchPipeline`.
 
@@ -843,7 +846,7 @@ obs_norm.update(obs_batch)
 normed_obs = obs_norm.normalize(raw_obs)
 ```
 
-`RewardNormalizer` is most useful with on-policy agents. Pass it directly to the agent — it handles the step/reset cycle at episode boundaries internally, so you don't have to track done flags manually:
+`RewardNormalizer` is most useful with on-policy agents. Pass it directly to the agent  -  it handles the step/reset cycle at episode boundaries internally, so you don't have to track done flags manually:
 
 ```python
 from tensor_optix.core.normalizers import RewardNormalizer
@@ -856,7 +859,7 @@ agent = TFPPOAgent(
 )
 ```
 
-The agent calls `step(r)` and `reset()` for each reward in the window during `learn()`, then normalizes the full batch before GAE. This is a correctness requirement for multi-episode windows — forgetting to reset the running return across episode boundaries biases the return variance estimate.
+The agent calls `step(r)` and `reset()` for each reward in the window during `learn()`, then normalizes the full batch before GAE. This is a correctness requirement for multi-episode windows  -  forgetting to reset the running return across episode boundaries biases the return variance estimate.
 
 ---
 
@@ -895,7 +898,7 @@ class BaseAgent(ABC):
     def load_weights(self, path: str): ...
 ```
 
-Any model — RL algorithms, evolutionary strategies, supervised sequence models, online forecasters — plugs in by implementing these six methods. No specific framework, action space, or learning paradigm is assumed.
+Any model  -  RL algorithms, evolutionary strategies, supervised sequence models, online forecasters  -  plugs in by implementing these six methods. No specific framework, action space, or learning paradigm is assumed.
 
 ---
 
@@ -919,7 +922,7 @@ flowchart TD
     G -->|val improving| H[SPAWN]
     G -->|gap high & worsening| I[PRUNE]
     G -->|budget exhausted| J[STOP]
-    G -->|otherwise| K[NO_OP — resume training]
+    G -->|otherwise| K[NO_OP  -  resume training]
     K -->|next episode| A
 
     H --> L[PolicyManager]
@@ -934,7 +937,7 @@ flowchart TD
     J --> M([best weights restored\ntraining complete])
 ```
 
-**Key insight:** `BackoffScheduler` only fires DORMANT events — it has no opinion on what to do next. `MetaController` makes that decision based on generalization signals. `PolicyManager` executes it. This separation means you can swap or bypass any layer without touching the others.
+**Key insight:** `BackoffScheduler` only fires DORMANT events  -  it has no opinion on what to do next. `MetaController` makes that decision based on generalization signals. `PolicyManager` executes it. This separation means you can swap or bypass any layer without touching the others.
 
 ---
 
@@ -942,7 +945,7 @@ flowchart TD
 
 ### Adaptive Eval Scheduling
 
-One of tensor-optix's core strengths is that **it decides when to evaluate** — not you, and not a fixed schedule.
+One of tensor-optix's core strengths is that **it decides when to evaluate**  -  not you, and not a fixed schedule.
 
 The `BackoffScheduler` dynamically controls eval frequency based on learning progress:
 
@@ -956,8 +959,8 @@ The `BackoffScheduler` dynamically controls eval frequency based on learning pro
   [loop] ep=  17  raw=  194.8  smoothed=  201.5  state=ACTIVE  interval=1  ← improvement detected, reset
 ```
 
-- **No improvement** → interval doubles (2, 4, 8...) — more training time between evals, budget spent on learning
-- **Improvement detected** → interval snaps back to 1 — dense eval to track the breakthrough
+- **No improvement** → interval doubles (2, 4, 8...)  -  more training time between evals, budget spent on learning
+- **Improvement detected** → interval snaps back to 1  -  dense eval to track the breakthrough
 - **DORMANT** → loop stops, best weights restored automatically
 
 Vanilla frameworks evaluate on a fixed schedule regardless of progress. tensor-optix spends the budget where it matters.
@@ -973,10 +976,10 @@ opt = RLOptimizer(agent=agent, pipeline=pipeline, verbose=True)
 ```
 ACTIVE   → learning detected, evaluates frequently
 COOLING  → no recent improvement, exponential backoff on eval frequency
-DORMANT  → plateau confirmed — training is done, loop stops cleanly
+DORMANT  → plateau confirmed  -  training is done, loop stops cleanly
 ```
 
-**DORMANT = trained.** Not a fixed episode count — the system backs off evaluation geometrically until improvement stops, then declares convergence and restores the best known weights.
+**DORMANT = trained.** Not a fixed episode count  -  the system backs off evaluation geometrically until improvement stops, then declares convergence and restores the best known weights.
 
 ### Backoff Schedule
 
@@ -990,11 +993,11 @@ DORMANT declared when:  consecutive_no_improvement ≥ dormant_threshold
 
 Every improvement resets the counter. The system accelerates evaluation when learning is happening, backs off when it isn't.
 
-### Hyperparameter Optimization — Two Layers
+### Hyperparameter Optimization  -  Two Layers
 
 tensor-optix provides two complementary levels of hyperparameter optimization. They are designed to compose: run `TrialOrchestrator` first to find a good starting configuration, then hand those params to `RLOptimizer` for the final full-budget run with SPSA online adaptation.
 
-#### Layer 1 — Online Adaptation (SPSA, within a single run)
+#### Layer 1  -  Online Adaptation (SPSA, within a single run)
 
 The default optimizer is `SPSAOptimizer` (Simultaneous Perturbation Stochastic Approximation). It adapts hyperparameters *during* a training run, episode by episode, responding to non-stationarity in real time.
 
@@ -1010,7 +1013,7 @@ Update:              x_new = clip(x + α·ĝ, 0, 1)   ← in normalized [0,1] pa
                      θ_new = denormalize(x_new)
 ```
 
-All probing is done in a normalized `[0, 1]` parameter space — a fixed perturbation scale applies equally to a learning rate of `3e-4` and a clip ratio of `0.2` without manual tuning.
+All probing is done in a normalized `[0, 1]` parameter space  -  a fixed perturbation scale applies equally to a learning rate of `3e-4` and a clip ratio of `0.2` without manual tuning.
 
 **Probe-aware degradation gating:** during probe episodes, score drops are self-inflicted perturbations, not genuine policy collapses. The loop skips degradation checks while the optimizer is probing.
 
@@ -1029,11 +1032,11 @@ opt = RLOptimizer(
 )
 ```
 
-#### Layer 2 — Trial-Level Search (TrialOrchestrator, across independent runs)
+#### Layer 2  -  Trial-Level Search (TrialOrchestrator, across independent runs)
 
 `TrialOrchestrator` runs N fully independent `RLOptimizer` trials, each with a different hyperparameter configuration, and uses **Optuna TPE** (Tree-structured Parzen Estimator) to select configurations. It is mathematically the same algorithm used by Stable-Baselines3, CleanRL, and RLlib for RL HPO sweeps.
 
-**When to use it:** before committing to a long training run. Give each trial 10–20% of your final budget — enough to rank configurations, not enough for full training.
+**When to use it:** before committing to a long training run. Give each trial 10–20% of your final budget  -  enough to rank configurations, not enough for full training.
 
 ```python
 from tensor_optix import TrialOrchestrator, RLOptimizer
@@ -1075,18 +1078,18 @@ optimizer.run()
 | Spec | Description |
 |---|---|
 | `("float", lo, hi)` | Uniform float in `[lo, hi]` |
-| `("log_float", lo, hi)` | Log-uniform float — use for learning rate, α |
+| `("log_float", lo, hi)` | Log-uniform float  -  use for learning rate, α |
 | `("int", lo, hi)` | Uniform integer |
-| `("log_int", lo, hi)` | Log-uniform integer — use for batch size, buffer size |
+| `("log_int", lo, hi)` | Log-uniform integer  -  use for batch size, buffer size |
 | `("categorical", v1, v2, ...)` | One of the listed values |
 
 **How TPE works:**
 
-TPE fits two kernel density estimates — `p(x | good)` over the top-k% of trials and `p(x | bad)` over the rest. The next configuration is chosen by maximising the acquisition ratio `p(x | good) / p(x | bad)`. This is equivalent to Bayesian optimisation with a non-parametric surrogate, without the O(n³) cost of Gaussian Process inference.
+TPE fits two kernel density estimates  -  `p(x | good)` over the top-k% of trials and `p(x | bad)` over the rest. The next configuration is chosen by maximising the acquisition ratio `p(x | good) / p(x | bad)`. This is equivalent to Bayesian optimisation with a non-parametric surrogate, without the O(n³) cost of Gaussian Process inference.
 
 **MedianPruner:** after a short warmup, any trial whose score falls below the median of all trials at the same episode is terminated early. This cuts wall time by stopping clearly bad configurations without committing to a fixed bracket schedule.
 
-Each trial gets an isolated checkpoint directory — no cross-trial interference. The underlying `Optuna` study is accessible via `orchestrator.study` for inspection, plotting, and storage to SQLite for distributed sweeps.
+Each trial gets an isolated checkpoint directory  -  no cross-trial interference. The underlying `Optuna` study is accessible via `orchestrator.study` for inspection, plotting, and storage to SQLite for distributed sweeps.
 
 ### Adaptive Improvement Margin
 
@@ -1102,7 +1105,7 @@ effective_margin = max(user_margin, noise_k × std(recent_scores))
 
 ## The Science: Train + Val Together
 
-Without validation, every decision — checkpoint saves, rollbacks, spawn triggers — is made on training data alone. That is overfitting disguised as improvement.
+Without validation, every decision  -  checkpoint saves, rollbacks, spawn triggers  -  is made on training data alone. That is overfitting disguised as improvement.
 
 ### Validation Pipeline
 
@@ -1110,7 +1113,7 @@ Without validation, every decision — checkpoint saves, rollbacks, spawn trigge
 opt = RLOptimizer(
     agent=agent,
     pipeline=train_pipeline,
-    val_pipeline=val_pipeline,   # held-out — agent acts, never learns
+    val_pipeline=val_pipeline,   # held-out  -  agent acts, never learns
 )
 ```
 
@@ -1121,15 +1124,15 @@ primary_score        = val_score          ← drives ALL checkpoint and rollback
 generalization_gap   = train_score − val  ← surfaced in every EvalMetrics
 ```
 
-Every adaptation decision — rollback, spawn, noise scale, MetaController — is driven by out-of-sample performance, not training performance.
+Every adaptation decision  -  rollback, spawn, noise scale, MetaController  -  is driven by out-of-sample performance, not training performance.
 
 ### External Checkpoint Scoring
 
-The training window mean is a noisy signal — it diverges from the true policy quality that matters at deployment. Pass `checkpoint_score_fn` to decouple checkpoint saving from training noise:
+The training window mean is a noisy signal  -  it diverges from the true policy quality that matters at deployment. Pass `checkpoint_score_fn` to decouple checkpoint saving from training noise:
 
 ```python
 def external_eval(agent) -> float:
-    # deterministic, fixed seed — measures true policy quality
+    # deterministic, fixed seed  -  measures true policy quality
     return eval_policy(agent, env_id="LunarLander-v3", seed=42, n_episodes=5)
 
 opt = RLOptimizer(
@@ -1139,29 +1142,29 @@ opt = RLOptimizer(
 )
 ```
 
-The best checkpoint is selected by the external score. The training signal still drives convergence detection — only checkpoint saving uses the external eval.
+The best checkpoint is selected by the external score. The training signal still drives convergence detection  -  only checkpoint saving uses the external eval.
 
 ### Three-Signal Adaptive Noise
 
 When spawning a policy variant, the mutation intensity is computed from three signals:
 
-**Signal 1 — Val slope (improvement rate)**
+**Signal 1  -  Val slope (improvement rate)**
 ```
 t = clip(slope(val_scores) / max_slope, 0, 1)
 ```
 `t → 1` when val is improving strongly. `t → 0` on plateau.
 
-**Signal 2 — Generalization gap**
+**Signal 2  -  Generalization gap**
 ```
 gap_penalty = clip(mean(train − val) / |mean(val)|, 0, 1)
 ```
-Large gap means the model fits training data but not held-out data — explore different solutions.
+Large gap means the model fits training data but not held-out data  -  explore different solutions.
 
-**Signal 3 — Train/val correlation (Pearson)**
+**Signal 3  -  Train/val correlation (Pearson)**
 ```
 corr_penalty = clip(1 − Pearson(train_scores, val_scores), 0, 1)
 ```
-`corr → 1` means train and val move together (healthy). `corr → 0` means train is moving but val isn't — a signal to explore.
+`corr → 1` means train and val move together (healthy). `corr → 0` means train is moving but val isn't  -  a signal to explore.
 
 **Combined formula:**
 ```
@@ -1181,7 +1184,7 @@ Exploit when improving, explore when stuck.
 
 ### Automatic Rollback
 
-When `run()` returns, the agent **always holds the best known weights** — whether stopped by convergence, budget, or manual `stop()`. This is unconditional and requires no configuration.
+When `run()` returns, the agent **always holds the best known weights**  -  whether stopped by convergence, budget, or manual `stop()`. This is unconditional and requires no configuration.
 
 For mid-training rollback on degradation:
 
@@ -1189,7 +1192,7 @@ For mid-training rollback on degradation:
 opt = RLOptimizer(agent=agent, pipeline=pipeline, rollback_on_degradation=True)
 ```
 
-### Spawn Budget — When Is Training Done?
+### Spawn Budget  -  When Is Training Done?
 
 ```python
 from tensor_optix import PolicyManager
@@ -1232,7 +1235,7 @@ cb.set_stop_fn(opt.stop)
 
 On DORMANT: rebalance ensemble weights → rollback if degraded → clone best checkpoint → perturb hyperparams → add to ensemble → prune if over limit → stop when budget exhausted.
 
-### MetaController — Autonomous Decisions
+### MetaController  -  Autonomous Decisions
 
 ```python
 from tensor_optix import MetaController
@@ -1313,11 +1316,11 @@ pipeline = LivePipeline(
 ```python
 from tensor_optix.callbacks import WandbCallback, TensorBoardCallback, RichDashboardCallback
 
-# Weights & Biases — logs every on_episode_end and on_improvement event
+# Weights & Biases  -  logs every on_episode_end and on_improvement event
 opt = RLOptimizer(agent=agent, pipeline=pipeline,
                   callbacks=[WandbCallback(project="my-project")])
 
-# TensorBoard — writes to ./runs/ by default
+# TensorBoard  -  writes to ./runs/ by default
 opt = RLOptimizer(agent=agent, pipeline=pipeline,
                   callbacks=[TensorBoardCallback(log_dir="./runs/cartpole")])
 
@@ -1370,10 +1373,10 @@ opt = RLOptimizer(
     # ── Convergence detection (BackoffScheduler) ──────────────────────────
     base_interval=1,                        # eval every N episodes at the start
     backoff_factor=2.0,                     # multiply interval by this on each non-improvement
-    max_interval_episodes=100,              # interval cap — never wait more than this
+    max_interval_episodes=100,              # interval cap  -  never wait more than this
     plateau_threshold=5,                    # consecutive non-improvements → COOLING
     dormant_threshold=20,                   # consecutive non-improvements → DORMANT (stop)
-                                            # off-policy agents (DQN, SAC) auto-set to 15 —
+                                            # off-policy agents (DQN, SAC) auto-set to 15  - 
                                             # replay buffer scores are noisier than on-policy
     score_smoothing=2,                      # rolling mean window applied before comparing scores;
                                             # filters single-episode noise from convergence signals
@@ -1410,58 +1413,58 @@ opt = RLOptimizer(
 tensor_optix/
 ├── core/
 │   ├── types.py                # EpisodeData, EvalMetrics, HyperparamSet, LoopState
-│   ├── base_agent.py           # BaseAgent — 6-method contract
-│   ├── base_evaluator.py       # BaseEvaluator — score, combine, compare
-│   ├── base_optimizer.py       # BaseOptimizer — suggest, on_improvement, on_plateau
-│   ├── base_pipeline.py        # BasePipeline — episodes() generator
+│   ├── base_agent.py           # BaseAgent  -  6-method contract
+│   ├── base_evaluator.py       # BaseEvaluator  -  score, combine, compare
+│   ├── base_optimizer.py       # BaseOptimizer  -  suggest, on_improvement, on_plateau
+│   ├── base_pipeline.py        # BasePipeline  -  episodes() generator
 │   ├── loop_controller.py      # State machine + main loop
 │   ├── backoff_scheduler.py    # Convergence detection + state transitions
 │   ├── checkpoint_registry.py  # Snapshot storage and manifest
 │   ├── normalizers.py          # RunningMeanStd, ObsNormalizer, RewardNormalizer
 │   ├── trajectory_buffer.py    # compute_gae(), make_minibatches()
-│   ├── noisy_linear.py         # NoisyLinear — factorized Gaussian noise (Rainbow)
+│   ├── noisy_linear.py         # NoisyLinear  -  factorized Gaussian noise (Rainbow)
 │   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
-│   ├── ensemble_agent.py       # EnsembleAgent — multi-policy BaseAgent wrapper
-│   ├── regime_detector.py      # RegimeDetector — score-based regime classification
-│   ├── meta_controller.py      # MetaController — SPAWN/PRUNE/STOP/NO_OP decisions
-│   ├── her_buffer.py           # HERReplayBuffer — Hindsight Experience Replay
-│   └── diagnostic_controller.py# DiagnosticController — per-episode metric aggregation
+│   ├── ensemble_agent.py       # EnsembleAgent  -  multi-policy BaseAgent wrapper
+│   ├── regime_detector.py      # RegimeDetector  -  score-based regime classification
+│   ├── meta_controller.py      # MetaController  -  SPAWN/PRUNE/STOP/NO_OP decisions
+│   ├── her_buffer.py           # HERReplayBuffer  -  Hindsight Experience Replay
+│   └── diagnostic_controller.py# DiagnosticController  -  per-episode metric aggregation
 ├── optimizers/
-│   ├── spsa_optimizer.py       # SPSAOptimizer — default, all params in 2 episodes
-│   ├── backoff_optimizer.py    # BackoffOptimizer — single-param finite difference
-│   ├── momentum_optimizer.py   # MomentumOptimizer — gradient-signed momentum
-│   └── pbt_optimizer.py        # PBTOptimizer — population-based exploit/explore
+│   ├── spsa_optimizer.py       # SPSAOptimizer  -  default, all params in 2 episodes
+│   ├── backoff_optimizer.py    # BackoffOptimizer  -  single-param finite difference
+│   ├── momentum_optimizer.py   # MomentumOptimizer  -  gradient-signed momentum
+│   └── pbt_optimizer.py        # PBTOptimizer  -  population-based exploit/explore
 ├── adapters/
 │   ├── tensorflow/
-│   │   ├── tf_agent.py         # TFAgent — generic REINFORCE / A2C base
-│   │   └── tf_evaluator.py     # TFEvaluator — default scorer
+│   │   ├── tf_agent.py         # TFAgent  -  generic REINFORCE / A2C base
+│   │   └── tf_evaluator.py     # TFEvaluator  -  default scorer
 │   ├── pytorch/
-│   │   ├── torch_agent.py      # TorchAgent — generic REINFORCE / A2C base
-│   │   └── torch_evaluator.py  # TorchEvaluator — default scorer (no TF dep)
-│   └── jax/                    # NEW — JAX/Flax adapter
-│       ├── flax_agent.py       # FlaxAgent — REINFORCE base, nnx.Optimizer, pickle weights
-│       └── flax_evaluator.py   # FlaxEvaluator — total reward scorer
+│   │   ├── torch_agent.py      # TorchAgent  -  generic REINFORCE / A2C base
+│   │   └── torch_evaluator.py  # TorchEvaluator  -  default scorer (no TF dep)
+│   └── jax/                    # NEW  -  JAX/Flax adapter
+│       ├── flax_agent.py       # FlaxAgent  -  REINFORCE base, nnx.Optimizer, pickle weights
+│       └── flax_evaluator.py   # FlaxEvaluator  -  total reward scorer
 ├── algorithms/
-│   ├── tf_ppo.py               # TFPPOAgent — clipped surrogate, GAE-λ, n-epoch minibatch
-│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent — continuous PPO, squashed Gaussian
-│   ├── tf_dqn.py               # TFDQNAgent — PER replay, target net, ε-greedy
-│   ├── tf_sac.py               # TFSACAgent — twin critics, squashed Gaussian, auto-α
-│   ├── tf_td3.py               # TFTDDAgent — deterministic policy, delayed actor, target smoothing
+│   ├── tf_ppo.py               # TFPPOAgent  -  clipped surrogate, GAE-λ, n-epoch minibatch
+│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent  -  continuous PPO, squashed Gaussian
+│   ├── tf_dqn.py               # TFDQNAgent  -  PER replay, target net, ε-greedy
+│   ├── tf_sac.py               # TFSACAgent  -  twin critics, squashed Gaussian, auto-α
+│   ├── tf_td3.py               # TFTDDAgent  -  deterministic policy, delayed actor, target smoothing
 │   ├── torch_ppo.py            # TorchPPOAgent (CUDA auto-detect)
-│   ├── torch_ppo_continuous.py # TorchGaussianPPOAgent — continuous PPO (CUDA auto-detect)
+│   ├── torch_ppo_continuous.py # TorchGaussianPPOAgent  -  continuous PPO (CUDA auto-detect)
 │   ├── torch_dqn.py            # TorchDQNAgent (CUDA auto-detect)
 │   ├── torch_sac.py            # TorchSACAgent (CUDA auto-detect)
-│   ├── torch_td3.py            # TorchTD3Agent — TD3: twin critics, delayed actor, noise smoothing
-│   ├── torch_recurrent_ppo.py  # TorchRecurrentPPOAgent — LSTM actor-critic, stateful act()
-│   ├── torch_rainbow_dqn.py    # TorchRainbowDQNAgent — Double/Dueling/PER/n-step/Noisy/C51
-│   └── flax_ppo.py             # FlaxPPOAgent — PPO via flax.nnx + optax (JAX backend)
-├── distributed/                # NEW — async actor-learner
-│   ├── async_learner.py        # AsyncActorLearner — IMPALA-style, POSIX shared memory
-│   └── vtrace.py               # compute_vtrace_targets — pure-numpy V-trace IS correction
+│   ├── torch_td3.py            # TorchTD3Agent  -  TD3: twin critics, delayed actor, noise smoothing
+│   ├── torch_recurrent_ppo.py  # TorchRecurrentPPOAgent  -  LSTM actor-critic, stateful act()
+│   ├── torch_rainbow_dqn.py    # TorchRainbowDQNAgent  -  Double/Dueling/PER/n-step/Noisy/C51
+│   └── flax_ppo.py             # FlaxPPOAgent  -  PPO via flax.nnx + optax (JAX backend)
+├── distributed/                # NEW  -  async actor-learner
+│   ├── async_learner.py        # AsyncActorLearner  -  IMPALA-style, POSIX shared memory
+│   └── vtrace.py               # compute_vtrace_targets  -  pure-numpy V-trace IS correction
 ├── callbacks/
-│   ├── wandb_callback.py       # WandbCallback — logs to Weights & Biases
-│   ├── tensorboard_callback.py # TensorBoardCallback — logs to TensorBoard
-│   └── rich_dashboard.py       # RichDashboardCallback — live terminal panel (requires rich)
+│   ├── wandb_callback.py       # WandbCallback  -  logs to Weights & Biases
+│   ├── tensorboard_callback.py # TensorBoardCallback  -  logs to TensorBoard
+│   └── rich_dashboard.py       # RichDashboardCallback  -  live terminal panel (requires rich)
 └── pipeline/
     ├── batch_pipeline.py       # Continuous stepping, fixed windows
     ├── live_pipeline.py        # Real-time streaming with reconnect
@@ -1470,31 +1473,31 @@ tensor_optix/
 
 | Component | Responsibility |
 |-----------|---------------|
-| `TFPPOAgent` / `TorchPPOAgent` | Discrete PPO — GAE, clipping, entropy, n-epoch minibatch |
-| `TFGaussianPPOAgent` / `TorchGaussianPPOAgent` | Continuous PPO — squashed Gaussian actor, same PPO core |
+| `TFPPOAgent` / `TorchPPOAgent` | Discrete PPO  -  GAE, clipping, entropy, n-epoch minibatch |
+| `TFGaussianPPOAgent` / `TorchGaussianPPOAgent` | Continuous PPO  -  squashed Gaussian actor, same PPO core |
 | `TFDQNAgent` / `TorchDQNAgent` | DQN with PER replay, n-step returns, target net, ε-greedy |
-| `TFSACAgent` / `TorchSACAgent` | SAC — twin critics, auto-entropy, soft target updates |
-| `TFTDDAgent` / `TorchTD3Agent` | TD3 — deterministic actor, twin critics, delayed updates, target smoothing |
-| `TorchRecurrentPPOAgent` | LSTM actor-critic PPO — hidden state carried across steps, handles partial observability |
-| `TorchRainbowDQNAgent` | Rainbow DQN — Double/Dueling/PER/n-step/Noisy Nets/C51 (all six improvements) |
-| `FlaxPPOAgent` | PPO via Flax NNX + optax — XLA-compiled, convergence-parity with TorchPPOAgent |
-| `FlaxAgent` | Base agent for any `nnx.Module` — REINFORCE update, pickle-safe weight I/O |
-| `AsyncActorLearner` | IMPALA-style N-actor learner — POSIX shared memory, V-trace off-policy correction |
+| `TFSACAgent` / `TorchSACAgent` | SAC  -  twin critics, auto-entropy, soft target updates |
+| `TFTDDAgent` / `TorchTD3Agent` | TD3  -  deterministic actor, twin critics, delayed updates, target smoothing |
+| `TorchRecurrentPPOAgent` | LSTM actor-critic PPO  -  hidden state carried across steps, handles partial observability |
+| `TorchRainbowDQNAgent` | Rainbow DQN  -  Double/Dueling/PER/n-step/Noisy Nets/C51 (all six improvements) |
+| `FlaxPPOAgent` | PPO via Flax NNX + optax  -  XLA-compiled, convergence-parity with TorchPPOAgent |
+| `FlaxAgent` | Base agent for any `nnx.Module`  -  REINFORCE update, pickle-safe weight I/O |
+| `AsyncActorLearner` | IMPALA-style N-actor learner  -  POSIX shared memory, V-trace off-policy correction |
 | `compute_vtrace_targets` | Pure-numpy V-trace IS correction (Espeholt et al. 2018) |
 | `LoopController` | State machine, episode orchestration, eval, checkpoint |
 | `BackoffScheduler` | Adaptive eval scheduling + convergence detection |
 | `CheckpointRegistry` | Snapshot storage, best-checkpoint manifest |
-| `SPSAOptimizer` | SPSA — all N params in 2 episodes, normalized space (online, within a run) |
+| `SPSAOptimizer` | SPSA  -  all N params in 2 episodes, normalized space (online, within a run) |
 | `BackoffOptimizer` | Two-phase finite difference hyperparameter tuning |
 | `PBTOptimizer` | Population-based exploit/explore hyperparameter tuning |
-| `TrialOrchestrator` | Optuna TPE trial-level HPO — N independent runs, MedianPruner (requires `optuna`) |
+| `TrialOrchestrator` | Optuna TPE trial-level HPO  -  N independent runs, MedianPruner (requires `optuna`) |
 | `PolicyManager` | Rollback, spawn, prune, boost, ensemble weights, adaptive noise |
 | `MetaController` | Rule-based SPAWN/PRUNE/STOP/NO_OP decisions |
 | `EnsembleAgent` | Weighted-average action combining across multiple agents |
 | `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
 | `WandbCallback` | Logs scores, hyperparams, and diagnostics to Weights & Biases |
 | `TensorBoardCallback` | Logs to TensorBoard SummaryWriter |
-| `RichDashboardCallback` | Live terminal panel — sparkline, state, hyperparams (requires `rich`) |
+| `RichDashboardCallback` | Live terminal panel  -  sparkline, state, hyperparams (requires `rich`) |
 | `VectorBatchPipeline` | Parallel environment rollouts via gymnasium.vector |
 | `ObsNormalizer` | Online running mean/std observation normalization |
 | `RewardNormalizer` | Return-std reward scaling |
@@ -1512,7 +1515,7 @@ agent = TorchPPOAgent(actor=actor, critic=critic, optimizer=opt,
                       hyperparams=hp, device="cuda")   # or "cpu", "auto"
 ```
 
-The base `TorchAgent` adapter now also accepts `device="auto"` and applies it consistently in `act()` and `load_weights()`. If you subclass `TorchAgent` directly, pass `device` to `super().__init__()` — otherwise obs tensors and loaded checkpoints default to CPU even on a CUDA machine.
+The base `TorchAgent` adapter now also accepts `device="auto"` and applies it consistently in `act()` and `load_weights()`. If you subclass `TorchAgent` directly, pass `device` to `super().__init__()`  -  otherwise obs tensors and loaded checkpoints default to CPU even on a CUDA machine.
 
 **Watch out:** constructing the optimizer _before_ calling `.to(device)` on the model is safe because optimizers hold references to parameter tensors, not copies. But creating the optimizer _after_ `agent.load_weights()` restores weights to the wrong device can leave parameters split between CPU and GPU, which causes a silent slowdown rather than an error.
 
@@ -1529,11 +1532,11 @@ removed = pm.prune(bottom_k=2)   # teardown() is called automatically
 agent.teardown()
 ```
 
-For long PBT-style runs with frequent spawning, monitor GPU memory with `torch.cuda.memory_allocated()`. If memory grows despite pruning, the likely cause is optimizer state — gradient moments accumulate per parameter. Re-creating the optimizer on each spawn (as the built-in `agent_factory` pattern does) avoids this.
+For long PBT-style runs with frequent spawning, monitor GPU memory with `torch.cuda.memory_allocated()`. If memory grows despite pruning, the likely cause is optimizer state  -  gradient moments accumulate per parameter. Re-creating the optimizer on each spawn (as the built-in `agent_factory` pattern does) avoids this.
 
 ### On-policy vs. off-policy rollback
 
-`rollback_on_degradation=True` is safe for PPO but harmful for DQN and SAC. Off-policy agents accumulate experience in a replay buffer across many policies. Rolling back weights without clearing the buffer means the restored policy immediately trains on transitions it never generated — corrupted Bellman targets drag it back down.
+`rollback_on_degradation=True` is safe for PPO but harmful for DQN and SAC. Off-policy agents accumulate experience in a replay buffer across many policies. Rolling back weights without clearing the buffer means the restored policy immediately trains on transitions it never generated  -  corrupted Bellman targets drag it back down.
 
 The framework handles this automatically: any agent where `is_on_policy` returns `False` skips the weight rollback even when `rollback_on_degradation=True`. If you write a custom off-policy agent, override the property:
 
@@ -1545,19 +1548,19 @@ def is_on_policy(self) -> bool:
 
 ### Wiring PolicyManager early stopping
 
-`PolicyManager.as_callback()` returns a `PolicyManagerCallback` that stops training when the spawn budget is exhausted — but only if you wire the stop function:
+`PolicyManager.as_callback()` returns a `PolicyManagerCallback` that stops training when the spawn budget is exhausted  -  but only if you wire the stop function:
 
 ```python
 pm_cb = pm.as_callback(agent, agent_factory=my_factory)
 rl_opt = RLOptimizer(...)
-pm_cb.set_stop_fn(rl_opt.stop)   # required — without this, training runs the full budget
+pm_cb.set_stop_fn(rl_opt.stop)   # required  -  without this, training runs the full budget
 rl_opt.add_callback(pm_cb)
 rl_opt.run()
 ```
 
 Without `set_stop_fn`, the callback prints the training report when the budget runs out but cannot halt the loop. Training continues until `max_episodes` is reached.
 
-For the factory-mode PPO path (where `agent_factory` is passed to `RLOptimizer` and `pm_cb` is created inside the factory), wire the stop function inside the factory — `rl_opt` is already bound in the enclosing scope by the time the factory is called:
+For the factory-mode PPO path (where `agent_factory` is passed to `RLOptimizer` and `pm_cb` is created inside the factory), wire the stop function inside the factory  -  `rl_opt` is already bound in the enclosing scope by the time the factory is called:
 
 ```python
 def agent_factory_full(params):
@@ -1577,7 +1580,7 @@ Each run writes checkpoints to `checkpoint_dir`. If you reuse the same directory
 
 ### State dict key mismatches during weight averaging / spawning
 
-`average_weights()` and `load_weights()` use PyTorch `state_dict` keys. If the architecture passed to a spawned agent shell differs from the one that was checkpointed (different layer names, sizes, or number of layers), `load_state_dict()` will raise a `RuntimeError` with a key mismatch message. The framework does not catch this — it is user responsibility to pass a compatible shell. The safest pattern is to use the same `agent_factory` for both the primary agent and all spawned variants.
+`average_weights()` and `load_weights()` use PyTorch `state_dict` keys. If the architecture passed to a spawned agent shell differs from the one that was checkpointed (different layer names, sizes, or number of layers), `load_state_dict()` will raise a `RuntimeError` with a key mismatch message. The framework does not catch this  -  it is user responsibility to pass a compatible shell. The safest pattern is to use the same `agent_factory` for both the primary agent and all spawned variants.
 
 ---
 
@@ -1712,6 +1715,119 @@ The 51-atom categorical distribution represents the full return distribution rat
 
 ---
 
+## neuroevo  -  Free-Form Topology Evolution
+
+`tensor_optix.neuroevo` adds a mutable neural graph that grows and prunes itself during training. Unlike fixed-architecture networks, the compute graph is a directed graph of neurons with variable-delay edges  -  topology evolves alongside weights.
+
+Install:
+```bash
+pip install tensor-optix[neuroevo]
+```
+
+### Core idea
+
+Standard networks have a fixed topology set at construction. `neuroevo` starts small and grows when training plateaus, using **function-preserving operations**  -  every structural change leaves the network output identical at the moment of application. Learning then breaks symmetry from that preserved baseline.
+
+### Key components
+
+| Class | Role |
+|---|---|
+| `NeuronGraph` | Mutable directed graph  -  the policy network |
+| `GraphAgent` | `BaseAgent` wrapping `NeuronGraph`, PPO-trained |
+| `TopologyController` | `LoopCallback` that fires grow/prune on COOLING state |
+
+### Quickstart
+
+```python
+import gymnasium as gym
+from tensor_optix.neuroevo import NeuronGraph, GraphAgent, TopologyController
+from tensor_optix import LoopController  # your existing loop
+
+# Build a minimal graph: 4 inputs, 2 hidden, 3 outputs (2 actions + 1 value)
+g = NeuronGraph()
+for _ in range(4):
+    g.add_neuron(role="input", activation="linear")
+for _ in range(2):
+    g.add_neuron(role="hidden", activation="tanh")
+for _ in range(3):
+    g.add_neuron(role="output", activation="linear")
+for inp in g.input_ids:
+    for hid in g.hidden_ids:
+        g.add_edge(inp, hid, weight=0.1, delay=0)
+for hid in g.hidden_ids:
+    for out in g.output_ids:
+        g.add_edge(hid, out, weight=0.1, delay=0)
+
+agent = GraphAgent(graph=g, obs_dim=4, n_actions=2)
+ctrl  = TopologyController(g, grow_op="insert_edge", grow_cooldown=20)
+
+# Plug into any tensor-optix LoopController
+loop = LoopController(agent=agent, pipeline=pipeline, callbacks=[ctrl])
+loop.run()
+```
+
+### Topology operations
+
+All operations are **function-preserving**  -  output is identical before and after.
+
+**Grow:**
+- `insert_neuron_on_edge(graph, edge_id)`  -  inserts a relay neuron on an existing edge, splitting its delay
+- `split_neuron(graph, neuron_id)`  -  duplicates a neuron, halves outgoing weights
+- `add_input_neuron(graph)`  -  adds a new input neuron with zero-weight connections (for new task dimensions)
+- `add_free_edge(graph, src, dst, delay)`  -  adds any edge with `w=0`
+
+**Prune:**
+- `prune_edge(graph, edge_id)`  -  removes a low-magnitude edge
+- `prune_neuron(graph, neuron_id)`  -  redistributes signal then removes neuron
+- `merge_neurons(graph, id_a, id_b)`  -  collapses two near-identical neurons into one
+
+### Variable-delay recurrence
+
+Every edge carries a `delay` parameter  -  the number of timesteps back it reads:
+
+```
+h_v^(t) = σ( b_v + Σ w_{uv} · h_u^(t-d) )
+```
+
+`delay=0` is feedforward; `delay≥1` is recurrent. Both are handled by the same forward pass via per-neuron history buffers. This makes the network naturally suited to POMDPs and temporal tasks without a separate LSTM.
+
+### TopologyController trigger logic
+
+The controller hooks into `LoopController` via `on_plateau` (fires on COOLING state  -  active learning, not dead):
+
+| Signal | Action |
+|---|---|
+| Plateau, no overfitting | **GROW**  -  insert neuron or edge |
+| Edge `\|w\| < threshold` for N episodes | **PRUNE** edge |
+| Neuron importance < threshold | **PRUNE** neuron |
+| Cosine similarity > 0.95 between two neurons | **MERGE** |
+
+After every GROW, the `BackoffScheduler` is partially reset (interval halved by default) so the loop treats the grown network as a fresh start  -  but retains memory that this region has been hard before.
+
+### Math reference
+
+**Insert neuron on edge** `(u→v, w, d)`:
+```
+Add: (u → new, w=1.0, d₁=⌊d/2⌋)
+Add: (new → v, w=w,   d₂=d−d₁)
+h_new = linear passthrough at init → output preserved exactly
+```
+
+**Split neuron** `v_k → v_k1, v_k2`:
+```
+Incoming: both copies receive full weight
+Outgoing: both copies send w/2  (sum = w)
+Output preserved: w·h = w/2·h + w/2·h
+```
+
+**New input neuron** for observation dim `x_i`:
+```
+w_{new→j} = 0  ∀ j ∈ V
+Output preserved: zero weight = silent neuron at init
+```
+
+---
+
 ## License
 
-MIT — Copyright (c) 2026 sup3rus3r
+MIT  -  Copyright (c) 2026 sup3rus3r

@@ -1925,6 +1925,307 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  neuroevo benchmark  (free-form topology evolution on CartPole-v1)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _build_neuroevo_graph(obs_dim: int, n_actions: int) -> "NeuronGraph":
+    from tensor_optix.neuroevo.graph.neuron_graph import NeuronGraph
+    g = NeuronGraph()
+    for _ in range(obs_dim):
+        g.add_neuron(role="input", activation="linear")
+    for _ in range(4):
+        g.add_neuron(role="hidden", activation="tanh")
+    for _ in range(n_actions + 1):   # n_actions logits + 1 value head
+        g.add_neuron(role="output", activation="linear")
+    for inp in g.input_ids:
+        for hid in g.hidden_ids:
+            g.add_edge(inp, hid, weight=0.05, delay=0)
+    for hid in g.hidden_ids:
+        for out in g.output_ids:
+            g.add_edge(hid, out, weight=0.05, delay=0)
+    return g
+
+
+def eval_neuroevo(agent, env_id: str, n_eps: int = 10, seed: int = 9000) -> float:
+    """Greedy evaluation of a GraphAgent — argmax over actor outputs."""
+    import gymnasium as gym
+    env = gym.make(env_id)
+    totals = []
+    for ep in range(n_eps):
+        obs, _ = env.reset(seed=seed + ep)
+        agent.graph.reset_state()
+        total, done = 0.0, False
+        while not done:
+            obs_t = torch.as_tensor(obs, dtype=torch.float32)
+            with torch.no_grad():
+                out = agent.graph(obs_t)
+            action = int(out[:-1].argmax().item())
+            obs, r, term, trunc, _ = env.step(action)
+            total += r
+            done = term or trunc
+        totals.append(total)
+    env.close()
+    return float(np.mean(totals))
+
+
+class _NeuroevoTracker(LoopCallback):
+    """Tracks steps, evals, and topology events for the neuroevo benchmark."""
+    def __init__(self, cfg: dict, agent, seed: int):
+        self._cfg   = cfg
+        self._agent = agent
+        self._seed  = seed
+        self.total_steps      = 0
+        self.steps_to_solve: Optional[int] = None
+        self.history: list[tuple[int, float]] = []
+        self._since_eval = 0
+        self._grow_events: list[tuple[int, int, int]] = []  # (step, n_neurons, n_edges)
+
+    def on_episode_end(self, episode_id: int, eval_metrics: Optional[EvalMetrics]) -> None:
+        self.total_steps += self._cfg["window_size"]
+        self._since_eval += self._cfg["window_size"]
+        n = self._agent.graph.n_neurons()
+        e = self._agent.graph.n_edges()
+        if self._since_eval >= self._cfg["eval_every"]:
+            self._since_eval = 0
+            score = eval_neuroevo(self._agent, self._cfg["env_id"], seed=self._seed + 10_000)
+            self.history.append((self.total_steps, score))
+            print(
+                f"  [neuroevo  | {self._cfg['label']:16s} | seed={self._seed}]"
+                f"  steps={self.total_steps:>7,d}  score={score:>8.1f}"
+                f"  neurons={n}  edges={e}",
+                flush=True,
+            )
+            if self.steps_to_solve is None and score >= self._cfg["solve_threshold"]:
+                self.steps_to_solve = self.total_steps
+
+    def record_grow(self, step: int, n_neurons: int, n_edges: int) -> None:
+        self._grow_events.append((step, n_neurons, n_edges))
+
+
+def _collect_neuroevo_window(env, agent, window_size: int, carry_obs):
+    """Collect window_size steps with the GraphAgent, resetting graph state per episode."""
+    obs = carry_obs
+    observations, actions, rewards, terminated, truncated, log_probs = [], [], [], [], [], []
+    for _ in range(window_size):
+        observations.append(obs)
+        action = agent.act(obs)
+        lp = agent._last_log_prob.item() if hasattr(agent._last_log_prob, "item") else float(agent._last_log_prob)
+        log_probs.append(lp)
+        actions.append(action)
+        next_obs, reward, term, trunc, _ = env.step(action)
+        rewards.append(float(reward))
+        terminated.append(bool(term))
+        truncated.append(bool(trunc))
+        if term or trunc:
+            obs, _ = env.reset()
+            agent.graph.reset_state()
+        else:
+            obs = next_obs
+    return EpisodeData(
+        observations=np.array(observations, dtype=np.float32),
+        actions=np.array(actions),
+        rewards=rewards,
+        terminated=terminated,
+        truncated=truncated,
+        infos=[{}] * window_size,
+        episode_id=0,
+        log_probs=log_probs,
+    ), obs
+
+
+def train_neuroevo(cfg: dict, seed: int) -> dict:
+    """
+    neuroevo autonomous training: GraphAgent + TopologyController.
+    The network starts small and grows its topology whenever learning plateaus.
+    Compared against the PPO baseline to show topology evolution adds value.
+    """
+    from tensor_optix.neuroevo.agent.graph_agent import GraphAgent
+    from tensor_optix.neuroevo.controller.topology_controller import TopologyController
+    from tensor_optix.core.types import LoopState
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env = gym.make(cfg["env_id"])
+    obs_dim  = env.observation_space.shape[0]
+    n_actions = env.action_space.n
+
+    graph = _build_neuroevo_graph(obs_dim, n_actions)
+    hp_defaults = {
+        "learning_rate":  3e-4,
+        "clip_ratio":     0.2,
+        "entropy_coef":   0.01,
+        "vf_coef":        0.5,
+        "gamma":          0.99,
+        "gae_lambda":     0.95,
+        "n_epochs":       4,
+        "minibatch_size": min(64, cfg["window_size"]),
+        "max_grad_norm":  0.5,
+    }
+    hp_defaults.update(cfg.get("hyperparams", {}))
+
+    agent = GraphAgent(
+        graph=graph,
+        obs_dim=obs_dim,
+        n_actions=n_actions,
+        hyperparams=HyperparamSet(params=hp_defaults, episode_id=0),
+    )
+
+    ctrl_kwargs = {
+        "grow_op":               "insert_edge",
+        "grow_cooldown":         15,
+        "min_prune_observations": 20,
+        "max_neurons":           64,
+        "backoff_reset_factor":  0.5,
+    }
+    ctrl_kwargs.update(cfg.get("ctrl_kwargs", {}))
+
+    ctrl = TopologyController(graph, **ctrl_kwargs)
+
+    tracker = _NeuroevoTracker(cfg=cfg, agent=agent, seed=seed)
+
+    carry_obs, _ = env.reset(seed=seed)
+    total_steps  = 0
+    window_id    = 0
+    plateau_counter = 0
+    t0 = time.perf_counter()
+
+    max_windows = cfg["max_steps"] // cfg["window_size"]
+
+    while window_id < max_windows:
+        ep_data, carry_obs = _collect_neuroevo_window(env, agent, cfg["window_size"], carry_obs)
+        ep_data.episode_id = window_id
+        agent.learn(ep_data)
+        total_steps += cfg["window_size"]
+        window_id   += 1
+
+        # Simulate plateau detection: fire on_plateau every N windows
+        ctrl.on_episode_end(window_id, None)
+        tracker.on_episode_end(window_id, None)
+
+        prev_neurons = graph.n_neurons()
+        if window_id % 10 == 0:
+            ctrl.on_plateau(window_id, LoopState.COOLING)
+            if graph.n_neurons() > prev_neurons:
+                tracker.record_grow(total_steps, graph.n_neurons(), graph.n_edges())
+
+    env.close()
+    final_score = eval_neuroevo(agent, cfg["env_id"], seed=seed + 10_000)
+    tracker.history.append((total_steps, final_score))
+    if tracker.steps_to_solve is None and final_score >= cfg["solve_threshold"]:
+        tracker.steps_to_solve = total_steps
+
+    print(
+        f"  [neuroevo  | {cfg['label']:16s} | seed={seed}]"
+        f"  steps={total_steps:>7,d}  score={final_score:>8.1f}"
+        f"  neurons={graph.n_neurons()}  edges={graph.n_edges()}"
+        f"  grow_events={ctrl._grow_count}  [final]",
+        flush=True,
+    )
+
+    return {
+        "method": "neuroevo", "seed": seed,
+        "total_steps": total_steps,
+        "steps_to_solve": tracker.steps_to_solve,
+        "final_score": final_score, "elapsed": time.perf_counter() - t0,
+        "history": tracker.history, "solved": tracker.steps_to_solve is not None,
+        "grow_events": ctrl._grow_count,
+        "final_neurons": graph.n_neurons(),
+        "final_edges": graph.n_edges(),
+        "topology_stats": ctrl.stats,
+    }
+
+
+NEUROEVO_CARTPOLE_CFG = {
+    "key":             "neuroevo_cartpole",
+    "label":           "CartPole-v1",
+    "env_id":          "CartPole-v1",
+    "algo":            "neuroevo PPO (free-form topology)",
+    "solve_threshold":  475.0,
+    "max_steps":        100_000,
+    "window_size":      512,
+    "eval_every":       5_000,
+}
+
+NEUROEVO_LUNAR_CFG = {
+    "key":             "neuroevo_lunarlander",
+    "label":           "LunarLander-v3",
+    "env_id":          "LunarLander-v3",
+    "algo":            "neuroevo PPO (free-form topology)",
+    "solve_threshold":  200.0,
+    "max_steps":        500_000,
+    "window_size":      1_024,
+    "eval_every":       20_000,
+    "hyperparams": {
+        "learning_rate":  2e-4,
+        "entropy_coef":   0.005,
+        "n_epochs":       6,
+        "minibatch_size": 128,
+        "gamma":          0.999,
+    },
+    "ctrl_kwargs": {
+        "grow_cooldown":          20,
+        "min_prune_observations": 40,
+        "max_neurons":            128,
+    },
+}
+
+
+def _demo_neuroevo(seed: int = 0) -> None:
+    """
+    Demo: neuroevo GraphAgent on CartPole-v1.
+    Shows the network topology growing from its initial size over 100k steps.
+    Runs in ~30 seconds on CPU.
+    """
+    W = 64
+    print("\n" + "=" * W)
+    print("  neuroevo  |  Free-Form Topology Evolution")
+    print("  Environment: CartPole-v1  |  100k steps  |  Discrete PPO")
+    print("  Network starts small and grows when learning plateaus.")
+    print("=" * W)
+
+    cfg = NEUROEVO_CARTPOLE_CFG
+    result = train_neuroevo(cfg, seed=seed)
+
+    print()
+    print(f"  Final score    : {result['final_score']:.1f}  (solve = {cfg['solve_threshold']:.0f})")
+    print(f"  Solved         : {'YES at ' + str(result['steps_to_solve']) + ' steps' if result['solved'] else 'no'}")
+    print(f"  Grow events    : {result['grow_events']}")
+    print(f"  Final topology : {result['final_neurons']} neurons, {result['final_edges']} edges")
+    print(f"  Topology stats : {result['topology_stats']}")
+    print(f"  Time           : {result['elapsed']:.1f}s")
+    print("=" * W + "\n")
+
+
+def _demo_neuroevo_lunar(seed: int = 0) -> None:
+    """
+    Demo: neuroevo GraphAgent on LunarLander-v3.
+    Harder env with reward range -200..+200 (solve = 200).
+    Network grows topology in response to real learning signal.
+    Runs in ~10-20 minutes on CPU, faster with GPU.
+    """
+    W = 64
+    print("\n" + "=" * W)
+    print("  neuroevo  |  Free-Form Topology Evolution")
+    print("  Environment: LunarLander-v3  |  500k steps  |  Discrete PPO")
+    print("  Harder env: reward range -200..+200, solve threshold = 200.")
+    print("  Topology grows/prunes in response to real learning signal.")
+    print("=" * W)
+
+    cfg = NEUROEVO_LUNAR_CFG
+    result = train_neuroevo(cfg, seed=seed)
+
+    print()
+    print(f"  Final score    : {result['final_score']:.1f}  (solve = {cfg['solve_threshold']:.0f})")
+    print(f"  Solved         : {'YES at ' + str(result['steps_to_solve']) + ' steps' if result['solved'] else 'no'}")
+    print(f"  Grow events    : {result['grow_events']}")
+    print(f"  Final topology : {result['final_neurons']} neurons, {result['final_edges']} edges")
+    print(f"  Topology stats : {result['topology_stats']}")
+    print(f"  Time           : {result['elapsed']:.1f}s")
+    print("=" * W + "\n")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Main runner
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2156,9 +2457,11 @@ def run_demo(seed: int = 0) -> None:
     print("━" * 64)
     _demo_jax(seed=seed)
     _demo_async(seed=seed)
+    _demo_neuroevo(seed=seed)
     print("━" * 64)
     print("  Demo complete.")
     print("  Full benchmark: uv run python benchmarks/benchmark.py --envs cartpole lunarlander --seeds 0")
+    print("  neuroevo demo:  uv run python benchmarks/benchmark.py --neuroevo")
     print("━" * 64 + "\n")
 
 
@@ -2170,6 +2473,14 @@ def main() -> None:
     parser.add_argument(
         "--demo", action="store_true",
         help="Run a fast feature showcase (~5 min): JAX/Flax parity + async throughput",
+    )
+    parser.add_argument(
+        "--neuroevo", action="store_true",
+        help="Run the neuroevo topology-evolution demo on CartPole-v1 (~30s on CPU)",
+    )
+    parser.add_argument(
+        "--neuroevo-lunar", action="store_true",
+        help="Run the neuroevo topology-evolution demo on LunarLander-v3 (~10-20 min on CPU)",
     )
     parser.add_argument(
         "--demo-seed", type=int, default=0,
@@ -2216,6 +2527,14 @@ def main() -> None:
 
     if args.demo:
         run_demo(seed=args.demo_seed)
+        return
+
+    if args.neuroevo:
+        _demo_neuroevo(seed=args.demo_seed)
+        return
+
+    if args.neuroevo_lunar:
+        _demo_neuroevo_lunar(seed=args.demo_seed)
         return
 
     run(envs=args.envs, seeds=args.seeds, plot=not args.no_plot, optix_only=args.optix_only, verbose=args.verbose, verbose_log_file=args.verbose_log_file)
