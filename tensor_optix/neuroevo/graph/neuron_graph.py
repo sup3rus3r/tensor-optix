@@ -69,12 +69,33 @@ class NeuronGraph(nn.Module):
         # Cached device — initialised from the global registry, updated on .to()
         self._device: torch.device = get_device()
 
+        # -------------------------------------------------------------------
+        # Matrix cache — rebuilt lazily on topology change
+        # _neuron_index: stable ordered list of all neuron IDs (defines W rows/cols)
+        # _nid_to_idx:   inverse map, rebuilt when dirty
+        # _ff_dst/_ff_src: pre-built index tensors for d=0 edge scatter
+        # _ff_params:    ordered list of d=0 edge weight Parameters
+        # _rec_edges:    all delay>0 edges (rare; kept as list)
+        # _topo_order:   cached topological order of non-input neurons
+        # _input_pos:    maps input neuron id -> position in obs vector
+        # -------------------------------------------------------------------
+        self._neuron_index: List[str] = []
+        self._nid_to_idx: Dict[str, int] = {}
+        self._matrix_dirty: bool = True
+        self._ff_dst: Optional[torch.Tensor] = None
+        self._ff_src: Optional[torch.Tensor] = None
+        self._ff_params: List[nn.Parameter] = []
+        self._rec_edges: List[Edge] = []
+        self._topo_order: List[str] = []
+        self._input_pos: Dict[str, int] = {}
+
     def to(self, *args, **kwargs):
         result = super().to(*args, **kwargs)
         try:
             result._device = next(result.parameters()).device
         except StopIteration:
             pass
+        result._matrix_dirty = True  # index tensors must be rebuilt on new device
         result.reset_state()
         return result
 
@@ -102,6 +123,9 @@ class NeuronGraph(nn.Module):
             self._output_ids.append(nid)
         else:
             self._hidden_ids.append(nid)
+        self._neuron_index.append(nid)
+        self._nid_to_idx[nid] = len(self._neuron_index) - 1
+        self._matrix_dirty = True
         return nid
 
     def add_edge(
@@ -143,6 +167,7 @@ class NeuronGraph(nn.Module):
         if delay > dst_neuron.max_delay:
             dst_neuron.expand_history(delay)
 
+        self._matrix_dirty = True
         return eid
 
     def remove_edge(self, edge_id: str) -> None:
@@ -157,6 +182,7 @@ class NeuronGraph(nn.Module):
             self._in_edges[edge.dst] = [
                 e for e in self._in_edges[edge.dst] if e != edge_id
             ]
+        self._matrix_dirty = True
 
     def remove_neuron(self, neuron_id: str) -> None:
         """Remove a neuron and all its incident edges."""
@@ -174,6 +200,9 @@ class NeuronGraph(nn.Module):
         for lst in (self._input_ids, self._output_ids, self._hidden_ids):
             if neuron_id in lst:
                 lst.remove(neuron_id)
+        if neuron_id in self._neuron_index:
+            self._neuron_index.remove(neuron_id)
+        self._matrix_dirty = True
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -191,35 +220,58 @@ class NeuronGraph(nn.Module):
                 f"obs dim {obs.shape[0]} != {len(self._input_ids)} input neurons"
             )
 
-        # 1. Inject observations into input neurons (bypass edge aggregation)
-        for i, nid in enumerate(self._input_ids):
-            neuron: Neuron = self._neurons[nid]  # type: ignore
-            neuron._current = obs[i].unsqueeze(0)
+        if self._matrix_dirty:
+            self._rebuild_matrix_structure()
 
-        # 2. Compute execution order for non-input neurons
-        order = self._topological_order()
+        # Build h_prev [n]: inject obs at input slots, use stored state elsewhere
+        h_list: List[torch.Tensor] = []
+        for nid in self._neuron_index:
+            if nid in self._input_pos:
+                val = obs[self._input_pos[nid]]
+                self._neurons[nid]._current = val.unsqueeze(0)  # type: ignore
+                h_list.append(val)
+            else:
+                h_list.append(self._neurons[nid]._current.squeeze(0))  # type: ignore
+        h_prev = torch.stack(h_list)  # [n]
 
-        # 3. Forward each neuron in order
-        for nid in order:
-            neuron: Neuron = self._neurons[nid]  # type: ignore
-            pre = torch.zeros(1, device=self._device)
-            for eid in self._in_edges.get(nid, []):
-                edge = self._edges[eid]
+        # One matmul for all d=0 edges
+        W = self._assemble_W()
+        pre = W @ h_prev  # [n]
+
+        # Add per-neuron biases
+        bias_vec = torch.stack([
+            self._neurons[nid].bias.squeeze(0)  # type: ignore
+            for nid in self._neuron_index
+        ])
+        pre = pre + bias_vec
+
+        # Add delay>0 contributions (rare — recurrent edges only)
+        if self._rec_edges:
+            rec_dst: List[int] = []
+            rec_vals: List[torch.Tensor] = []
+            for edge in self._rec_edges:
                 src_neuron: Neuron = self._neurons[edge.src]  # type: ignore
-                h = src_neuron.get_delayed(edge.delay)
-                pre = pre + edge.weight * h
-            neuron(pre)
+                h = src_neuron.get_delayed(edge.delay).squeeze(0)
+                rec_dst.append(self._nid_to_idx[edge.dst])
+                rec_vals.append(edge.weight * h)
+            rec_dst_t = torch.tensor(rec_dst, dtype=torch.long, device=self._device)
+            pre = pre.scatter_add(0, rec_dst_t, torch.stack(rec_vals))
 
-        # 4. Push all neurons' current activations into history
+        # Apply per-neuron activation in topological order (non-input neurons)
+        for nid in self._topo_order:
+            neuron: Neuron = self._neurons[nid]  # type: ignore
+            idx = self._nid_to_idx[nid]
+            neuron._current = neuron._activation_fn(pre[idx].unsqueeze(0))
+
+        # Push all neurons' current activations into history
         for nid in self._neurons:
             self._neurons[nid].push_history()  # type: ignore
 
-        # 5. Collect output
-        outputs = [
+        # Collect output
+        return torch.cat([
             self._neurons[nid]._current  # type: ignore
             for nid in self._output_ids
-        ]
-        return torch.cat(outputs, dim=0)
+        ], dim=0)
 
     # ------------------------------------------------------------------
     # Topology queries
@@ -299,6 +351,53 @@ class NeuronGraph(nn.Module):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _rebuild_matrix_structure(self) -> None:
+        """
+        Rebuild all topology-derived caches. Called lazily in forward()
+        whenever _matrix_dirty is True (after any add/remove operation).
+        """
+        self._nid_to_idx = {nid: i for i, nid in enumerate(self._neuron_index)}
+        self._input_pos = {nid: i for i, nid in enumerate(self._input_ids)}
+
+        ff_dst: List[int] = []
+        ff_src: List[int] = []
+        ff_params: List[nn.Parameter] = []
+        rec_edges: List[Edge] = []
+
+        for edge in self._edges.values():
+            if edge.delay == 0:
+                ff_dst.append(self._nid_to_idx[edge.dst])
+                ff_src.append(self._nid_to_idx[edge.src])
+                ff_params.append(edge.weight)
+            else:
+                rec_edges.append(edge)
+
+        if ff_dst:
+            self._ff_dst = torch.tensor(ff_dst, dtype=torch.long, device=self._device)
+            self._ff_src = torch.tensor(ff_src, dtype=torch.long, device=self._device)
+        else:
+            self._ff_dst = None
+            self._ff_src = None
+        self._ff_params = ff_params
+        self._rec_edges = rec_edges
+        self._topo_order = self._topological_order()
+        self._matrix_dirty = False
+
+    def _assemble_W(self) -> torch.Tensor:
+        """
+        Build the [n, n] weight matrix for d=0 edges differentiably.
+        Weights are stacked from Parameters so gradients flow through W.
+        Called every forward pass (weights change during training).
+        """
+        n = len(self._neuron_index)
+        if not self._ff_params:
+            return torch.zeros(n, n, device=self._device)
+        weights = torch.stack(self._ff_params)          # [num_ff]
+        flat_idx = self._ff_dst * n + self._ff_src      # [num_ff]
+        W_flat = torch.zeros(n * n, device=self._device)
+        W_flat = W_flat.scatter_add(0, flat_idx, weights)
+        return W_flat.view(n, n)
 
     def _topological_order(self) -> List[str]:
         """
