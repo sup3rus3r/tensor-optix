@@ -7,8 +7,10 @@ import torch
 import torch.nn as nn
 
 
+def _linear(x: torch.Tensor) -> torch.Tensor: return x
+
 ACTIVATIONS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
-    "linear": lambda x: x,
+    "linear": _linear,
     "relu": torch.relu,
     "tanh": torch.tanh,
     "sigmoid": torch.sigmoid,
