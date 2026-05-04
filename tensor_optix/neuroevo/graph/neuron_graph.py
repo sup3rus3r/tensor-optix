@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from .neuron import Neuron
+from tensor_optix.core.device import get_device
 
 
 @dataclass
@@ -65,6 +66,17 @@ class NeuronGraph(nn.Module):
         # Adjacency: dst -> list of edge_ids arriving at dst
         self._in_edges: Dict[str, List[str]] = {}
 
+        # Cached device — initialised from the global registry, updated on .to()
+        self._device: torch.device = get_device()
+
+    def to(self, *args, **kwargs):
+        result = super().to(*args, **kwargs)
+        try:
+            result._device = next(result.parameters()).device
+        except StopIteration:
+            pass
+        return result
+
     # ------------------------------------------------------------------
     # Graph mutation API
     # ------------------------------------------------------------------
@@ -78,6 +90,7 @@ class NeuronGraph(nn.Module):
     ) -> str:
         """Add a neuron, return its id. role: 'input' | 'hidden' | 'output'."""
         n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay)
+        n = n.to(self._device)
         nid = n.neuron_id
         self._neurons[nid] = n
         self._in_edges[nid] = []
@@ -108,7 +121,7 @@ class NeuronGraph(nn.Module):
             raise ValueError(f"dst neuron '{dst}' not in graph")
 
         eid = edge_id or str(uuid.uuid4())
-        param = nn.Parameter(torch.tensor(weight, dtype=torch.float32))
+        param = nn.Parameter(torch.tensor(weight, dtype=torch.float32, device=self._device))
         # Sanitize key for ParameterDict (no hyphens)
         param_key = eid.replace("-", "_")
         self._edge_weights[param_key] = param
@@ -187,7 +200,7 @@ class NeuronGraph(nn.Module):
         # 3. Forward each neuron in order
         for nid in order:
             neuron: Neuron = self._neurons[nid]  # type: ignore
-            pre = torch.zeros(1)
+            pre = torch.zeros(1, device=self._device)
             for eid in self._in_edges.get(nid, []):
                 edge = self._edges[eid]
                 src_neuron: Neuron = self._neurons[edge.src]  # type: ignore

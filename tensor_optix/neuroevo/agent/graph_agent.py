@@ -25,6 +25,7 @@ from torch.distributions import Categorical, Normal
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae
+from tensor_optix.core.device import get_device
 
 from ..graph.neuron_graph import NeuronGraph
 from ..graph.topology_ops import add_input_neuron
@@ -74,13 +75,13 @@ class GraphAgent(BaseAgent):
         n_actions: int,
         continuous: bool = False,
         hyperparams: Optional[HyperparamSet] = None,
-        device: str = "cpu",
+        device=None,
     ) -> None:
         self.graph = graph
         self.obs_dim = obs_dim
         self.n_actions = n_actions
         self.continuous = continuous
-        self.device = torch.device(device)
+        self.device = torch.device(device) if device is not None else get_device()
 
         self.graph.to(self.device)
 
@@ -261,13 +262,45 @@ class GraphAgent(BaseAgent):
             self.optimizer = torch.optim.Adam(params, lr=lr)
 
     def _batch_forward(self, obs_batch: torch.Tensor) -> torch.Tensor:
-        """Run graph forward for each obs in batch, return stacked outputs."""
-        outs = []
-        for i in range(obs_batch.shape[0]):
-            self.graph.reset_state()
-            out = self.graph(obs_batch[i])
-            outs.append(out)
-        return torch.stack(outs)
+        """
+        Vectorized batch forward over the graph.
+
+        Instead of looping over B observations, we keep an activation buffer
+        [B, n_neurons] and propagate in topological order. Each neuron's
+        pre-activation is a sum of weighted columns — pure tensor ops, no
+        Python loop over B.
+        """
+        B = obs_batch.shape[0]
+        graph = self.graph
+        dev = self.device
+
+        order = graph._topological_order()
+        input_ids = graph.input_ids
+
+        # Map every neuron id to a column index in the activation buffer
+        all_ids = list(input_ids) + list(order)
+        nid_to_col: dict[str, int] = {nid: i for i, nid in enumerate(all_ids)}
+        n_total = len(all_ids)
+        n_input = len(input_ids)
+
+        # act[nid] = [B] activation tensor for that neuron (no in-place writes)
+        act: dict[str, torch.Tensor] = {}
+
+        # Inject inputs
+        for i, nid in enumerate(input_ids):
+            act[nid] = obs_batch[:, i]
+
+        for nid in order:
+            neuron = graph._neurons[nid]  # type: ignore
+            pre = torch.zeros(B, device=dev)
+            for eid in graph._in_edges.get(nid, []):
+                edge = graph._edges[eid]
+                src = edge.src
+                if src in act:
+                    pre = pre + edge.weight * act[src]
+            act[nid] = neuron._activation_fn(pre + neuron.bias.squeeze(0))
+
+        return torch.stack([act[nid] for nid in graph.output_ids], dim=1)  # [B, n_outputs]
 
     def _batch_values(self, obs_batch: torch.Tensor) -> torch.Tensor:
         out = self._batch_forward(obs_batch)

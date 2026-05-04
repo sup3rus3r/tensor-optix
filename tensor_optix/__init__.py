@@ -1,3 +1,4 @@
+from .core.device import set_device, get_device, auto_device
 from .core.types import (
     EpisodeData,
     EvalMetrics,
@@ -23,6 +24,7 @@ from .optimizers.pbt_optimizer import PBTOptimizer
 from .optimizers.spsa_optimizer import SPSAOptimizer
 
 __all__ = [
+    "set_device", "get_device", "auto_device",
     "EpisodeData", "EvalMetrics", "HyperparamSet", "PolicySnapshot", "LoopState",
     "BaseAgent", "BaseEvaluator", "BaseOptimizer", "BasePipeline",
     "LoopCallback",

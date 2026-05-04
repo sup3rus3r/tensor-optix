@@ -1928,21 +1928,26 @@ def plot_results(all_results: dict, env_configs: dict, out_path: str = "benchmar
 #  neuroevo benchmark  (free-form topology evolution on CartPole-v1)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _build_neuroevo_graph(obs_dim: int, n_actions: int) -> "NeuronGraph":
+def _build_neuroevo_graph(obs_dim: int, n_actions: int, n_hidden: int = 4) -> "NeuronGraph":
     from tensor_optix.neuroevo.graph.neuron_graph import NeuronGraph
+    rng = np.random.default_rng(42)
     g = NeuronGraph()
     for _ in range(obs_dim):
         g.add_neuron(role="input", activation="linear")
-    for _ in range(4):
+    for _ in range(n_hidden):
         g.add_neuron(role="hidden", activation="tanh")
     for _ in range(n_actions + 1):   # n_actions logits + 1 value head
         g.add_neuron(role="output", activation="linear")
+    scale = np.sqrt(2.0 / obs_dim)  # He init for tanh hidden layer
     for inp in g.input_ids:
         for hid in g.hidden_ids:
-            g.add_edge(inp, hid, weight=0.05, delay=0)
+            w = float(rng.normal(0, scale))
+            g.add_edge(inp, hid, weight=w, delay=0)
+    scale_out = np.sqrt(2.0 / n_hidden)
     for hid in g.hidden_ids:
         for out in g.output_ids:
-            g.add_edge(hid, out, weight=0.05, delay=0)
+            w = float(rng.normal(0, scale_out))
+            g.add_edge(hid, out, weight=w, delay=0)
     return g
 
 
@@ -1953,10 +1958,10 @@ def eval_neuroevo(agent, env_id: str, n_eps: int = 10, seed: int = 9000) -> floa
     totals = []
     for ep in range(n_eps):
         obs, _ = env.reset(seed=seed + ep)
-        agent.graph.reset_state()
         total, done = 0.0, False
         while not done:
-            obs_t = torch.as_tensor(obs, dtype=torch.float32)
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=agent.device)
+            agent.graph.reset_state()
             with torch.no_grad():
                 out = agent.graph(obs_t)
             action = int(out[:-1].argmax().item())
@@ -2002,7 +2007,7 @@ class _NeuroevoTracker(LoopCallback):
         self._grow_events.append((step, n_neurons, n_edges))
 
 
-def _collect_neuroevo_window(env, agent, window_size: int, carry_obs):
+def _collect_neuroevo_window(env, agent, window_size: int, carry_obs, device="cpu"):
     """Collect window_size steps with the GraphAgent, resetting graph state per episode."""
     obs = carry_obs
     observations, actions, rewards, terminated, truncated, log_probs = [], [], [], [], [], []
@@ -2046,11 +2051,14 @@ def train_neuroevo(cfg: dict, seed: int) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    from tensor_optix.core.device import get_device
+    device = cfg.get("device", str(get_device()))
+
     env = gym.make(cfg["env_id"])
     obs_dim  = env.observation_space.shape[0]
     n_actions = env.action_space.n
 
-    graph = _build_neuroevo_graph(obs_dim, n_actions)
+    graph = _build_neuroevo_graph(obs_dim, n_actions, n_hidden=cfg.get("n_hidden", 4))
     hp_defaults = {
         "learning_rate":  3e-4,
         "clip_ratio":     0.2,
@@ -2069,6 +2077,7 @@ def train_neuroevo(cfg: dict, seed: int) -> dict:
         obs_dim=obs_dim,
         n_actions=n_actions,
         hyperparams=HyperparamSet(params=hp_defaults, episode_id=0),
+        device=device,
     )
 
     ctrl_kwargs = {
@@ -2093,7 +2102,7 @@ def train_neuroevo(cfg: dict, seed: int) -> dict:
     max_windows = cfg["max_steps"] // cfg["window_size"]
 
     while window_id < max_windows:
-        ep_data, carry_obs = _collect_neuroevo_window(env, agent, cfg["window_size"], carry_obs)
+        ep_data, carry_obs = _collect_neuroevo_window(env, agent, cfg["window_size"], carry_obs, device=device)
         ep_data.episode_id = window_id
         agent.learn(ep_data)
         total_steps += cfg["window_size"]
@@ -2108,6 +2117,10 @@ def train_neuroevo(cfg: dict, seed: int) -> dict:
             ctrl.on_plateau(window_id, LoopState.COOLING)
             if graph.n_neurons() > prev_neurons:
                 tracker.record_grow(total_steps, graph.n_neurons(), graph.n_edges())
+                # Rebuild optimizer so new parameters are included
+                agent.optimizer = torch.optim.Adam(
+                    list(graph.parameters()), lr=hp_defaults["learning_rate"]
+                )
 
     env.close()
     final_score = eval_neuroevo(agent, cfg["env_id"], seed=seed + 10_000)
@@ -2154,14 +2167,16 @@ NEUROEVO_LUNAR_CFG = {
     "algo":            "neuroevo PPO (free-form topology)",
     "solve_threshold":  200.0,
     "max_steps":        500_000,
-    "window_size":      1_024,
+    "window_size":      2_048,
     "eval_every":       20_000,
+    "n_hidden":         8,
     "hyperparams": {
-        "learning_rate":  2e-4,
-        "entropy_coef":   0.005,
-        "n_epochs":       6,
-        "minibatch_size": 128,
+        "learning_rate":  3e-4,
+        "entropy_coef":   0.02,
+        "n_epochs":       8,
+        "minibatch_size": 256,
         "gamma":          0.999,
+        "gae_lambda":     0.98,
     },
     "ctrl_kwargs": {
         "grow_cooldown":          20,

@@ -126,11 +126,9 @@ class Neuron(nn.Module):
 
     def reset_state(self) -> None:
         """Zero out all history — call between episodes."""
-        self._history = deque(
-            [torch.zeros_like(self._current)] * self._max_delay,
-            maxlen=self._max_delay,
-        )
-        self._current = torch.zeros_like(self._current)
+        zero = torch.zeros(1, device=self.bias.device)
+        self._history = deque([zero] * self._max_delay, maxlen=self._max_delay)
+        self._current = zero
 
     def extra_repr(self) -> str:
         return f"id={self.neuron_id[:8]}, act={self.activation_name}, max_delay={self._max_delay}"

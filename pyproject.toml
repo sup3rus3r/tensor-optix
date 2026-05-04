@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tensor-optix"
-version = "1.12.0"
+version = "1.12.2"
 description = "Autonomous training loop for any sequential learning model — PPO, DQN, SAC, TD3, Rainbow DQN, Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax; distributed async actor-learner (IMPALA + V-trace)"
 readme = "README.md"
 license = "MIT"
