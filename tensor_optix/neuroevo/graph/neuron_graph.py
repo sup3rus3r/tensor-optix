@@ -75,6 +75,7 @@ class NeuronGraph(nn.Module):
             result._device = next(result.parameters()).device
         except StopIteration:
             pass
+        result.reset_state()
         return result
 
     # ------------------------------------------------------------------

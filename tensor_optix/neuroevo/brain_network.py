@@ -125,6 +125,13 @@ class BrainNetwork(nn.Module):
             result._device = next(result.parameters()).device
         except StopIteration:
             pass
+        for name in result._region_order:
+            region = result._regions[name]
+            try:
+                region._device = next(region.parameters()).device
+            except StopIteration:
+                pass
+            region.reset_state()
         return result
 
     # ------------------------------------------------------------------
