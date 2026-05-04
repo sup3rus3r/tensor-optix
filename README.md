@@ -12,6 +12,12 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 
 **The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision  -  not training alone.
 
+**New in 1.13.0:**
+- **Dale's Law** — biologically-faithful excitatory/inhibitory neuron types. Set `cell_type="excitatory"` or `"inhibitory"` on any neuron; `NeuronGraph.enforce_dale()` clamps outgoing weights to the correct sign after every optimizer step. `GraphAgent` calls this automatically.
+- **BrainNetwork** — modular brain regions: multiple named `NeuronGraph` subgraphs connected by sparse, learnable inter-region pathways with configurable delays. Each region can carry its own `TopologyController`. Forward pass runs regions in topological order. `brain.add_pathway("sensory", "executive", n_connections=8, delay=1)`.
+- **HebbianHook** — local Hebbian learning running alongside PPO. Accumulates `h_pre × h_post` co-activation products across a full episode, then applies `Δw = η·mean(h_pre·h_post) − λ·w` to every edge. Works on `NeuronGraph` directly or all regions of a `BrainNetwork` via `HebbianHook.from_brain(brain)`. Respects Dale's Law automatically.
+- **NeuromodulatorSignal** — global parameter modulation driven by `RegimeDetector`. Translates `"trending"` / `"ranging"` / `"volatile"` regimes into biologically-analogous changes: dopamine (consolidate on improvement), norepinephrine (explore on volatility), acetylcholine (expand topology on plateau). Modulates `HebbianHook.hebbian_lr`, `GraphAgent` entropy coefficient, and `TopologyController` grow/prune thresholds simultaneously.
+
 **New in 1.12.0:**
 - **neuroevo**  -  free-form topology evolution: `NeuronGraph`, `GraphAgent`, `TopologyController`. Grow, prune, split, and merge neurons at runtime with function-preserving operations. Variable-delay recurrent edges. Hooks into the existing loop via `LoopCallback` on COOLING state. `pip install tensor-optix[neuroevo]`
 
@@ -1825,6 +1831,110 @@ Output preserved: w·h = w/2·h + w/2·h
 w_{new→j} = 0  ∀ j ∈ V
 Output preserved: zero weight = silent neuron at init
 ```
+
+---
+
+## Bio-Plausible Brain Networks
+
+Building on `neuroevo`, tensor-optix 1.13.0 introduces four biologically-inspired features that can be combined to build brain-like networks.
+
+### Dale's Law
+
+Every real neuron is either excitatory (sends positive signals) or inhibitory (sends negative signals) — it never switches. Set `cell_type` on any neuron and `enforce_dale()` is called automatically after every optimizer step.
+
+```python
+from tensor_optix.neuroevo import NeuronGraph
+
+g = NeuronGraph()
+exc = g.add_neuron(role="hidden", activation="relu",  cell_type="excitatory")
+inh = g.add_neuron(role="hidden", activation="tanh",  cell_type="inhibitory")
+fre = g.add_neuron(role="hidden", activation="tanh",  cell_type="any")  # default, unconstrained
+```
+
+`GraphAgent.learn()` calls `graph.enforce_dale()` after every optimizer step, clamping excitatory outgoing weights to `>= 0` and inhibitory to `<= 0`.
+
+---
+
+### BrainNetwork
+
+Organize neurons into named brain regions with controlled inter-region connectivity. Each region is a full `NeuronGraph` that can evolve independently.
+
+```python
+from tensor_optix.neuroevo import NeuronGraph, BrainNetwork
+
+sensory   = NeuronGraph()   # build each region ...
+memory    = NeuronGraph()
+executive = NeuronGraph()
+motor     = NeuronGraph()
+
+brain = BrainNetwork(name="agent_brain", output_regions=["motor"])
+brain.add_region("sensory",   sensory)
+brain.add_region("memory",    memory)
+brain.add_region("executive", executive)
+brain.add_region("motor",     motor)
+
+# Sparse learnable pathways between regions (zero-weight at init — function preserving)
+brain.add_pathway("sensory",   "memory",    n_connections=8,  delay=1)
+brain.add_pathway("memory",    "executive", n_connections=4,  delay=2)
+brain.add_pathway("executive", "motor",     n_connections=16, delay=0)
+
+out = brain({"sensory": obs_tensor})  # only motor region outputs
+print(brain.summary())
+```
+
+---
+
+### HebbianHook
+
+Local Hebbian learning running alongside PPO. Neurons that fire together, wire together.
+
+```python
+from tensor_optix.neuroevo import HebbianHook
+
+# Attach to a single graph or all regions of a BrainNetwork
+hook = HebbianHook.from_brain(brain, hebbian_lr=1e-3, weight_decay=1e-4)
+
+for episode in training_loop:
+    obs = env.reset()
+    while not done:
+        action = agent.act(obs)
+        hook.record()              # snapshot co-activations after each forward pass
+        obs, reward, done, _ = env.step(action)
+
+    agent.learn(episode_data)      # PPO gradient update
+    hook.apply_and_reset()         # Hebbian update + clear accumulators
+```
+
+`Δw = η · mean(h_pre · h_post) − λ · w`
+
+Respects Dale's Law by default (`respect_dale=True`).
+
+---
+
+### NeuromodulatorSignal
+
+A global broadcast signal that reads the training regime and adjusts plasticity across the entire neuroevo stack — analogous to dopamine, norepinephrine, and acetylcholine.
+
+```python
+from tensor_optix.neuroevo import NeuromodulatorSignal
+from tensor_optix.core.regime_detector import RegimeDetector
+
+signal = NeuromodulatorSignal(
+    detector=RegimeDetector(),
+    hebbian_hook=hook,          # modulates hebbian_lr
+    agent=agent,                # modulates entropy_coef
+    topology_controller=tc,     # modulates grow/prune thresholds
+)
+
+# In your training loop, after each episode:
+regime = signal.step(metrics_history)
+# "trending"  → dopamine ↑    — consolidate, lower plasticity, exploit
+# "ranging"   → acetylcholine ↑ — plateau, raise plasticity, grow topology
+# "volatile"  → norepinephrine ↑ — dampen Hebbian, boost exploration
+print(signal.state)
+```
+
+All four features compose freely: `BrainNetwork` regions can have Dale-typed neurons, `HebbianHook.from_brain()` covers all of them, and `NeuromodulatorSignal` broadcasts regime changes to both the hook and the topology controllers of individual regions.
 
 ---
 

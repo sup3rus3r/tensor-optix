@@ -15,6 +15,8 @@ ACTIVATIONS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "elu": torch.nn.functional.elu,
 }
 
+CELL_TYPES = {"excitatory", "inhibitory", "any"}
+
 
 class Neuron(nn.Module):
     """
@@ -24,6 +26,9 @@ class Neuron(nn.Module):
     - a scalar bias (learnable)
     - an activation function (by name, not learnable)
     - a fixed-depth circular history buffer for variable-delay recurrence
+    - a cell_type enforcing Dale's Law: excitatory neurons may only send
+      positive-weight signals; inhibitory neurons may only send negative-weight
+      signals. "any" (default) is unconstrained and backward-compatible.
 
     History buffer stores past activations so edges with delay d can read
     h_v^(t-d) without any special handling in the graph forward pass.
@@ -34,14 +39,18 @@ class Neuron(nn.Module):
         activation: str = "tanh",
         neuron_id: Optional[str] = None,
         max_delay: int = 1,
+        cell_type: str = "any",
     ) -> None:
         super().__init__()
         if activation not in ACTIVATIONS:
             raise ValueError(f"Unknown activation '{activation}'. Choose from {list(ACTIVATIONS)}")
+        if cell_type not in CELL_TYPES:
+            raise ValueError(f"Unknown cell_type '{cell_type}'. Choose from {CELL_TYPES}")
 
         self.neuron_id: str = neuron_id or str(uuid.uuid4())
         self.activation_name: str = activation
         self._activation_fn: Callable = ACTIVATIONS[activation]
+        self.cell_type: str = cell_type
 
         self.bias = nn.Parameter(torch.zeros(1))
 
@@ -131,4 +140,4 @@ class Neuron(nn.Module):
         self._current = zero
 
     def extra_repr(self) -> str:
-        return f"id={self.neuron_id[:8]}, act={self.activation_name}, max_delay={self._max_delay}"
+        return f"id={self.neuron_id[:8]}, act={self.activation_name}, max_delay={self._max_delay}, cell_type={self.cell_type}"

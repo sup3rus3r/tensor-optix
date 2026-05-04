@@ -183,6 +183,7 @@ class GraphAgent(BaseAgent):
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.graph.parameters(), hp["max_grad_norm"])
                 self.optimizer.step()
+                self.graph.enforce_dale()
 
                 total_loss += loss.item()
                 total_pg += pg_loss.item()

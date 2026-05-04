@@ -87,9 +87,10 @@ class NeuronGraph(nn.Module):
         activation: str = "tanh",
         neuron_id: Optional[str] = None,
         max_delay: int = 1,
+        cell_type: str = "any",
     ) -> str:
         """Add a neuron, return its id. role: 'input' | 'hidden' | 'output'."""
-        n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay)
+        n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay, cell_type=cell_type)
         n = n.to(self._device)
         nid = n.neuron_id
         self._neurons[nid] = n
@@ -258,6 +259,32 @@ class NeuronGraph(nn.Module):
 
     def n_edges(self) -> int:
         return len(self._edges)
+
+    # ------------------------------------------------------------------
+    # Dale's Law
+    # ------------------------------------------------------------------
+
+    def cell_type_of(self, neuron_id: str) -> str:
+        """Return the cell_type of a neuron ('excitatory', 'inhibitory', or 'any')."""
+        return self.get_neuron(neuron_id).cell_type
+
+    def enforce_dale(self) -> None:
+        """
+        Clamp all outgoing edge weights to comply with Dale's Law.
+
+        Excitatory neurons: all outgoing weights clamped to >= 0.
+        Inhibitory neurons: all outgoing weights clamped to <= 0.
+        'any' neurons: unconstrained (no-op).
+
+        Call this after each optimizer step in GraphAgent.learn().
+        """
+        with torch.no_grad():
+            for edge in self._edges.values():
+                ct = self.get_neuron(edge.src).cell_type
+                if ct == "excitatory":
+                    edge.weight.clamp_(min=0.0)
+                elif ct == "inhibitory":
+                    edge.weight.clamp_(max=0.0)
 
     # ------------------------------------------------------------------
     # Episode reset

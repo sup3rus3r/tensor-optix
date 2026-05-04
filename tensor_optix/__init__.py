@@ -108,20 +108,26 @@ except (ImportError, RuntimeError):
 
 try:
     from .neuroevo import (
-        NeuronGraph, Edge, Neuron,
+        NeuronGraph, Edge, Neuron, CELL_TYPES,
         insert_neuron_on_edge, split_neuron, add_input_neuron, add_free_edge,
         prune_edge, prune_neuron, merge_neurons,
         neuron_importance, edge_importance, cosine_similarity_neurons,
         GraphAgent,
         TopologyController,
+        BrainNetwork, Pathway, InterRegionEdge,
+        HebbianHook,
+        NeuromodulatorSignal,
     )
     __all__ += [
-        "NeuronGraph", "Edge", "Neuron",
+        "NeuronGraph", "Edge", "Neuron", "CELL_TYPES",
         "insert_neuron_on_edge", "split_neuron", "add_input_neuron", "add_free_edge",
         "prune_edge", "prune_neuron", "merge_neurons",
         "neuron_importance", "edge_importance", "cosine_similarity_neurons",
         "GraphAgent",
         "TopologyController",
+        "BrainNetwork", "Pathway", "InterRegionEdge",
+        "HebbianHook",
+        "NeuromodulatorSignal",
     ]
 except (ImportError, RuntimeError):
     pass
