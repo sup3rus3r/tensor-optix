@@ -231,7 +231,10 @@ class NeuronGraph(nn.Module):
                 self._neurons[nid]._current = val.unsqueeze(0)  # type: ignore
                 h_list.append(val)
             else:
-                h_list.append(self._neurons[nid]._current.squeeze(0))  # type: ignore
+                # Detach: h_prev carries values from the previous timestep only.
+                # Gradient flows within this forward pass, not across steps —
+                # consistent with how push_history() already detaches history.
+                h_list.append(self._neurons[nid]._current.detach().squeeze(0))  # type: ignore
         h_prev = torch.stack(h_list)  # [n]
 
         # One matmul for all d=0 edges

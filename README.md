@@ -16,10 +16,10 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 - **Dale's Law** — biologically-faithful excitatory/inhibitory neuron types. Set `cell_type="excitatory"` or `"inhibitory"` on any neuron; `NeuronGraph.enforce_dale()` clamps outgoing weights to the correct sign after every optimizer step. `GraphAgent` calls this automatically.
 - **BrainNetwork** — modular brain regions: multiple named `NeuronGraph` subgraphs connected by sparse, learnable inter-region pathways with configurable delays. Each region can carry its own `TopologyController`. Forward pass runs regions in topological order. `brain.add_pathway("sensory", "executive", n_connections=8, delay=1)`.
 - **HebbianHook** — local Hebbian learning running alongside PPO. Accumulates `h_pre × h_post` co-activation products across a full episode, then applies `Δw = η·mean(h_pre·h_post) − λ·w` to every edge. Works on `NeuronGraph` directly or all regions of a `BrainNetwork` via `HebbianHook.from_brain(brain)`. Respects Dale's Law automatically.
-- **NeuromodulatorSignal** — global parameter modulation driven by `RegimeDetector`. Translates `"trending"` / `"ranging"` / `"volatile"` regimes into biologically-analogous changes: dopamine (consolidate on improvement), norepinephrine (explore on volatility), acetylcholine (expand topology on plateau). Modulates `HebbianHook.hebbian_lr`, `GraphAgent` entropy coefficient, and `TopologyController` grow/prune thresholds simultaneously.
+- **NeuromodulatorSignal** — global parameter modulation driven by `RegimeDetector`. Translates `"trending"` / `"ranging"` / `"volatile"` regimes into biologically-analogous changes: dopamine (consolidate on improvement), norepinephrine (explore on volatility), acetylcholine (raise plasticity when structure is detected). Modulates `HebbianHook.hebbian_lr`, `GraphAgent` entropy coefficient, and `TopologyController` grow/prune thresholds simultaneously.
 
 **New in 1.12.0:**
-- **neuroevo**  -  free-form topology evolution: `NeuronGraph`, `GraphAgent`, `TopologyController`. Grow, prune, split, and merge neurons at runtime with function-preserving operations. Variable-delay recurrent edges. Hooks into the existing loop via `LoopCallback` on COOLING state. `pip install tensor-optix[neuroevo]`
+- **neuroevo**  -  free-form topology evolution: `NeuronGraph`, `GraphAgent`, `TopologyController`. Grow, prune, split, and merge neurons at runtime with function-preserving operations. Variable-delay recurrent edges. Topology decisions are driven by statistical signals from the live training stream, not scheduler state. `pip install tensor-optix[neuroevo]`
 
 **New in 1.9.0:**
 - **Distributed async actor-learner** (IMPALA + V-trace)  -  N actors run in parallel POSIX shared-memory processes, learner applies V-trace off-policy correction, 4× sample throughput on CPU
@@ -1732,7 +1732,7 @@ pip install tensor-optix[neuroevo]
 
 ### Core idea
 
-Standard networks have a fixed topology set at construction. `neuroevo` starts small and grows when training plateaus, using **function-preserving operations**  -  every structural change leaves the network output identical at the moment of application. Learning then breaks symmetry from that preserved baseline.
+Standard networks have a fixed topology set at construction. `neuroevo` starts small and grows only when statistical signals confirm the network is at capacity with learnable structure remaining, using **function-preserving operations**  -  every structural change leaves the network output identical at the moment of application. Learning then breaks symmetry from that preserved baseline.
 
 ### Key components
 
@@ -1740,7 +1740,7 @@ Standard networks have a fixed topology set at construction. `neuroevo` starts s
 |---|---|
 | `NeuronGraph` | Mutable directed graph  -  the policy network |
 | `GraphAgent` | `BaseAgent` wrapping `NeuronGraph`, PPO-trained |
-| `TopologyController` | `LoopCallback` that fires grow/prune on COOLING state |
+| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream |
 
 ### Quickstart
 
@@ -1799,14 +1799,24 @@ h_v^(t) = σ( b_v + Σ w_{uv} · h_u^(t-d) )
 
 ### TopologyController trigger logic
 
-The controller hooks into `LoopController` via `on_plateau` (fires on COOLING state  -  active learning, not dead):
+Topology decisions are driven by three independent statistical signals computed from the live score history and parameter gradients. The scheduler state is a hint, not a command.
 
-| Signal | Action |
-|---|---|
-| Plateau, no overfitting | **GROW**  -  insert neuron or edge |
-| Edge `\|w\| < threshold` for N episodes | **PRUNE** edge |
-| Neuron importance < threshold | **PRUNE** neuron |
-| Cosine similarity > 0.95 between two neurons | **MERGE** |
+**GROW** fires only when all three conditions hold simultaneously:
+
+| Signal | Condition | What it measures |
+|---|---|---|
+| Improvement test | Slope β not significantly positive (autocorrelation-corrected t-test) | Training is genuinely stuck |
+| Structure test | Lag-1 autocorrelation `r₁ > 2/√n` (adaptive threshold) | Residual errors have learnable structure |
+| Capacity test | Gradient utilisation `> 0.70` | Network has no unused headroom |
+
+**PRUNE** (neuron) fires when all hold:
+- Average importance `< prune_neuron_threshold` over observation window
+- Gradient magnitude `< grad_eps` (neuron is truly inactive, not just waiting)
+- Neuron age `> maturation_window` (never prune a freshly added neuron)
+
+**PRUNE** (edge): `|w| < threshold` for `prune_edge_patience` consecutive episodes.
+
+**MERGE** fires when Pearson correlation of activation histories `> merge_similarity_threshold` and both neurons have non-trivial importance (redundant but not dead).
 
 After every GROW, the `BackoffScheduler` is partially reset (interval halved by default) so the loop treats the grown network as a fresh start  -  but retains memory that this region has been hard before.
 
