@@ -4,10 +4,10 @@ tensor_optix.distributed.async_learner — IMPALA-style async actor-learner.
 Architecture
 ------------
 N actor processes run environment episodes in parallel, each using the current
-policy weights read directly from POSIX shared memory.  A single learner
+policy weights read directly from shared memory.  A single learner
 (main process) dequeues trajectories, applies V-trace IS correction, and
 performs gradient updates.  Because actor and learner share the same physical
-memory pages for the model parameters (via ``torch.Tensor.share_memory_()``),
+memory pages (via ``torch.Tensor.share_memory_()``),
 weight updates are immediately visible to all actors — no explicit weight
 broadcast queue, no serialization overhead.
 
@@ -37,17 +37,20 @@ on-policy advantage estimation.
 
 Platform note
 -------------
-Uses the ``fork`` multiprocessing start method (Linux default).  All objects
-passed to the actor subprocess are inherited via ``os.fork()`` — no pickling
-of ``nn.Module`` instances is required.  On macOS (``spawn`` default) or
-Windows, pass only picklable factory callables.
+Automatically selects ``fork`` on Linux and ``spawn`` on Windows / macOS.
+With ``fork`` (Linux), all objects passed to the actor subprocess are inherited
+via ``os.fork()`` — no pickling of ``nn.Module`` instances is required.
+With ``spawn`` (Windows / macOS), ``env_factory`` must be picklable and the
+actor / critic models must have ``share_memory()`` called before launching.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 import logging
 import multiprocessing as mp
+import warnings
 import numpy as np
 from typing import Callable, List, Optional
 
@@ -184,9 +187,9 @@ class AsyncActorLearner:
     critic           nn.Module — value network (obs → scalar)
     optimizer        torch.optim.Optimizer — over all actor+critic parameters
     env_factory      Callable → gym.Env — called once per actor process.
-                     On Linux (fork start method) this may be any callable,
-                     including lambdas.  For spawn/forkserver, it must be
-                     picklable (module-level function or functools.partial).
+                     With fork (Linux default) this may be any callable,
+                     including lambdas.  With spawn (Windows / macOS), it must
+                     be picklable (module-level function or functools.partial).
     n_actors         int — parallel actor processes (default 4)
     trajectory_len   int — environment steps per trajectory batch (default 64)
     max_queue_size   int — max pending trajectories (0 = 8 × n_actors)
@@ -262,16 +265,27 @@ class AsyncActorLearner:
         import torch.nn.functional as F
         from .vtrace import compute_vtrace_targets
 
-        # Fork context — actors inherit shared memory parameters directly.
-        ctx          = mp.get_context("fork")
+        # Platform-aware multiprocessing context.
+        # fork is unavailable on Windows and discouraged on macOS.
+        method = "fork" if sys.platform.startswith("linux") else "spawn"
+        if method == "spawn":
+            warnings.warn(
+                f"AsyncActorLearner is using multiprocessing 'spawn' on {sys.platform}. "
+                "POSIX fork zero-copy memory inheritance is not available; "
+                "ensure actor/critic models have share_memory() called and that "
+                "env_factory is picklable.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        ctx          = mp.get_context(method)
         traj_queue   = ctx.Queue(maxsize=self._max_queue)
         stop_event   = ctx.Event()
         step_counter = ctx.Value("l", 0)
 
-        # Move parameters to POSIX shared memory.
-        # After this call, all actor processes that are forked share the
-        # exact same physical memory pages — weight updates in the learner
-        # are immediately visible to all actors without any IPC overhead.
+        # Move parameters to shared memory so all actor processes see
+        # weight updates immediately without explicit IPC broadcast.
+        # On Linux with fork this is zero-copy; on Windows/macOS with spawn
+        # PyTorch implements this via file-backed shared memory.
         self._actor.share_memory()
         self._critic.share_memory()
 
