@@ -189,7 +189,9 @@ opt.run()
 
 **Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
 The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
-Install the ML framework extra(s) that match your platform  -  do not rely on the bare `pip install tensor-optix` to pull in a framework.
+`pip install tensor-optix` installs only the framework-agnostic core.  Install the ML
+framework extra(s) that match your platform — e.g. `tensor-optix[tensorflow]` or
+`tensor-optix[torch]` — before importing framework-specific agents.
 
 ---
 
@@ -792,7 +794,9 @@ stats = learner.run(max_steps=500_000)
 print(f"Throughput: {stats['steps_per_second']:.0f} steps/s")
 ```
 
-**Platform note:** uses `mp.get_context("fork")`  -  designed for Linux. On macOS or Windows (spawn start method), pass picklable factory callables.
+**Platform note:** automatically selects `fork` on Linux and `spawn` on Windows / macOS.
+On non-Linux platforms the actor/critic models must have `share_memory()` called and
+`env_factory` must be picklable (module-level function or `functools.partial`).
 
 ---
 
@@ -1465,7 +1469,7 @@ tensor_optix/
 │   ├── torch_rainbow_dqn.py    # TorchRainbowDQNAgent  -  Double/Dueling/PER/n-step/Noisy/C51
 │   └── flax_ppo.py             # FlaxPPOAgent  -  PPO via flax.nnx + optax (JAX backend)
 ├── distributed/                # NEW  -  async actor-learner
-│   ├── async_learner.py        # AsyncActorLearner  -  IMPALA-style, POSIX shared memory
+│   ├── async_learner.py        # AsyncActorLearner  -  IMPALA-style, platform-aware shared memory
 │   └── vtrace.py               # compute_vtrace_targets  -  pure-numpy V-trace IS correction
 ├── callbacks/
 │   ├── wandb_callback.py       # WandbCallback  -  logs to Weights & Biases
