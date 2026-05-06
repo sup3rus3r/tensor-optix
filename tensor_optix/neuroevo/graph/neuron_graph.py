@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .neuron import Neuron
+from .neuron import GRUNeuron, LSTMNeuron, Neuron
 from tensor_optix.core.device import get_device
 
 
@@ -110,9 +110,19 @@ class NeuronGraph(nn.Module):
         neuron_id: Optional[str] = None,
         max_delay: int = 1,
         cell_type: str = "any",
+        neuron: Optional[Neuron] = None,
     ) -> str:
-        """Add a neuron, return its id. role: 'input' | 'hidden' | 'output'."""
-        n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay, cell_type=cell_type)
+        """
+        Add a neuron, return its id.  role: 'input' | 'hidden' | 'output'.
+
+        Pass a pre-constructed Neuron instance (GRUNeuron, LSTMNeuron, etc.)
+        via the `neuron` kwarg for heterogeneous graphs.  When `neuron` is
+        given the activation/neuron_id/max_delay/cell_type kwargs are ignored.
+        """
+        if neuron is not None:
+            n = neuron
+        else:
+            n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay, cell_type=cell_type)
         n = n.to(self._device)
         nid = n.neuron_id
         self._neurons[nid] = n
@@ -239,14 +249,8 @@ class NeuronGraph(nn.Module):
 
         # One matmul for all d=0 edges
         W = self._assemble_W()
-        pre = W @ h_prev  # [n]
-
-        # Add per-neuron biases
-        bias_vec = torch.stack([
-            self._neurons[nid].bias.squeeze(0)  # type: ignore
-            for nid in self._neuron_index
-        ])
-        pre = pre + bias_vec
+        pre = W @ h_prev  # [n]  — weighted input sums, no bias (each neuron's
+                          #        step() handles its own bias internally)
 
         # Add delay>0 contributions (rare — recurrent edges only)
         if self._rec_edges:
@@ -260,11 +264,13 @@ class NeuronGraph(nn.Module):
             rec_dst_t = torch.tensor(rec_dst, dtype=torch.long, device=self._device)
             pre = pre.scatter_add(0, rec_dst_t, torch.stack(rec_vals))
 
-        # Apply per-neuron activation in topological order (non-input neurons)
+        # Apply per-neuron step() in topological order (non-input neurons).
+        # step() handles bias + activation for PointNeurons, and the full
+        # gating computation for GRUNeuron / LSTMNeuron.
         for nid in self._topo_order:
             neuron: Neuron = self._neurons[nid]  # type: ignore
             idx = self._nid_to_idx[nid]
-            neuron._current = neuron._activation_fn(pre[idx].unsqueeze(0))
+            neuron.step(pre[idx].unsqueeze(0))
 
         # Push all neurons' current activations into history
         for nid in self._neurons:

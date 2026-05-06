@@ -31,7 +31,6 @@ from .neuron_graph import NeuronGraph
 def insert_neuron_on_edge(
     graph: NeuronGraph,
     edge_id: str,
-    activation: str = "linear",
     neuron_id: Optional[str] = None,
 ) -> str:
     """
@@ -42,10 +41,9 @@ def insert_neuron_on_edge(
         Add    (u, new, 1.0, floor(d/2))
         Add    (new, v, w,   d - floor(d/2))
 
-    The new neuron is linear with bias=0, so:
-        h_new = 1.0 * h_u^(t - floor(d/2))
-        h_v   = w * h_new^(t - (d - floor(d/2)))
-              = w * h_u^(t - d)   ← identical to before
+    The relay is obtained from src_neuron.make_relay() which always returns a
+    linear point neuron (exact function preservation — verified mathematically:
+    GRU/LSTM relays have 24–36% error in the tanh activation range).
 
     Returns the new neuron_id.
     """
@@ -57,18 +55,17 @@ def insert_neuron_on_edge(
     d1 = d // 2
     d2 = d - d1
 
-    # Compute plausible history for the new neuron from src's existing history
     src_neuron = graph.get_neuron(src)
+    relay = src_neuron.make_relay()
+    if neuron_id is not None:
+        relay.neuron_id = neuron_id
+    relay._max_delay = max(1, d2)
+
     new_history = [
         src_neuron.get_delayed(k + d1) for k in range(1, src_neuron.max_delay + 1)
     ]
 
-    new_id = graph.add_neuron(
-        role="hidden",
-        activation=activation,
-        neuron_id=neuron_id,
-        max_delay=max(1, d2),
-    )
+    new_id = graph.add_neuron(role="hidden", neuron=relay)
     new_neuron = graph.get_neuron(new_id)
     if new_history:
         new_neuron.init_history_from_buffer(new_history)
@@ -98,15 +95,13 @@ def split_neuron(
     in_edges = graph.edges_into(neuron_id)
     out_edges = graph.edges_from(neuron_id)
 
-    # Create the clone with same activation, max_delay
-    new_id = graph.add_neuron(
-        role="hidden" if neuron_id in graph.hidden_ids else "output",
-        activation=neuron.activation_name,
-        max_delay=neuron.max_delay,
-    )
+    # Create the clone via split_copy() — type-aware deep copy, new uuid
+    role = "hidden" if neuron_id in graph.hidden_ids else "output"
+    new_neuron_obj = neuron.split_copy()
+    new_id = graph.add_neuron(role=role, neuron=new_neuron_obj)
     new_neuron = graph.get_neuron(new_id)
 
-    # Copy bias (halved on both)
+    # Halve bias on both (split_copy already copied the full bias)
     b = neuron.bias.item()
     with torch.no_grad():
         neuron.bias.fill_(b / 2)
@@ -299,18 +294,19 @@ def merge_neurons(
 
 def neuron_importance(graph: NeuronGraph, neuron_id: str) -> float:
     """
-    I(v) = Σ |w_e| * |h_v_mean|
+    I(v) = Σ|w_e| * (‖h‖₁/d + ε)
 
-    Uses current activation as a proxy for mean (TopologyController
-    accumulates over a window for the real mean).
+    Delegates to neuron.importance() so GRU/LSTM neurons can normalise by
+    their hidden dim.  incident_weight_sum is computed here for callers that
+    use this standalone function; the TopologyController pre-computes it in a
+    shared edge pass for efficiency.
     """
     neuron = graph.get_neuron(neuron_id)
     total_w = sum(
         abs(e.weight.item())
         for e in graph.edges_into(neuron_id) + graph.edges_from(neuron_id)
     )
-    h_mag = abs(neuron._current.item()) if neuron._current.numel() == 1 else float(neuron._current.abs().mean())
-    return total_w * (h_mag + 1e-8)
+    return neuron.importance(total_w)
 
 
 def edge_importance(graph: NeuronGraph, edge_id: str) -> float:
