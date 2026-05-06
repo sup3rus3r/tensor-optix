@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .neuron import GRUNeuron, LSTMNeuron, Neuron
 from tensor_optix.core.device import get_device
@@ -47,7 +49,15 @@ class NeuronGraph(nn.Module):
     surviving parameters.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dale_mode: str = "clamp") -> None:
+        """
+        dale_mode: 'clamp' (default) or 'softplus'.
+
+        'clamp'    — enforce_dale() post-step clamp (gradient-dead at boundary).
+        'softplus' — raw parameter θ; effective_weight = softplus(θ) * sign.
+                     Zero-weight init uses θ=-10 (softplus(-10)≈4.5e-5).
+                     enforce_dale() is a no-op in this mode.
+        """
         super().__init__()
 
         # nn.ModuleDict so PyTorch tracks all neuron parameters
@@ -65,6 +75,9 @@ class NeuronGraph(nn.Module):
 
         # Adjacency: dst -> list of edge_ids arriving at dst
         self._in_edges: Dict[str, List[str]] = {}
+
+        # Dale's law mode
+        self._dale_mode: str = dale_mode
 
         # Cached device — initialised from the global registry, updated on .to()
         self._device: torch.device = get_device()
@@ -85,6 +98,7 @@ class NeuronGraph(nn.Module):
         self._ff_dst: Optional[torch.Tensor] = None
         self._ff_src: Optional[torch.Tensor] = None
         self._ff_params: List[nn.Parameter] = []
+        self._ff_cell_types: List[str] = []   # parallel to _ff_params, for softplus mode
         self._rec_edges: List[Edge] = []
         self._topo_order: List[str] = []
         self._input_pos: Dict[str, int] = {}
@@ -157,7 +171,8 @@ class NeuronGraph(nn.Module):
             raise ValueError(f"dst neuron '{dst}' not in graph")
 
         eid = edge_id or str(uuid.uuid4())
-        param = nn.Parameter(torch.tensor(weight, dtype=torch.float32, device=self._device))
+        init_val = self._softplus_init(src, weight)
+        param = nn.Parameter(torch.tensor(init_val, dtype=torch.float32, device=self._device))
         # Sanitize key for ParameterDict (no hyphens)
         param_key = eid.replace("-", "_")
         self._edge_weights[param_key] = param
@@ -259,8 +274,9 @@ class NeuronGraph(nn.Module):
             for edge in self._rec_edges:
                 src_neuron: Neuron = self._neurons[edge.src]  # type: ignore
                 h = src_neuron.get_delayed(edge.delay).squeeze(0)
+                w = self._effective_rec_weight(edge)
                 rec_dst.append(self._nid_to_idx[edge.dst])
-                rec_vals.append(edge.weight * h)
+                rec_vals.append(w * h)
             rec_dst_t = torch.tensor(rec_dst, dtype=torch.long, device=self._device)
             pre = pre.scatter_add(0, rec_dst_t, torch.stack(rec_vals))
 
@@ -332,14 +348,14 @@ class NeuronGraph(nn.Module):
 
     def enforce_dale(self) -> None:
         """
-        Clamp all outgoing edge weights to comply with Dale's Law.
+        Enforce Dale's Law after each optimizer step.
 
-        Excitatory neurons: all outgoing weights clamped to >= 0.
-        Inhibitory neurons: all outgoing weights clamped to <= 0.
-        'any' neurons: unconstrained (no-op).
-
-        Call this after each optimizer step in GraphAgent.learn().
+        'clamp' mode: clamp outgoing weights (excitatory >= 0, inhibitory <= 0).
+        'softplus' mode: no-op — the softplus transform in _assemble_W already
+                         enforces the sign constraint at every forward pass.
         """
+        if self._dale_mode == "softplus":
+            return
         with torch.no_grad():
             for edge in self._edges.values():
                 ct = self.get_neuron(edge.src).cell_type
@@ -361,6 +377,68 @@ class NeuronGraph(nn.Module):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Softplus Dale helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _softplus_inv(w: float) -> float:
+        """θ such that softplus(θ) == w. Requires w > 0."""
+        return math.log(math.exp(w) - 1.0)
+
+    def _softplus_init(self, src: str, weight: float) -> float:
+        """Convert requested weight to raw θ for softplus mode."""
+        if self._dale_mode != "softplus":
+            return weight
+        ct = self._neurons[src].cell_type
+        if ct not in ("excitatory", "inhibitory"):
+            return weight
+        abs_w = abs(weight)
+        if abs_w < 1e-6:
+            return -10.0  # softplus(-10) ≈ 4.5e-5 ≈ 0
+        return self._softplus_inv(abs_w)
+
+    def _apply_dale(self, raw: torch.Tensor, cell_types: List[str]) -> torch.Tensor:
+        """Apply softplus Dale transform to a tensor of raw parameters."""
+        if self._dale_mode != "softplus":
+            return raw
+        sp = F.softplus(raw)
+        result = raw.clone()
+        for i, ct in enumerate(cell_types):
+            if ct == "excitatory":
+                result[i] = sp[i]
+            elif ct == "inhibitory":
+                result[i] = -sp[i]
+            # "any": use raw directly (unconstrained)
+        return result
+
+    def _effective_rec_weight(self, edge: "Edge") -> torch.Tensor:
+        """Effective weight for a recurrent edge (scalar tensor, differentiable)."""
+        if self._dale_mode != "softplus":
+            return edge.weight
+        ct = self.get_neuron(edge.src).cell_type
+        if ct == "excitatory":
+            return F.softplus(edge.weight)
+        if ct == "inhibitory":
+            return -F.softplus(edge.weight)
+        return edge.weight
+
+    def effective_weight(self, edge_id: str) -> float:
+        """
+        Return the effective float weight of an edge (post-softplus if applicable).
+        Use this instead of edge.weight.item() when dale_mode='softplus'.
+        """
+        edge = self.get_edge(edge_id)
+        if self._dale_mode != "softplus":
+            return edge.weight.item()
+        ct = self.get_neuron(edge.src).cell_type
+        with torch.no_grad():
+            if ct == "excitatory":
+                return float(F.softplus(edge.weight).item())
+            if ct == "inhibitory":
+                return float(-F.softplus(edge.weight).item())
+        return edge.weight.item()
+
     def _rebuild_matrix_structure(self) -> None:
         """
         Rebuild all topology-derived caches. Called lazily in forward()
@@ -372,6 +450,7 @@ class NeuronGraph(nn.Module):
         ff_dst: List[int] = []
         ff_src: List[int] = []
         ff_params: List[nn.Parameter] = []
+        ff_cell_types: List[str] = []
         rec_edges: List[Edge] = []
 
         for edge in self._edges.values():
@@ -379,6 +458,7 @@ class NeuronGraph(nn.Module):
                 ff_dst.append(self._nid_to_idx[edge.dst])
                 ff_src.append(self._nid_to_idx[edge.src])
                 ff_params.append(edge.weight)
+                ff_cell_types.append(self.get_neuron(edge.src).cell_type)
             else:
                 rec_edges.append(edge)
 
@@ -389,6 +469,7 @@ class NeuronGraph(nn.Module):
             self._ff_dst = None
             self._ff_src = None
         self._ff_params = ff_params
+        self._ff_cell_types = ff_cell_types
         self._rec_edges = rec_edges
         self._topo_order = self._topological_order()
         self._matrix_dirty = False
@@ -397,13 +478,15 @@ class NeuronGraph(nn.Module):
         """
         Build the [n, n] weight matrix for d=0 edges differentiably.
         Weights are stacked from Parameters so gradients flow through W.
+        In softplus mode, applies softplus(θ)*sign for constrained neurons.
         Called every forward pass (weights change during training).
         """
         n = len(self._neuron_index)
         if not self._ff_params:
             return torch.zeros(n, n, device=self._device)
-        weights = torch.stack(self._ff_params)          # [num_ff]
-        flat_idx = self._ff_dst * n + self._ff_src      # [num_ff]
+        raw = torch.stack(self._ff_params)          # [num_ff]
+        weights = self._apply_dale(raw, self._ff_cell_types)
+        flat_idx = self._ff_dst * n + self._ff_src  # [num_ff]
         W_flat = torch.zeros(n * n, device=self._device)
         W_flat = W_flat.scatter_add(0, flat_idx, weights)
         return W_flat.view(n, n)

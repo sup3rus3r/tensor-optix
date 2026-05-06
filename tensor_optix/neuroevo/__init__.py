@@ -9,6 +9,7 @@ from .controller import TopologyController
 from .brain_network import BrainNetwork, Pathway, InterRegionEdge
 from .hebbian import HebbianHook
 from .neuromodulator import NeuromodulatorSignal
+from .optimizer import TopologyAwareAdam
 
 __all__ = [
     "NeuronGraph", "Edge", "Neuron", "CELL_TYPES",
@@ -20,4 +21,5 @@ __all__ = [
     "BrainNetwork", "Pathway", "InterRegionEdge",
     "HebbianHook",
     "NeuromodulatorSignal",
+    "TopologyAwareAdam",
 ]
