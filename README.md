@@ -14,7 +14,7 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 
 **New in 1.13.0:**
 - **Dale's Law** — biologically-faithful excitatory/inhibitory neuron types. Set `cell_type="excitatory"` or `"inhibitory"` on any neuron; `NeuronGraph.enforce_dale()` clamps outgoing weights to the correct sign after every optimizer step. `GraphAgent` calls this automatically.
-- **BrainNetwork** — modular brain regions: multiple named `NeuronGraph` subgraphs connected by sparse, learnable inter-region pathways with configurable delays. Each region can carry its own `TopologyController`. Forward pass runs regions in topological order. `brain.add_pathway("sensory", "executive", n_connections=8, delay=1)`.
+- **BrainNetwork** — modular brain regions: multiple named `NeuronGraph` subgraphs connected by sparse, learnable inter-region pathways with configurable delays. One `TopologyController` manages all regions via `TopologyController.for_brain(brain)` — each region evolves independently with its own cooldown and grad-util buffer. Forward pass runs regions in topological order. `brain.add_pathway("sensory", "executive", n_connections=8, delay=1)`.
 - **HebbianHook** — local Hebbian learning running alongside PPO. Accumulates `h_pre × h_post` co-activation products across a full episode, then applies `Δw = η·mean(h_pre·h_post) − λ·w` to every edge. Works on `NeuronGraph` directly or all regions of a `BrainNetwork` via `HebbianHook.from_brain(brain)`. Respects Dale's Law automatically.
 - **NeuromodulatorSignal** — global parameter modulation driven by `RegimeDetector`. Translates `"trending"` / `"ranging"` / `"volatile"` regimes into biologically-analogous changes: dopamine (consolidate on improvement), norepinephrine (explore on volatility), acetylcholine (raise plasticity when structure is detected). Modulates `HebbianHook.hebbian_lr`, `GraphAgent` entropy coefficient, and `TopologyController` grow/prune thresholds simultaneously.
 
@@ -1744,7 +1744,10 @@ Standard networks have a fixed topology set at construction. `neuroevo` starts s
 |---|---|
 | `NeuronGraph` | Mutable directed graph  -  the policy network |
 | `GraphAgent` | `BaseAgent` wrapping `NeuronGraph`, PPO-trained |
-| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream |
+| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream; supports single graphs and multi-region `BrainNetwork` |
+| `Neuron` | Point neuron (bias + activation + delay buffer) |
+| `GRUNeuron` | Scalar GRU cell — gated recurrent computation, same graph interface as `Neuron` |
+| `LSTMNeuron` | Scalar LSTM cell — forget/input/output gates, same graph interface as `Neuron` |
 
 ### Quickstart
 
@@ -1769,27 +1772,51 @@ for hid in g.hidden_ids:
         g.add_edge(hid, out, weight=0.1, delay=0)
 
 agent = GraphAgent(graph=g, obs_dim=4, n_actions=2)
-ctrl  = TopologyController(g, grow_op="insert_edge", grow_cooldown=20)
+ctrl  = TopologyController.for_graph(g, grow_op="insert_edge", grow_cooldown=20)
 
 # Plug into any tensor-optix LoopController
 loop = LoopController(agent=agent, pipeline=pipeline, callbacks=[ctrl])
 loop.run()
 ```
 
+### Heterogeneous neuron types
+
+Graphs can mix point neurons, GRU cells, and LSTM cells freely. Pass a pre-constructed neuron instance via the `neuron=` kwarg:
+
+```python
+from tensor_optix.neuroevo.graph.neuron import GRUNeuron, LSTMNeuron
+
+g = NeuronGraph()
+g.add_neuron("input",  "linear")                      # point neuron
+g.add_neuron("hidden", neuron=GRUNeuron())            # GRU cell
+g.add_neuron("hidden", neuron=LSTMNeuron())           # LSTM cell
+g.add_neuron("hidden", "tanh", cell_type="inhibitory") # point neuron + Dale's Law
+```
+
+All neuron types share the same graph interface — the `TopologyController` is fully type-blind. Type-specific behaviour is encapsulated in each neuron via a protocol:
+
+| Method | What it does |
+|---|---|
+| `neuron.step(weighted_sum)` | Full forward: bias + activation for point neurons; full gate computation for GRU/LSTM |
+| `neuron.importance(incident_w)` | `I(v) = Σ\|w_e\| × (‖h‖₁/d + ε)` — normalised by hidden dim so scores are comparable across types |
+| `neuron.can_merge_with(other)` | Returns `True` only if both neurons are the same concrete type |
+| `neuron.make_relay()` | Always returns a **linear point neuron** regardless of self's type — the only choice that gives exact function preservation (GRU/LSTM relays have 24–36% error in the tanh activation range, verified mathematically) |
+| `neuron.split_copy()` | Deep-copies all internal parameters into a new neuron; caller halves outgoing edge weights |
+
 ### Topology operations
 
 All operations are **function-preserving**  -  output is identical before and after.
 
 **Grow:**
-- `insert_neuron_on_edge(graph, edge_id)`  -  inserts a relay neuron on an existing edge, splitting its delay
-- `split_neuron(graph, neuron_id)`  -  duplicates a neuron, halves outgoing weights
+- `insert_neuron_on_edge(graph, edge_id)`  -  inserts a linear relay neuron on an existing edge, splitting its delay; relay type is always linear regardless of surrounding neuron types
+- `split_neuron(graph, neuron_id)`  -  duplicates a neuron via `split_copy()`, halves outgoing weights; works for point neurons, GRU, and LSTM
 - `add_input_neuron(graph)`  -  adds a new input neuron with zero-weight connections (for new task dimensions)
 - `add_free_edge(graph, src, dst, delay)`  -  adds any edge with `w=0`
 
 **Prune:**
 - `prune_edge(graph, edge_id)`  -  removes a low-magnitude edge
 - `prune_neuron(graph, neuron_id)`  -  redistributes signal then removes neuron
-- `merge_neurons(graph, id_a, id_b)`  -  collapses two near-identical neurons into one
+- `merge_neurons(graph, id_a, id_b)`  -  collapses two near-identical neurons into one; `TopologyController` only merges neurons that pass `can_merge_with()` (same type)
 
 ### Variable-delay recurrence
 
@@ -1820,9 +1847,32 @@ Topology decisions are driven by three independent statistical signals computed 
 
 **PRUNE** (edge): `|w| < threshold` for `prune_edge_patience` consecutive episodes.
 
-**MERGE** fires when Pearson correlation of activation histories `> merge_similarity_threshold` and both neurons have non-trivial importance (redundant but not dead).
+**MERGE** fires when:
+- `neuron_a.can_merge_with(neuron_b)` — same concrete type (a GRU cell will never merge with a point neuron)
+- Pearson correlation of **signed** activation histories `> merge_similarity_threshold` — anti-correlated neurons (complementary features) are never merged
+- Both neurons have non-trivial importance (redundant but not dead)
 
 After every GROW, the `BackoffScheduler` is partially reset (interval halved by default) so the loop treats the grown network as a fresh start  -  but retains memory that this region has been hard before.
+
+### Multi-region TopologyController
+
+`TopologyController` operates on a `Dict[str, NeuronGraph]` internally. Each region has its own cooldown counter and gradient-utilisation buffer — a saturated encoder region can grow without triggering growth in the decision region. The score buffer and statistical signal math are shared (eval score reflects the whole agent).
+
+```python
+# Single graph
+ctrl = TopologyController.for_graph(graph, scheduler)
+
+# BrainNetwork — one controller manages all regions
+ctrl = TopologyController.for_brain(brain, scheduler)
+
+# Manual multi-region
+ctrl = TopologyController(
+    {"encoder": encoder_graph, "decision": decision_graph},
+    scheduler=scheduler,
+)
+```
+
+Both `for_graph` and the direct constructor accept all the same keyword arguments (`grow_op`, `grow_cooldown`, `prune_neuron_threshold`, etc.).
 
 ### Math reference
 
@@ -1831,6 +1881,11 @@ After every GROW, the `BackoffScheduler` is partially reset (interval halved by 
 Add: (u → new, w=1.0, d₁=⌊d/2⌋)
 Add: (new → v, w=w,   d₂=d−d₁)
 h_new = linear passthrough at init → output preserved exactly
+
+Relay is always a linear point neuron regardless of surrounding neuron types.
+GRU/LSTM relays have 24–36% error in the tanh activation range (|tanh(x)−x|
+at x=1 is 23.8%); a linear relay gives exact identity. Gradient descent
+adapts the relay to a gated cell if the task requires it.
 ```
 
 **Split neuron** `v_k → v_k1, v_k2`:
