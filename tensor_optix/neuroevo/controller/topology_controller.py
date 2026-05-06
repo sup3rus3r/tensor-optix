@@ -189,14 +189,18 @@ class TopologyController(LoopCallback):
         if eval_metrics is not None:
             self._score_buffer.append(eval_metrics.primary_score)
 
+        # Single edge pass shared by grad-util + importance accumulation
+        hidden = self.graph.hidden_ids
+        _grad_mag, _total_w = self._episode_neuron_stats(hidden)
+
         # Gradient utilisation from the last backward pass (grads are live)
-        self._grad_util_buffer.append(self._compute_grad_util())
+        self._grad_util_buffer.append(self._compute_grad_util(hidden, _grad_mag))
 
         # Per-neuron activation history for merge detection
-        self._accumulate_activations()
+        self._accumulate_activations(hidden)
 
         # Importance accumulator for prune
-        self._accumulate_neuron_importance()
+        self._accumulate_neuron_importance(hidden, _total_w)
 
         # ── Grow check ────────────────────────────────────────────────────
         if self._grow_signal_check():
@@ -363,25 +367,13 @@ class TopologyController(LoopCallback):
     # Gradient utilisation
     # ------------------------------------------------------------------
 
-    def _compute_grad_util(self) -> float:
-        """
-        Fraction of hidden neurons whose total gradient magnitude exceeds
-        grad_eps.  Read from .grad after the most recent backward pass.
-        """
-        hidden = self.graph.hidden_ids
+    def _compute_grad_util(
+        self, hidden: List[str], grad_mag: Dict[str, float]
+    ) -> float:
+        """Fraction of hidden neurons with total |grad| > grad_eps."""
         if not hidden:
             return 0.0
-        saturated = 0
-        for nid in hidden:
-            neuron = self.graph.get_neuron(nid)
-            mag = 0.0
-            if neuron.bias.grad is not None:
-                mag += float(neuron.bias.grad.abs().item())
-            for edge in self.graph.edges_into(nid) + self.graph.edges_from(nid):
-                if edge.weight.grad is not None:
-                    mag += float(edge.weight.grad.abs().item())
-            if mag > self.grad_eps:
-                saturated += 1
+        saturated = sum(1 for m in grad_mag.values() if m > self.grad_eps)
         return saturated / len(hidden)
 
     # ------------------------------------------------------------------
@@ -496,22 +488,75 @@ class TopologyController(LoopCallback):
     # Accumulation helpers
     # ------------------------------------------------------------------
 
-    def _accumulate_neuron_importance(self) -> None:
-        for nid in self.graph.hidden_ids:
-            self._neuron_importance_accum[nid] += neuron_importance(self.graph, nid)
+    def _accumulate_neuron_importance(
+        self, hidden: List[str], total_w: Dict[str, float]
+    ) -> None:
+        """I(v) = Σ|w_e| * |h_v|  for all edges incident to v."""
+        if not hidden:
+            self._accum_steps += 1
+            return
+        for nid in hidden:
+            neuron = self.graph.get_neuron(nid)
+            h = neuron._current
+            h_mag = abs(h.item()) if h.numel() == 1 else float(h.abs().mean().item())
+            self._neuron_importance_accum[nid] += total_w[nid] * (h_mag + 1e-8)
         self._accum_steps += 1
 
-    def _accumulate_activations(self) -> None:
-        for nid in self.graph.hidden_ids:
+    def _accumulate_activations(self, hidden: List[str]) -> None:
+        """Record activation per hidden neuron into per-neuron history deques."""
+        if not hidden:
+            return
+        for nid in hidden:
             if nid not in self._act_history:
                 self._act_history[nid] = deque(maxlen=self.act_history_len)
             neuron = self.graph.get_neuron(nid)
-            val = (
-                float(neuron._current.item())
-                if neuron._current.numel() == 1
-                else float(neuron._current.abs().mean())
-            )
+            h = neuron._current
+            # Keep signed value for scalar activations — sign matters for merge
+            # detection: anti-correlated neurons (corr=-1) must NOT be merged.
+            val = float(h.item()) if h.numel() == 1 else float(h.abs().mean().item())
             self._act_history[nid].append(val)
+
+    # ------------------------------------------------------------------
+    # Shared per-neuron stats (one edge pass per episode)
+    # ------------------------------------------------------------------
+
+    def _episode_neuron_stats(
+        self, hidden: List[str]
+    ) -> "tuple[Dict[str, float], Dict[str, float]]":
+        """
+        Single pass over all edges → returns two dicts keyed by hidden neuron id:
+          grad_mag:  sum of |bias.grad| + |edge.weight.grad| for incident edges
+          total_w:   sum of |edge.weight| for incident edges
+
+        Called once per episode; both _compute_grad_util and
+        _accumulate_neuron_importance consume its output so the edge pass
+        runs only once instead of twice.
+
+        Batch-extracts grad/weight magnitudes via abs(p.item()) to avoid
+        creating per-param temporary tensors in the hot loop.
+        """
+        hidden_set = set(hidden)
+
+        grad_mag: Dict[str, float] = {}
+        total_w:  Dict[str, float] = {nid: 0.0 for nid in hidden}
+
+        for nid in hidden:
+            g = self.graph.get_neuron(nid).bias.grad
+            grad_mag[nid] = abs(g.item()) if g is not None else 0.0
+
+        for edge in self.graph.all_edges():
+            w   = abs(edge.weight.item())
+            g   = abs(edge.weight.grad.item()) if edge.weight.grad is not None else 0.0
+            src_h = edge.src in hidden_set
+            dst_h = edge.dst in hidden_set
+            if src_h:
+                grad_mag[edge.src] += g
+                total_w[edge.src]  += w
+            if dst_h:
+                grad_mag[edge.dst] += g
+                total_w[edge.dst]  += w
+
+        return grad_mag, total_w
 
     # ------------------------------------------------------------------
     # Diagnostics
