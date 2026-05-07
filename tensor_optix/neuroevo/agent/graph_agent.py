@@ -333,3 +333,196 @@ class GraphAgent(BaseAgent):
             log_prob = dist.log_prob(actions)
             entropy = dist.entropy()
         return log_prob, entropy, values
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RecurrentGraphAgent
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RecurrentGraphAgent(GraphAgent):
+    """
+    GraphAgent subclass that supports TrainableGRUNeuron / TrainableLSTMNeuron.
+
+    When the graph contains any neuron with is_recurrent=True, learn() switches
+    from the default shuffled-minibatch PPO to sequential chunk-based training
+    (truncated BPTT). Inference via act() is unchanged — it still calls the
+    parent step() path with detached hidden states.
+
+    Extra hyperparams:
+      chunk_len (int, default 64): BPTT truncation length in timesteps.
+    """
+
+    default_hyperparams = {
+        **GraphAgent.default_hyperparams,
+        "chunk_len": 64,
+    }
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def learn(self, episode_data: EpisodeData) -> dict:
+        if not self._has_recurrent_neurons():
+            return super().learn(episode_data)
+        return self._recurrent_learn(episode_data)
+
+    # ------------------------------------------------------------------
+    # Sequential / recurrent forward
+    # ------------------------------------------------------------------
+
+    def recurrent_forward(self, obs_sequence: torch.Tensor, chunk_len: int = 64) -> torch.Tensor:
+        """
+        Process T timesteps in order with truncated BPTT every chunk_len steps.
+
+        Returns [T, n_outputs].
+        """
+        T = obs_sequence.shape[0]
+        outputs = []
+
+        self._reset_recurrent_train_states()
+
+        for t in range(T):
+            if t > 0 and t % chunk_len == 0:
+                self._detach_recurrent_train_states()
+
+            out = self._sequential_step(obs_sequence[t])
+            outputs.append(out)
+
+        return torch.stack(outputs)  # [T, n_outputs]
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _has_recurrent_neurons(self) -> bool:
+        return any(
+            getattr(n, "is_recurrent", False)
+            for n in self.graph._neurons.values()
+        )
+
+    def _reset_recurrent_train_states(self) -> None:
+        for neuron in self.graph._neurons.values():
+            if getattr(neuron, "is_recurrent", False):
+                neuron.reset_train_state()
+
+    def _detach_recurrent_train_states(self) -> None:
+        for neuron in self.graph._neurons.values():
+            if getattr(neuron, "is_recurrent", False):
+                if hasattr(neuron, "_h_train"):
+                    neuron._h_train = neuron._h_train.detach()
+                if hasattr(neuron, "_c_train"):
+                    neuron._c_train = neuron._c_train.detach()
+
+    def _sequential_step(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Single-timestep forward through the graph using recurrent_step() for
+        recurrent neurons and _activation_fn for point neurons.
+        obs: [n_inputs]
+        Returns: [n_outputs]
+        """
+        graph = self.graph
+        act: dict[str, torch.Tensor] = {}
+
+        for i, nid in enumerate(graph.input_ids):
+            act[nid] = obs[i].unsqueeze(0)  # keep scalar as [1]
+
+        for nid in graph._topological_order():
+            neuron = graph._neurons[nid]
+            pre = torch.zeros(1, device=self.device)
+            for eid in graph._in_edges.get(nid, []):
+                edge = graph._edges[eid]
+                src = edge.src
+                if src in act:
+                    pre = pre + edge.weight * act[src]
+
+            if getattr(neuron, "is_recurrent", False):
+                act[nid] = neuron.recurrent_step(pre)
+            else:
+                act[nid] = neuron._activation_fn(pre + neuron.bias.squeeze(0))
+
+        return torch.stack([act[nid] for nid in graph.output_ids]).squeeze(-1)  # [n_outputs]
+
+    def _recurrent_learn(self, episode_data: EpisodeData) -> dict:
+        hp = self._hyperparams.params
+        chunk_len = int(hp.get("chunk_len", 64))
+
+        obs_t = torch.tensor(
+            np.array(episode_data.observations), dtype=torch.float32, device=self.device
+        )
+        act_t = torch.tensor(
+            np.array(episode_data.actions),
+            dtype=torch.long if not self.continuous else torch.float32,
+            device=self.device,
+        )
+        rew_t = torch.tensor(episode_data.rewards, dtype=torch.float32, device=self.device)
+        old_lp = torch.tensor(
+            episode_data.log_probs if episode_data.log_probs else [0.0] * len(episode_data.rewards),
+            dtype=torch.float32, device=self.device,
+        )
+
+        # Compute values with detached inference pass
+        with torch.no_grad():
+            values = self._batch_values(obs_t)
+        advantages, returns = compute_gae(
+            rewards=rew_t.cpu().numpy().tolist(),
+            values=values.cpu().numpy().tolist(),
+            dones=episode_data.dones,
+            gamma=hp["gamma"],
+            gae_lambda=hp["gae_lambda"],
+        )
+        adv_t = torch.tensor(advantages, dtype=torch.float32, device=self.device)
+        ret_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
+        adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
+
+        T = obs_t.shape[0]
+        total_loss = total_pg = total_vf = total_ent = 0.0
+        n_updates = 0
+
+        for _ in range(hp["n_epochs"]):
+            # Sequential chunk windows — no shuffling
+            for start in range(0, T, chunk_len):
+                end = min(start + chunk_len, T)
+                if end - start < 2:
+                    continue
+
+                ob_chunk = obs_t[start:end]        # [chunk, obs_dim]
+                ac_chunk = act_t[start:end]        # [chunk]
+                old_lp_chunk = old_lp[start:end]   # [chunk]
+                adv_chunk = adv_t[start:end]        # [chunk]
+                ret_chunk = ret_t[start:end]        # [chunk]
+
+                out_chunk = self.recurrent_forward(ob_chunk, chunk_len=chunk_len)  # [chunk, n_outputs]
+                new_lp, entropy, values_chunk = self._evaluate_actions(out_chunk, ac_chunk)
+
+                ratio = torch.exp(new_lp - old_lp_chunk)
+                pg1 = ratio * adv_chunk
+                pg2 = torch.clamp(ratio, 1 - hp["clip_ratio"], 1 + hp["clip_ratio"]) * adv_chunk
+                pg_loss = -torch.min(pg1, pg2).mean()
+
+                vf_loss = F.mse_loss(values_chunk, ret_chunk)
+                ent_loss = -entropy.mean()
+
+                loss = pg_loss + hp["vf_coef"] * vf_loss + hp["entropy_coef"] * ent_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.graph.parameters(), hp["max_grad_norm"])
+                self.optimizer.step()
+                self.graph.enforce_dale()
+
+                total_loss += loss.item()
+                total_pg += pg_loss.item()
+                total_vf += vf_loss.item()
+                total_ent += ent_loss.item()
+                n_updates += 1
+
+        self._episode_count += 1
+        denom = max(n_updates, 1)
+        return {
+            "loss": total_loss / denom,
+            "pg_loss": total_pg / denom,
+            "vf_loss": total_vf / denom,
+            "entropy": -total_ent / denom,
+            "n_neurons": self.graph.n_neurons(),
+            "n_edges": self.graph.n_edges(),
+        }

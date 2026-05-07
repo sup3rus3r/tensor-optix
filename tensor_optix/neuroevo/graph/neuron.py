@@ -425,3 +425,122 @@ class LSTMNeuron(Neuron):
             f"id={self.neuron_id[:8]}, type=LSTM, "
             f"max_delay={self._max_delay}, cell_type={self.cell_type}"
         )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Trainable GRU Neuron  (gradient flows through time — use with RecurrentGraphAgent)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TrainableGRUNeuron(GRUNeuron):
+    """
+    GRU neuron whose gate parameters train via PPO gradients (truncated BPTT).
+
+    The key difference from GRUNeuron.step(): the hidden state is NOT detached,
+    so gradients flow backward through time up to chunk_len steps.
+
+    Requirements:
+      - Use with RecurrentGraphAgent (or any agent that calls recurrent_forward).
+      - The agent must call reset_train_state() at the start of each sequence and
+        detach _h_train every chunk_len steps (truncated BPTT).
+      - Inference (act()) still uses step(), which detaches as normal.
+
+    is_recurrent = True signals RecurrentGraphAgent to route training through
+    recurrent_forward() instead of _batch_forward().
+    """
+
+    is_recurrent: bool = True
+
+    def recurrent_step(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Single-timestep GRU forward with undetached hidden state.
+        Gradient flows through self._h_train.
+        """
+        h = self._h_train
+        z = torch.sigmoid(self.wz * h + self.uz * x + self.bz)
+        r = torch.sigmoid(self.wr * h + self.ur * x + self.br)
+        n = torch.tanh(self.wn * r * h + self.un * x + self.bn)
+        self._h_train = (1 - z) * h + z * n
+        self._current = self._h_train
+        return self._h_train
+
+    def reset_train_state(self) -> None:
+        """Reset the training hidden state (call at sequence start)."""
+        self._h_train = torch.zeros(1, device=self.bias.device)
+
+    def can_merge_with(self, other: "Neuron") -> bool:
+        return type(other) is TrainableGRUNeuron
+
+    def split_copy(self) -> "TrainableGRUNeuron":
+        new = TrainableGRUNeuron(max_delay=self._max_delay, cell_type=self.cell_type)
+        with torch.no_grad():
+            for attr in ("wz", "uz", "bz", "wr", "ur", "br", "wn", "un", "bn", "bias"):
+                getattr(new, attr).copy_(getattr(self, attr))
+        return new
+
+    def extra_repr(self) -> str:
+        return (
+            f"id={self.neuron_id[:8]}, type=TrainableGRU, "
+            f"max_delay={self._max_delay}, cell_type={self.cell_type}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Trainable LSTM Neuron  (gradient flows through time — use with RecurrentGraphAgent)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TrainableLSTMNeuron(LSTMNeuron):
+    """
+    LSTM neuron whose gate parameters train via PPO gradients (truncated BPTT).
+
+    The key difference from LSTMNeuron.step(): neither _h nor _c is detached,
+    so gradients flow backward through time up to chunk_len steps.
+
+    Requirements:
+      - Use with RecurrentGraphAgent (or any agent that calls recurrent_forward).
+      - The agent must call reset_train_state() at the start of each sequence and
+        detach _h_train / _c_train every chunk_len steps (truncated BPTT).
+      - Inference (act()) still uses step(), which detaches as normal.
+
+    is_recurrent = True signals RecurrentGraphAgent to route training through
+    recurrent_forward() instead of _batch_forward().
+    """
+
+    is_recurrent: bool = True
+
+    def recurrent_step(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Single-timestep LSTM forward with undetached hidden/cell states.
+        Gradient flows through self._h_train and self._c_train.
+        """
+        h = self._h_train
+        c = self._c_train
+        f = torch.sigmoid(self.wf * h + self.uf * x + self.bf)
+        i = torch.sigmoid(self.wi * h + self.ui * x + self.bi)
+        g = torch.tanh(self.wg * h + self.ug * x + self.bg)
+        o = torch.sigmoid(self.wo * h + self.uo * x + self.bo)
+        self._c_train = f * c + i * g
+        self._h_train = o * torch.tanh(self._c_train)
+        self._current = self._h_train
+        return self._h_train
+
+    def reset_train_state(self) -> None:
+        """Reset the training hidden/cell states (call at sequence start)."""
+        dev = self.bias.device
+        self._h_train = torch.zeros(1, device=dev)
+        self._c_train = torch.zeros(1, device=dev)
+
+    def can_merge_with(self, other: "Neuron") -> bool:
+        return type(other) is TrainableLSTMNeuron
+
+    def split_copy(self) -> "TrainableLSTMNeuron":
+        new = TrainableLSTMNeuron(max_delay=self._max_delay, cell_type=self.cell_type)
+        with torch.no_grad():
+            for attr in ("wf","uf","bf","wi","ui","bi","wg","ug","bg","wo","uo","bo","bias"):
+                getattr(new, attr).copy_(getattr(self, attr))
+        return new
+
+    def extra_repr(self) -> str:
+        return (
+            f"id={self.neuron_id[:8]}, type=TrainableLSTM, "
+            f"max_delay={self._max_delay}, cell_type={self.cell_type}"
+        )
