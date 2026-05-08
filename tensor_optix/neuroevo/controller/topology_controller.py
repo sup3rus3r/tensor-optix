@@ -355,6 +355,7 @@ class TopologyController(LoopCallback):
             region_name, op, self._grow_count, episode_id,
             graph.n_neurons(), graph.n_edges(),
         )
+        graph.invalidate_compile()
         self._reset_scheduler()
 
     def _grow_insert_edge(self, graph: NeuronGraph) -> Optional[str]:
@@ -434,6 +435,9 @@ class TopologyController(LoopCallback):
             self._edge_below_threshold.pop(eid, None)
             self._prune_count += 1
 
+        if to_prune:
+            graph.invalidate_compile()
+
     # ------------------------------------------------------------------
     # Prune — neuron
     # ------------------------------------------------------------------
@@ -476,6 +480,8 @@ class TopologyController(LoopCallback):
 
         self._neuron_importance_accum.clear()
         self._accum_steps = 0
+        if pruned_any:
+            graph.invalidate_compile()
         return pruned_any
 
     # ------------------------------------------------------------------
@@ -521,6 +527,7 @@ class TopologyController(LoopCallback):
                         merge_neurons(graph, nid_a, nid_b)
                         self._act_history.pop(nid_b, None)
                         self._merge_count += 1
+                        graph.invalidate_compile()
                         return
 
     # ------------------------------------------------------------------

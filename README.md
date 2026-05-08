@@ -13,6 +13,7 @@ The framework has zero assumptions about your model, algorithm, or framework. No
 **The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision, not training alone.
 
 **New in 1.14.0:**
+- **Compiled forward pass** — `NeuronGraph.forward` is wrapped with `torch.compile(dynamic=False)` automatically. The matrix assembly, matmul, and per-neuron step kernels are all fused into a single optimized graph. `TopologyController` calls `graph.invalidate_compile()` after every grow, prune, and merge operation, which retraces cleanly from the updated topology. Falls back to eager mode on PyTorch < 2.0.
 - **Softplus Dale's Law** — opt-in gradient-safe alternative to clamp enforcement. `NeuronGraph(dale_mode="softplus")` stores a raw unconstrained θ per edge; effective weight = `softplus(θ)` for excitatory neurons and `−softplus(θ)` for inhibitory. Gradient flows everywhere (no dead zone at the clamp boundary). Zero-weight init uses θ=−10 (`softplus(−10)≈4.5×10⁻⁵`, safely below the prune threshold). `enforce_dale()` becomes a no-op. Use `graph.effective_weight(edge_id)` to read the post-softplus value.
 - **TopologyAwareAdam** — drop-in Adam wrapper that resets momentum state for parameters affected by topology changes. Call `opt.notify_topology_change(params)` after any grow, prune, or merge operation; stale (m, v) estimates from before the structural change are discarded so the first update on modified parameters is clean. All standard Adam methods delegate unchanged.
 - **GRUNeuron / LSTMNeuron** — scalar GRU and LSTM cells that plug into `NeuronGraph` with the same interface as point neurons. Heterogeneous graphs mix all three types freely. The `TopologyController` is fully type-blind; type-specific logic is encapsulated via a protocol (`step`, `importance`, `can_merge_with`, `make_relay`, `split_copy`).
@@ -1748,9 +1749,9 @@ Standard networks have a fixed topology set at construction. `neuroevo` starts s
 
 | Class | Role |
 |---|---|
-| `NeuronGraph` | Mutable directed graph, the policy network |
+| `NeuronGraph` | Mutable directed graph, the policy network. Forward pass is compiled with `torch.compile(dynamic=False)` and retraced automatically after topology changes. |
 | `GraphAgent` | `BaseAgent` wrapping `NeuronGraph`, PPO-trained |
-| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream; supports single graphs and multi-region `BrainNetwork` |
+| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream; calls `graph.invalidate_compile()` after every structural mutation; supports single graphs and multi-region `BrainNetwork` |
 | `Neuron` | Point neuron (bias + activation + delay buffer) |
 | `GRUNeuron` | Scalar GRU cell — gated recurrent computation, same graph interface as `Neuron` |
 | `LSTMNeuron` | Scalar LSTM cell — forget/input/output gates, same graph interface as `Neuron` |
@@ -1932,6 +1933,20 @@ opt.step()
 `notify_topology_change(params)` deletes the (m, v) state for the given `nn.Parameter` objects. Adam treats them as freshly created on the next step. Parameters not tracked by the optimizer are silently ignored. All other parameters continue uninterrupted with their full history intact.
 
 `TopologyAwareAdam` is a drop-in replacement for `torch.optim.Adam`: it delegates `step`, `zero_grad`, `state_dict`, `load_state_dict`, and `add_param_group` to the inner optimizer unchanged.
+
+### Compiled forward pass
+
+`NeuronGraph.forward` is compiled with `torch.compile(dynamic=False)` on construction. On the first call after construction (or after `invalidate_compile()`), dynamo traces `_raw_forward` and emits a fused kernel covering the weight matrix assembly, the feedforward matmul, recurrent edge scatter, and all per-neuron `step()` calls. Subsequent calls reuse the compiled kernel with no Python overhead.
+
+`TopologyController` calls `graph.invalidate_compile()` automatically after every grow, prune, and merge operation. You only need to call it manually if you mutate the graph directly outside the controller:
+
+```python
+# Direct mutation outside TopologyController — invalidate manually
+g.add_edge(src=nid_a, dst=nid_b, weight=0.0, delay=1)
+g.invalidate_compile()
+```
+
+`invalidate_compile()` pre-builds the matrix cache before recompiling so the new compiled trace always starts with a clean graph structure. On PyTorch < 2.0 the method is a no-op and eager mode is used throughout.
 
 ---
 

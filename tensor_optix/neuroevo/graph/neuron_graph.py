@@ -103,6 +103,10 @@ class NeuronGraph(nn.Module):
         self._topo_order: List[str] = []
         self._input_pos: Dict[str, int] = {}
 
+        # Compiled forward — rebuilt after every topology change and device move.
+        # Falls back to _raw_forward on PyTorch < 2.0.
+        self._fwd = self._make_compiled_fwd()
+
     def to(self, *args, **kwargs):
         result = super().to(*args, **kwargs)
         try:
@@ -111,6 +115,7 @@ class NeuronGraph(nn.Module):
             pass
         result._matrix_dirty = True  # index tensors must be rebuilt on new device
         result.reset_state()
+        result.invalidate_compile()
         return result
 
     # ------------------------------------------------------------------
@@ -230,10 +235,39 @@ class NeuronGraph(nn.Module):
         self._matrix_dirty = True
 
     # ------------------------------------------------------------------
+    # Compile lifecycle
+    # ------------------------------------------------------------------
+
+    def _make_compiled_fwd(self):
+        if hasattr(torch, "compile"):
+            return torch.compile(self._raw_forward, dynamic=False)
+        return self._raw_forward
+
+    def invalidate_compile(self) -> None:
+        """
+        Recompile the forward pass after a topology change or device move.
+
+        Rebuilds the matrix cache first so the compiled trace always starts
+        with _matrix_dirty=False — avoids a second recompile on the first call.
+
+        Note: torch._dynamo.reset() is process-global; it evicts compiled
+        kernels for every NeuronGraph in the process, not just this one.
+        All graphs recompile on their next forward call.
+        """
+        if self._neurons:
+            self._rebuild_matrix_structure()
+        if hasattr(torch, "_dynamo"):
+            torch._dynamo.reset()
+        self._fwd = self._make_compiled_fwd()
+
+    # ------------------------------------------------------------------
     # Forward pass
     # ------------------------------------------------------------------
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return self._fwd(obs)
+
+    def _raw_forward(self, obs: torch.Tensor) -> torch.Tensor:
         """
         Run one timestep of the graph.
 
