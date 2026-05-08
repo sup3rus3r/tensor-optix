@@ -1,2079 +1,499 @@
 # tensor-optix
 
-Autonomous training loop for any sequential learning model, built-in PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO for TensorFlow, PyTorch, and JAX/Flax.
+tensor-optix is a training loop framework with statistical convergence control, online hyperparameter optimisation, and an optional neuroevolution subsystem for dynamic topology.
 
----
+The core loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected using a corrected t-test on the smoothed score slope plus lag-1 autocorrelation, not a fixed patience counter. Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape. Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
 
-## About
+The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
 
-tensor-optix is a framework-agnostic autonomous training loop. It owns evaluation, checkpointing, hyperparameter tuning, policy evolution, and ensemble management for **any model that can act and learn from sequential data**, reinforcement learning agents, online forecasters, trading systems, robotics controllers, or any custom architecture that fits the six-method `BaseAgent` interface.
-
-The framework has zero assumptions about your model, algorithm, or framework. No RL-specific logic exists in the core loop, it works equally well with PPO, a custom evolutionary strategy, a supervised sequence model, or anything else. For RL specifically, it ships with production-ready implementations of **PPO, DQN, SAC, TD3, Rainbow DQN, and Recurrent PPO** for TensorFlow and PyTorch, plus a **JAX/Flax PPO adapter**, so you can start training without writing a single algorithm line.
-
-**The system never stops at a fixed episode count.** It detects convergence through exponential backoff, spawns policy variants when it plateaus, and uses both training and validation signals to drive every decision, not training alone.
-
-**New in 1.14.0:**
-- **Compiled forward pass** — `NeuronGraph.forward` is wrapped with `torch.compile(dynamic=False)` automatically. The matrix assembly, matmul, and per-neuron step kernels are all fused into a single optimized graph. `TopologyController` calls `graph.invalidate_compile()` after every grow, prune, and merge operation, which retraces cleanly from the updated topology. Falls back to eager mode on PyTorch < 2.0.
-- **Softplus Dale's Law** — opt-in gradient-safe alternative to clamp enforcement. `NeuronGraph(dale_mode="softplus")` stores a raw unconstrained θ per edge; effective weight = `softplus(θ)` for excitatory neurons and `−softplus(θ)` for inhibitory. Gradient flows everywhere (no dead zone at the clamp boundary). Zero-weight init uses θ=−10 (`softplus(−10)≈4.5×10⁻⁵`, safely below the prune threshold). `enforce_dale()` becomes a no-op. Use `graph.effective_weight(edge_id)` to read the post-softplus value.
-- **TopologyAwareAdam** — drop-in Adam wrapper that resets momentum state for parameters affected by topology changes. Call `opt.notify_topology_change(params)` after any grow, prune, or merge operation; stale (m, v) estimates from before the structural change are discarded so the first update on modified parameters is clean. All standard Adam methods delegate unchanged.
-- **GRUNeuron / LSTMNeuron** — scalar GRU and LSTM cells that plug into `NeuronGraph` with the same interface as point neurons. Heterogeneous graphs mix all three types freely. The `TopologyController` is fully type-blind; type-specific logic is encapsulated via a protocol (`step`, `importance`, `can_merge_with`, `make_relay`, `split_copy`).
-
-**New in 1.13.0:**
-- **Dale's Law** — biologically-faithful excitatory/inhibitory neuron types. Set `cell_type="excitatory"` or `"inhibitory"` on any neuron; `NeuronGraph.enforce_dale()` clamps outgoing weights to the correct sign after every optimizer step. `GraphAgent` calls this automatically.
-- **BrainNetwork** — modular brain regions: multiple named `NeuronGraph` subgraphs connected by sparse, learnable inter-region pathways with configurable delays. One `TopologyController` manages all regions via `TopologyController.for_brain(brain)` — each region evolves independently with its own cooldown and grad-util buffer. Forward pass runs regions in topological order. `brain.add_pathway("sensory", "executive", n_connections=8, delay=1)`.
-- **HebbianHook** — local Hebbian learning running alongside PPO. Accumulates `h_pre × h_post` co-activation products across a full episode, then applies `Δw = η·mean(h_pre·h_post) − λ·w` to every edge. Works on `NeuronGraph` directly or all regions of a `BrainNetwork` via `HebbianHook.from_brain(brain)`. Respects Dale's Law automatically.
-- **NeuromodulatorSignal** — global parameter modulation driven by `RegimeDetector`. Translates `"trending"` / `"ranging"` / `"volatile"` regimes into biologically-analogous changes: dopamine (consolidate on improvement), norepinephrine (explore on volatility), acetylcholine (raise plasticity when structure is detected). Modulates `HebbianHook.hebbian_lr`, `GraphAgent` entropy coefficient, and `TopologyController` grow/prune thresholds simultaneously.
-
-**New in 1.12.0:**
-- **neuroevo**, free-form topology evolution: `NeuronGraph`, `GraphAgent`, `TopologyController`. Grow, prune, split, and merge neurons at runtime with function-preserving operations. Variable-delay recurrent edges. Topology decisions are driven by statistical signals from the live training stream, not scheduler state. `pip install tensor-optix[neuroevo]`
-
-**New in 1.9.0:**
-- **Distributed async actor-learner** (IMPALA + V-trace), N actors run in parallel POSIX shared-memory processes, learner applies V-trace off-policy correction, 4× sample throughput on CPU
-- **JAX/Flax PPO adapter**, `FlaxPPOAgent` and `FlaxAgent` base class; XLA-compiled updates, optax optimisers, pickle-safe weight serialisation; convergence-parity with `TorchPPOAgent`
-- **Live terminal dashboard**, `RichDashboardCallback` renders a real-time Rich panel (score sparkline, hyperparams, loop state) with zero extra dependencies
-
-**Core philosophy:** We own the loop. You own the model.
-
----
-
-## Real-World Use Cases
-
-tensor-optix was designed for production environments where training can't be babysat. Here are the patterns it solves well.
-
-### Algorithmic Trading
-
-A trading agent faces non-stationary markets: a strategy that works in a trending regime collapses in a ranging one. tensor-optix handles this via live streaming, train/val split across time, and automatic rollback when out-of-sample performance degrades.
+The entire system, including neuroevo, is accessed through a six-method `BaseAgent` interface:
 
 ```python
-from tensor_optix import RLOptimizer, BatchPipeline, PolicyManager
-from tensor_optix import LivePipeline
+class BaseAgent(ABC):
+    def act(self, observation) -> any: ...
+    def learn(self, episode_data: EpisodeData) -> dict: ...
+    def get_hyperparams(self) -> HyperparamSet: ...
+    def set_hyperparams(self, hyperparams: HyperparamSet) -> None: ...
+    def save_weights(self, path: str) -> None: ...
+    def load_weights(self, path: str) -> None: ...
+```
 
-# Train on rolling window, validate on the next period (never seen during training)
-train_pipeline = LivePipeline(data_source=MarketFeed(), agent=agent,
-                               episode_boundary_fn=LivePipeline.every_n_seconds(300))
-val_pipeline   = LivePipeline(data_source=MarketFeed(offset="1d"), agent=agent,
-                               episode_boundary_fn=LivePipeline.every_n_seconds(300))
+Fifteen agents are included across PyTorch, TensorFlow, and JAX/Flax. Bring your own by implementing the interface above.
+
+---
+
+## Install
+
+```bash
+# Core loop only, no algorithm implementations
+pip install tensor-optix
+
+# PyTorch algorithms
+pip install tensor-optix[torch]
+
+# TensorFlow algorithms
+pip install tensor-optix[tensorflow]
+
+# JAX/Flax
+pip install tensor-optix[jax]
+
+# Neuroevo (requires torch)
+pip install tensor-optix[neuroevo]
+
+# GPU (Linux/WSL2, CUDA 12.8)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install tensor-optix[torch]
+
+# All frameworks and environment extras
+pip install tensor-optix[all]
+```
+
+Environment extras: `[box2d]`, `[atari]`, `[mujoco]`  
+Logging extras: `[wandb]`, `[tensorboard]`  
+Export: `[onnx]`
+
+---
+
+## Algorithms
+
+All agents implement `BaseAgent` and are interchangeable with `RLOptimizer`.
+
+### PyTorch
+
+| Agent | Algorithm | Action Space |
+|---|---|---|
+| `TorchPPOAgent` | PPO + GAE-λ | Discrete |
+| `TorchGaussianPPOAgent` | PPO | Continuous |
+| `TorchRecurrentPPOAgent` | PPO + GRU/LSTM hidden state | Discrete |
+| `TorchDQNAgent` | DQN + PER + n-step returns | Discrete |
+| `TorchRainbowDQNAgent` | Rainbow DQN (NoisyNet, distributional, PER, n-step, dueling, double) | Discrete |
+| `TorchSACAgent` | SAC, twin Q-critics, automatic entropy tuning | Continuous |
+| `TorchTD3Agent` | TD3 | Continuous |
+
+### TensorFlow
+
+`TFPPOAgent`, `TFGaussianPPOAgent`, `TFDQNAgent`, `TFSACAgent`, `TFTDDAgent`
+
+### JAX/Flax
+
+`FlaxPPOAgent`
+
+### Auto-selection
+
+`make_agent` inspects the environment action space and returns a fully constructed agent.
+
+```python
+from tensor_optix import make_agent
+import gymnasium as gym
+
+env = gym.make("LunarLanderContinuous-v3")
+agent = make_agent(env)                       # -> TorchSACAgent
+agent = make_agent(env, framework="tf")       # -> TFSACAgent
+agent = make_agent(env, deterministic=True)   # -> TorchTD3Agent
+```
+
+---
+
+## Pipelines
+
+A pipeline steps an environment (or data source), collects `EpisodeData`, and yields it to the agent. Three implementations are provided.
+
+```python
+from tensor_optix import BatchPipeline, LivePipeline, VectorBatchPipeline
+
+# Gymnasium env: steps continuously, no reset between windows
+pipeline = BatchPipeline(env=gym.make("CartPole-v1"), agent=agent, window_size=200)
+
+# External data stream: background thread with bounded queue, configurable episode boundaries
+pipeline = LivePipeline(
+    data_source=MyFeed(),
+    agent=agent,
+    episode_boundary_fn=LivePipeline.every_n_seconds(300),
+)
+
+# N parallel envs via gymnasium.vector, sync or async subprocess
+pipeline = VectorBatchPipeline(
+    env_fns=[lambda: gym.make("CartPole-v1")] * 8,
+    agent=agent,
+    window_size=200,
+)
+```
+
+---
+
+## The loop
+
+```python
+from tensor_optix import RLOptimizer
 
 opt = RLOptimizer(
     agent=agent,
-    pipeline=train_pipeline,
-    val_pipeline=val_pipeline,        # all checkpoint + rollback decisions use val score
-    rollback_on_degradation=True,     # restore best weights the moment val drops
-    checkpoint_score_fn=lambda a: backtest(a, held_out_period),  # external scoring
+    pipeline=pipeline,
+
+    # Separate validation pipeline. All checkpoint and rollback decisions use val score only.
+    val_pipeline=val_pipeline,
+    rollback_on_degradation=True,
+
+    # Optional external scorer run at checkpoint evaluation (e.g. held-out backtest)
+    checkpoint_score_fn=lambda a: evaluate(a, held_out_env),
+
+    # Convergence parameters
+    dormant_threshold=10,            # consecutive episodes without improvement -> DORMANT
+    min_episodes_before_dormant=50,  # statistical warmup before convergence detection activates
 )
+
+opt.run()
+opt.best_snapshot   # -> PolicySnapshot: best weights + EvalMetrics + HyperparamSet
+```
+
+Loop state transitions: `ACTIVE` -> `COOLING` -> `DORMANT` -> watchdog shutdown or policy spawn.
+
+On shutdown the loop restores best-known weights, not the final checkpoint.
+
+---
+
+## Hyperparameter optimisation
+
+All optimisers operate in normalised [0, 1] parameter space and update every episode. No restarts required.
+
+```python
+from tensor_optix.optimizers import SPSAOptimizer, AdaptiveOptimizer
+
+# SPSA: Rademacher perturbation vector, two-episode gradient estimate
+optimizer = SPSAOptimizer(
+    param_bounds={"learning_rate": (1e-4, 3e-3), "clip_ratio": (0.1, 0.3)},
+    log_params={"learning_rate"},   # log-space normalisation for params spanning orders of magnitude
+)
+
+# AdaptiveOptimizer: routes between SPSA, Momentum, Backoff, and PBT
+# based on lag-1 autocorrelation of the score stream and relative performance gap
+optimizer = AdaptiveOptimizer(param_bounds={...})
+
+opt = RLOptimizer(agent=agent, pipeline=pipeline, optimizer=optimizer)
+```
+
+| Optimizer | Routing condition |
+|---|---|
+| `SPSAOptimizer` | i.i.d. score noise, no autocorrelation structure |
+| `MomentumOptimizer` | Positive lag-1 autocorrelation (smooth landscape) |
+| `BackoffOptimizer` | Negative lag-1 autocorrelation (oscillating landscape, sign-only updates) |
+| `PBTOptimizer` | Score below 20th percentile of history (exploit checkpoint population) |
+| `AdaptiveOptimizer` | Routes automatically based on the two signals above |
+
+### Trial-level search
+
+`TrialOrchestrator` runs N independent short trials via Optuna TPE before the main run, then warm-starts from the best trial's weights and config.
+
+```python
+from tensor_optix import TrialOrchestrator
+
+orch = TrialOrchestrator(
+    agent_factory=make_agent,
+    pipeline_factory=make_pipeline,
+    param_space={
+        "learning_rate": ("log_float", 1e-4, 3e-3),
+        "clip_ratio":    ("float",     0.1,  0.3),
+        "batch_size":    ("int",       32,   512),
+    },
+    n_trials=20,
+    trial_episodes=50,
+)
+best_config = orch.run()
+```
+
+---
+
+## Ensemble and policy evolution
+
+`PolicyManager` runs as a loop callback. On each DORMANT event, `MetaController` evaluates the generalization gap (train minus val, normalised) and its slope, and the validation improvement rate, then issues one of: SPAWN, PRUNE, or STOP. Spawned variants are cloned from the best checkpoint with perturbed hyperparameters. `EnsembleAgent` wraps all active variants behind the `BaseAgent` interface, with weighted action averaging.
+
+```python
+from tensor_optix import PolicyManager
 
 pm = PolicyManager(registry, max_spawns=4)
 cb = pm.as_callback(agent, agent_factory=make_agent)
 cb.set_stop_fn(opt.stop)
 opt.add_callback(cb)
 opt.run()
-# When market regime shifts, DORMANT fires → MetaController spawns a variant
-# with perturbed hyperparams → ensemble diversifies across regime hypotheses
-```
-
-**What tensor-optix provides here:** val-driven checkpointing prevents saving a model that overfits recent price action; rollback catches regime breaks before they compound; policy spawning creates ensemble variants that collectively cover multiple regimes.
-
----
-
-### Robotics & Continuous Control
-
-Locomotion tasks (BipedalWalker, MuJoCo Ant, custom robot) collapse mid-training when the critic diverges. A fixed training loop has no recovery path. tensor-optix detects the collapse and rolls back automatically.
-
-```python
-from tensor_optix.algorithms.torch_sac import TorchSACAgent
-from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
-
-# SAC for stochastic envs, TD3 for dense-reward deterministic locomotion
-agent = TorchSACAgent(actor=actor, critic1=c1, critic2=c2, action_dim=action_dim,
-                      actor_optimizer=..., critic_optimizer=..., alpha_optimizer=...,
-                      hyperparams=hp, device="auto")
-
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
-    rollback_on_degradation=True,
-    dormant_threshold=8,              # recover fast  -  off-policy collapse is sharp
-    min_episodes_before_dormant=30,   # let Q-function stabilise before evaluating plateau
-    checkpoint_score_fn=lambda a: eval_deterministic(a, env_id, n_eps=5, seed=42),
-)
-pm = PolicyManager(registry, max_spawns=3)
-cb = pm.as_callback(agent, agent_factory=make_agent)
-cb.set_stop_fn(opt.stop)
-opt.run()
-```
-
-**What tensor-optix provides here:** collapse detection + rollback replaces the "restart and hope" workflow; adaptive SPSA tunes `tau` and `gamma` online as the Q-function matures; external `checkpoint_score_fn` avoids saving mid-collapse snapshots.
-
----
-
-### Game AI & Atari
-
-Discrete action games benefit from sample-efficient algorithms. Rainbow DQN with all six improvements is one line. The async actor-learner scales throughput linearly with CPU cores.
-
-```python
-from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
-from tensor_optix.distributed import AsyncActorLearner
-
-# Option A: Rainbow DQN  -  best sample efficiency for discrete action games
-q_net = RainbowQNetwork(obs_dim=obs_dim, n_actions=n_actions,
-                         hidden_size=256, n_atoms=51, v_min=-10.0, v_max=10.0)
-agent = TorchRainbowDQNAgent(q_network=q_net, n_actions=n_actions,
-                              optimizer=torch.optim.Adam(q_net.parameters(), lr=6.25e-5),
-                              hyperparams=hp, n_atoms=51, v_min=-10.0, v_max=10.0)
-
-# Option B: IMPALA async actor-learner  -  4× throughput, same convergence
-learner = AsyncActorLearner(
-    actor=actor, critic=critic, optimizer=optimizer,
-    env_factory=lambda: gym.make("ALE/Pong-v5"),
-    n_actors=8, trajectory_len=64, seed=0,
-)
-stats = learner.run(max_steps=10_000_000)
-print(f"{stats['steps_per_second']:.0f} steps/s")
-```
-
-**What tensor-optix provides here:** Rainbow handles the exploration/exploitation problem across sparse-reward levels; the async learner saturates CPU cores without any infrastructure code; convergence detection stops training once the agent has solved the game rather than running a fixed 10M step budget.
-
----
-
-### Industrial & HVAC Control
-
-Control systems have slow, expensive simulators and no tolerance for parameter drift. SPSA adapts hyperparams online in just two episodes per update, no grid search needed.
-
-```python
-class HVACAgent(BaseAgent):
-    """Custom control agent  -  tensor-optix owns the loop, you own the policy."""
-    def act(self, obs): ...
-    def learn(self, episode_data): ...
-    def get_hyperparams(self): ...
-    def set_hyperparams(self, hp): ...
-    def save_weights(self, path): ...
-    def load_weights(self, path): ...
-
-opt = RLOptimizer(
-    agent=HVACAgent(),
-    pipeline=BatchPipeline(env=HVACSimulator(), agent=agent, window_size=96),  # 96 = 8h @ 5min steps
-    optimizer=SPSAOptimizer(param_bounds={
-        "setpoint_gain":  (0.1, 2.0),
-        "integral_coef":  (0.01, 0.5),
-        "comfort_weight": (0.5, 5.0),
-    }),
-    checkpoint_score_fn=lambda a: simulate_week(a, seed=0),  # week-long holdout eval
-    verbose=True,
-)
-opt.run()
-```
-
-**What tensor-optix provides here:** SPSA tunes control parameters with only 2 simulator rollouts per gradient estimate, far cheaper than grid search over a slow HVAC sim; checkpoint scoring on a full held-out week prevents saving a policy that game-theorises the training schedule.
-
----
-
-### Partially Observable Environments
-
-Environments where the agent can't see the full state (POMDPs, multi-step signal processing, robotics with proprioception only) need memory. Recurrent PPO carries LSTM hidden state across steps automatically.
-
-```python
-from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
-
-agent = TorchRecurrentPPOAgent(
-    obs_dim=obs_dim,
-    n_actions=n_actions,
-    hidden_size=128,       # LSTM hidden dimension
-    hyperparams=hp,
-    device="auto",
-)
-
-# act() and learn() carry hidden state internally  -  same interface as all other agents
-pipeline = BatchPipeline(env=gym.make("PartiallyObservableMaze-v0"),
-                          agent=agent, window_size=512)
-opt = RLOptimizer(agent=agent, pipeline=pipeline)
-opt.run()
-```
-
-**What tensor-optix provides here:** hidden state is stored per step in the rollout buffer and reset at episode boundaries automatically, no BPTT truncation bookkeeping; the same `RLOptimizer` loop, callbacks, and `PolicyManager` work unchanged with recurrent agents.
-
----
-
-**Requirements:** Python >= 3.11, Gymnasium >= 1.0, NumPy >= 1.24.
-The core loop, PolicyManager, and all ensemble/evolution logic are framework-free.
-`pip install tensor-optix` installs only the framework-agnostic core.  Install the ML
-framework extra(s) that match your platform — e.g. `tensor-optix[tensorflow]` or
-`tensor-optix[torch]` — before importing framework-specific agents.
-
----
-
-### Installation by platform
-
-#### Linux / WSL2, NVIDIA GPU (CUDA)
-
-```bash
-# TensorFlow with CUDA
-pip install tensor-optix[tensorflow-gpu,cuda]
-
-# PyTorch with CUDA 12.8
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install tensor-optix[torch]
-
-# Both frameworks + CUDA tools
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install tensor-optix[tensorflow-gpu,torch,cuda]
-```
-
-#### Linux / WSL2, CPU only
-
-```bash
-# TensorFlow (CPU)
-pip install tensor-optix[tensorflow]
-
-# PyTorch (CPU)
-pip install tensor-optix[torch]
-
-# Both frameworks
-pip install tensor-optix[tensorflow,torch]
-```
-
-#### Windows, NVIDIA GPU (CUDA)
-
-> **Note:** `tensorflow[and-cuda]` is not supported on native Windows. Use the CPU TensorFlow build or run under WSL2 for GPU TensorFlow support.
-
-```bash
-# PyTorch with CUDA 12.8 (cmd / PowerShell)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install tensor-optix[torch]
-
-# TensorFlow CPU on Windows
-pip install tensor-optix[tensorflow]
-```
-
-#### Windows, CPU only
-
-```bash
-pip install tensor-optix[tensorflow,torch]
-```
-
-#### JAX / Flax (any platform)
-
-```bash
-pip install tensor-optix[jax]
-```
-
-#### Environment extras (Atari, MuJoCo, Box2D)
-
-```bash
-pip install tensor-optix[atari]
-pip install tensor-optix[mujoco]
-pip install tensor-optix[box2d]   # also requires: apt install swig  /  brew install swig
-```
-
-#### Everything (CPU builds, all environments)
-
-```bash
-pip install tensor-optix[all]
-```
-
----
-
-## Benchmarks
-
-### Results
-
-All runs: 3 seeds, same architecture, same starting hyperparameters.  
-Baseline = fixed step budget, no auto-tuning. tensor-optix = autonomous loop with AdaptiveOptimizer.
-
-**CartPole-v1, DQN (discrete)**
-
-| Metric | Baseline | tensor-optix | Δ |
-|---|---|---|---|
-| Final eval score | 241.9 | 499.3 | +106% |
-| Solved (≥ 475) | 2 / 3 | 3 / 3 | |
-
-**Acrobot-v1, PPO (discrete)**
-
-| Metric | Baseline | tensor-optix | Δ |
-|---|---|---|---|
-| Steps to threshold | 47.8k ±9.7k | 34.1k ±9.7k | −29% |
-| Final eval score | −78.3 ±5.9 | −74.8 ±0.9 | +4% |
-| Score variance | ±5.9 | ±0.9 | −85% |
-| Solved (≥ −100) | 3 / 3 | 3 / 3 | |
-
-The variance reduction on Acrobot (±5.9 → ±0.9) reflects the rollback and adaptive optimizer
-stabilising training across seeds that vanilla PPO handles inconsistently.
-
-### Run it yourself
-
-```bash
-# Quick  -  CartPole + Acrobot, 1 seed each
-uv run python benchmarks/benchmark.py --envs cartpole acrobot --seeds 0
-
-# Full  -  all 5 environments, 3 seeds
-uv run python benchmarks/benchmark.py
-```
-
-Additional flags:
-```
---optix-only       skip baseline, run tensor-optix only
---no-plot          skip matplotlib chart
---verbose          print per-episode output
---seeds 0 1 2      override seeds
-```
-
----
-
-## Quick Start
-
-### TensorFlow PPO
-
-```python
-import tensorflow as tf
-import gymnasium as gym
-from tensor_optix import RLOptimizer, TFPPOAgent, BatchPipeline, HyperparamSet
-
-actor = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(4,)),
-    tf.keras.layers.Dense(64, activation="tanh"),
-    tf.keras.layers.Dense(64, activation="tanh"),
-    tf.keras.layers.Dense(2),                    # logits, one per action
-])
-critic = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(4,)),
-    tf.keras.layers.Dense(64, activation="tanh"),
-    tf.keras.layers.Dense(64, activation="tanh"),
-    tf.keras.layers.Dense(1),                    # scalar value estimate
-])
-
-agent = TFPPOAgent(
-    actor=actor,
-    critic=critic,
-    optimizer=tf.keras.optimizers.Adam(3e-4),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4,
-        "clip_ratio":    0.2,
-        "entropy_coef":  0.01,
-        "vf_coef":       0.5,
-        "gamma":         0.99,
-        "gae_lambda":    0.95,
-        "n_epochs":      10,
-        "minibatch_size": 64,
-    }, episode_id=0),
-)
-
-env      = gym.make("CartPole-v1")
-pipeline = BatchPipeline(env=env, agent=agent, window_size=2048)
-
-opt = RLOptimizer(agent=agent, pipeline=pipeline)
-opt.run()  # runs until convergence, auto-tunes hyperparams, saves best checkpoint
-```
-
-### PyTorch PPO
-
-```python
-import torch
-import torch.nn as nn
-import gymnasium as gym
-from tensor_optix import RLOptimizer, BatchPipeline, HyperparamSet
-from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
-
-obs_dim, n_actions = 4, 2
-
-actor  = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, n_actions))
-critic = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, 1))
-
-agent = TorchPPOAgent(
-    actor=actor,
-    critic=critic,
-    optimizer=torch.optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()), lr=3e-4
-    ),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
-        "gamma": 0.99, "gae_lambda": 0.95, "n_epochs": 10, "minibatch_size": 64,
-    }, episode_id=0),
-)
-
-pipeline = BatchPipeline(env=gym.make("CartPole-v1"), agent=agent, window_size=2048)
-opt = RLOptimizer(agent=agent, pipeline=pipeline)
-opt.run()
-```
-
----
-
-## Built-in Algorithms
-
-### PPO, Proximal Policy Optimization
-
-Discrete action spaces. Actor + critic are separate models.
-
-```python
-from tensor_optix.algorithms.tf_ppo import TFPPOAgent        # TensorFlow
-from tensor_optix.algorithms.torch_ppo import TorchPPOAgent  # PyTorch (auto-detects CUDA)
-```
-
-**What it implements:**
-- GAE-λ advantage estimation with episode-boundary handling
-- Clipped surrogate objective: `L = min(r·A, clip(r, 1−ε, 1+ε)·A)`
-- Value function loss (MSE) with configurable coefficient
-- Entropy bonus for exploration regularization
-- n epochs of shuffled minibatch gradient descent per rollout
-- Global gradient norm clipping
-
-**Hyperparams exposed to the tuner:**
-
-| Key | Default | Tune range | Notes |
-|-----|---------|------------|-------|
-| `learning_rate` | `3e-4` | `1e-4 – 3e-3` | Log-scale; most sensitive param, use `log_float` in `TrialOrchestrator` |
-| `clip_ratio` | `0.2` | `0.1 – 0.3` | Higher = larger policy steps; >0.3 destabilises training |
-| `entropy_coef` | `0.01` | `0.0 – 0.05` | Keep ≥ 0.001 to prevent premature entropy collapse |
-| `vf_coef` | `0.5` | `0.25 – 1.0` | Weight of value loss relative to policy loss |
-| `gamma` | `0.99` | `0.95 – 0.999` | Lower for short-horizon or dense-reward tasks |
-| `gae_lambda` | `0.95` | `0.9 – 1.0` | 0 = pure TD bootstrap, 1 = full Monte Carlo return |
-| `n_epochs` | `10` | `3 – 15` | More epochs = better sample use; too many = rollout overfitting |
-| `minibatch_size` | `64` | `32 – 256` | Larger = less gradient noise, better GPU utilisation |
-| `max_grad_norm` | `0.5` | `0.3 – 1.0` | Raise if gradients are consistently hitting the clip |
-
----
-
-### PPO Continuous, Gaussian Policy (Continuous Actions)
-
-Continuous action spaces. Squashed Gaussian actor with learned log-std.
-
-```python
-from tensor_optix.algorithms.tf_ppo_continuous import TFGaussianPPOAgent        # TensorFlow
-from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent  # PyTorch
-```
-
-**What it adds over discrete PPO:**
-- Gaussian policy head outputs `[mean || log_std]`, `action_dim * 2` outputs
-- Actions sampled as `a = tanh(mean + std * ε)`, squashed to `(−1, 1)`
-- Log-prob corrected for tanh squashing (numerically stable)
-- `action_dim` required at construction
-
-```python
-import torch.nn as nn
-from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
-
-obs_dim, act_dim = 8, 2   # e.g. LunarLanderContinuous-v3
-
-actor  = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, act_dim * 2))
-critic = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, 1))
-
-agent = TorchGaussianPPOAgent(
-    actor=actor, critic=critic,
-    optimizer=torch.optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()), lr=3e-4
-    ),
-    action_dim=act_dim,
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
-        "gamma": 0.99, "gae_lambda": 0.95, "n_epochs": 10, "minibatch_size": 64,
-    }, episode_id=0),
-)
-```
-
----
-
-### DQN, Deep Q-Network
-
-Discrete action spaces. Single Q-network; target network updated periodically.
-
-```python
-from tensor_optix.algorithms.tf_dqn import TFDQNAgent        # TensorFlow
-from tensor_optix.algorithms.torch_dqn import TorchDQNAgent  # PyTorch (auto-detects CUDA)
-```
-
-**What it implements:**
-- Experience replay buffer (circular)
-- Target network with hard periodic updates
-- Epsilon-greedy exploration with multiplicative decay
-- TD loss: `MSE(Q(s,a), r + γ max Q_target(s',·))`
-
-```python
-q_net = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(obs_dim,)),
-    tf.keras.layers.Dense(64, activation="relu"),
-    tf.keras.layers.Dense(n_actions),    # Q-values for all actions
-])
-
-agent = TFDQNAgent(
-    q_network=q_net,
-    n_actions=n_actions,
-    optimizer=tf.keras.optimizers.Adam(3e-4),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "gamma": 0.99,
-        "epsilon": 1.0, "epsilon_min": 0.05, "epsilon_decay": 0.995,
-        "batch_size": 64, "target_update_freq": 100,
-        "replay_capacity": 100_000,
-        "per_alpha": 0.0,        # 0 = uniform replay; 1 = full prioritized
-        "per_beta":  0.4,        # IS correction exponent
-        "n_step":    1,          # multi-step TD return length
-    }, episode_id=0),
-)
-```
-
----
-
-### SAC, Soft Actor-Critic
-
-Continuous action spaces. Squashed Gaussian actor, twin critics, auto-entropy tuning.
-
-```python
-from tensor_optix.algorithms.tf_sac import TFSACAgent        # TensorFlow
-from tensor_optix.algorithms.torch_sac import TorchSACAgent  # PyTorch (auto-detects CUDA)
-```
-
-**What it implements:**
-- Reparameterized squashed Gaussian: `a = tanh(μ + σε)`, actions ∈ (−1, 1)
-- Clipped double-Q (twin critics) to reduce overestimation bias
-- Soft Polyak target network updates: `θ_tgt ← τθ + (1−τ)θ_tgt`
-- Auto-entropy temperature: learnable `log_α`, target entropy = `−dim(A)`
-- Off-policy experience replay
-
-```python
-action_dim = 6   # e.g. MuJoCo Ant
-
-actor   = tf.keras.Sequential([        # obs → [mean || log_std], shape [batch, 2*action_dim]
-    tf.keras.layers.Input(shape=(obs_dim,)),
-    tf.keras.layers.Dense(256, activation="relu"),
-    tf.keras.layers.Dense(action_dim * 2),
-])
-critic1 = tf.keras.Sequential([        # [obs || action] → Q-value
-    tf.keras.layers.Input(shape=(obs_dim + action_dim,)),
-    tf.keras.layers.Dense(256, activation="relu"),
-    tf.keras.layers.Dense(1),
-])
-critic2 = tf.keras.Sequential([...])   # independent weights (twin-Q)
-
-agent = TFSACAgent(
-    actor=actor, critic1=critic1, critic2=critic2,
-    action_dim=action_dim,
-    actor_optimizer=tf.keras.optimizers.Adam(3e-4),
-    critic_optimizer=tf.keras.optimizers.Adam(3e-4),
-    alpha_optimizer=tf.keras.optimizers.Adam(3e-4),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "gamma": 0.99,
-        "tau": 0.005, "batch_size": 256,
-        "replay_capacity": 1_000_000,
-    }, episode_id=0),
-)
-```
-
----
-
-### TD3, Twin Delayed Deep Deterministic Policy Gradient
-
-Continuous action spaces. Deterministic actor, twin critics, target policy smoothing, delayed actor updates.
-
-```python
-from tensor_optix.algorithms.torch_td3 import TorchTD3Agent  # PyTorch
-```
-
-**What it adds over SAC:**
-- Deterministic policy (no entropy term), lower variance, better on dense-reward locomotion
-- Target policy smoothing: adds clipped Gaussian noise to target actions to prevent value over-fitting to narrow peaks
-- Delayed actor updates: critic updated every step, actor updated every `policy_delay` steps (default 2)
-- Twin-Q minimization over both critics (same as SAC)
-
-```python
-import torch.nn as nn
-from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
-
-obs_dim, act_dim = 24, 4   # e.g. BipedalWalker-v3
-
-actor   = nn.Sequential(nn.Linear(obs_dim, 256), nn.ReLU(), nn.Linear(256, act_dim), nn.Tanh())
-critic1 = nn.Sequential(nn.Linear(obs_dim + act_dim, 256), nn.ReLU(), nn.Linear(256, 1))
-critic2 = nn.Sequential(nn.Linear(obs_dim + act_dim, 256), nn.ReLU(), nn.Linear(256, 1))
-
-agent = TorchTD3Agent(
-    actor=actor, critic1=critic1, critic2=critic2,
-    action_dim=act_dim,
-    actor_optimizer=torch.optim.Adam(actor.parameters(), lr=3e-4),
-    critic_optimizer=torch.optim.Adam(
-        list(critic1.parameters()) + list(critic2.parameters()), lr=3e-4
-    ),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "gamma": 0.99, "tau": 0.005,
-        "batch_size": 256, "policy_delay": 2,
-        "target_noise": 0.2, "noise_clip": 0.5,
-        "expl_noise": 0.1, "replay_capacity": 1_000_000,
-    }, episode_id=0),
-)
-```
-
----
-
-### Rainbow DQN
-
-Discrete action spaces. Combines six DQN improvements: Double Q, Dueling networks, Prioritized Experience Replay, n-step returns, Noisy Networks, and Distributional RL.
-
-```python
-from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
-```
-
-**What it implements (all six Rainbow components):**
-- **Double Q**, target actions from online net, values from target net (reduces overestimation)
-- **Dueling**, separate value and advantage streams; advantage-mean subtraction prevents identifiability issues
-- **PER**, SumTree prioritized replay with IS-weight correction; priority exponent `α`, correction exponent `β`
-- **n-step**, multi-step bootstrap targets; trades variance for bias, dramatically speeds up sparse-reward environments
-- **Noisy Nets**, factorized Gaussian noise on linear layers replaces ε-greedy; exploration driven by learned uncertainty
-- **Categorical / C51**, distributional Q as a 51-atom categorical distribution; KL loss instead of MSE
-
-```python
-obs_dim, n_actions = 8, 4
-
-q_net = RainbowQNetwork(obs_dim=obs_dim, n_actions=n_actions,
-                         hidden_size=256, n_atoms=51,
-                         v_min=-10.0, v_max=10.0)
-
-agent = TorchRainbowDQNAgent(
-    q_network=q_net, n_actions=n_actions,
-    optimizer=torch.optim.Adam(q_net.parameters(), lr=6.25e-5),
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 6.25e-5, "gamma": 0.99,
-        "n_step": 3,            # multi-step return length
-        "per_alpha": 0.5,       # PER priority exponent
-        "per_beta": 0.4,        # IS-weight correction exponent
-        "batch_size": 32,
-        "target_update_freq": 1000,
-        "replay_capacity": 100_000,
-    }, episode_id=0),
-    n_atoms=51, v_min=-10.0, v_max=10.0,
-)
-```
-
----
-
-### Recurrent PPO, LSTM Actor-Critic
-
-Discrete action spaces. Hidden state carried across episode steps; handles partial observability and sequence-structured tasks.
-
-```python
-from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
-```
-
-**What it adds over standard PPO:**
-- `LSTMActorCritic` module, shared LSTM trunk, separate actor/critic heads
-- Hidden state `(h, c)` carried across episode steps and reset at episode boundaries
-- Rollout buffer stores per-step hidden states, no BPTT truncation artifacts
-- Same clipped surrogate objective as PPO; hidden state dimension configurable
-
-```python
-from tensor_optix.algorithms.torch_recurrent_ppo import TorchRecurrentPPOAgent
-
-obs_dim, n_actions, hidden_size = 4, 2, 64
-
-agent = TorchRecurrentPPOAgent(
-    obs_dim=obs_dim,
-    n_actions=n_actions,
-    hidden_size=hidden_size,
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
-        "vf_coef": 0.5, "gamma": 0.99, "gae_lambda": 0.95,
-        "n_epochs": 4, "minibatch_size": 64,
-    }, episode_id=0),
-    device="auto",
-)
-# act() carries hidden state internally  -  same BaseAgent interface
-action = agent.act(obs)
-```
-
----
-
-### JAX / Flax Adapter
-
-Discrete action spaces. `FlaxAgent` base and `FlaxPPOAgent` implement the same `BaseAgent` interface as all PyTorch/TF algorithms using Flax NNX + optax.
-
-```python
-# pip install tensor-optix[jax]
-from tensor_optix.adapters.jax.flax_agent    import FlaxAgent
-from tensor_optix.adapters.jax.flax_evaluator import FlaxEvaluator
-from tensor_optix.algorithms.flax_ppo         import FlaxPPOAgent
-```
-
-**Key properties:**
-- `nnx.value_and_grad` differentiates through the combined actor+critic in one pass, no separate backward calls per head
-- `nnx.Optimizer(model, optax.adam(lr), wrt=nnx.Param)`, only trainable `Param` variables are updated
-- Weights serialised as a plain nested `dict` via `nnx.to_pure_dict(nnx.state(model))` and restored with `nnx.replace_by_pure_dict` + `nnx.update`, pickle-safe, version-stable
-- Convergence-parity with `TorchPPOAgent` on CartPole-v1 (within 10%, verified by test suite)
-
-```python
-import gymnasium as gym
-from tensor_optix import HyperparamSet
-from tensor_optix.algorithms.flax_ppo import FlaxPPOAgent
-
-env = gym.make("CartPole-v1")
-obs_dim  = env.observation_space.shape[0]   # 4
-n_actions = env.action_space.n              # 2
-
-agent = FlaxPPOAgent(
-    obs_dim=obs_dim,
-    n_actions=n_actions,
-    hyperparams=HyperparamSet(params={
-        "learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coef": 0.01,
-        "vf_coef": 0.5, "gamma": 0.99, "gae_lambda": 0.95,
-        "n_epochs": 10, "minibatch_size": 64,
-    }, episode_id=0),
-    hidden_size=64,
-    seed=0,
-)
-
-# Drop-in with any existing tensor-optix loop:
-from tensor_optix import BatchPipeline, RLOptimizer
-from tensor_optix.adapters.jax.flax_evaluator import FlaxEvaluator
-
-pipeline = BatchPipeline(env=env, agent=agent, window_size=2048)
-opt = RLOptimizer(agent=agent, pipeline=pipeline, evaluator=FlaxEvaluator())
-opt.run()
-```
-
----
-
-### Distributed Training, Async Actor-Learner (IMPALA + V-trace)
-
-IMPALA-style asynchronous actor-learner for PyTorch discrete policies. N actor processes collect trajectories in parallel using POSIX shared memory, learner weight updates are instantly visible to all actors with zero serialization overhead.
-
-```python
-# pip install tensor-optix[torch]
-from tensor_optix.distributed import AsyncActorLearner, compute_vtrace_targets
-```
-
-**Architecture:**
-
-```mermaid
-flowchart LR
-    SM["Shared Memory\nactor weights\ncritic weights\n(share_memory=True)"]
-
-    subgraph Actors["Actor Processes (×N)"]
-        A0[Actor 0]
-        A1[Actor 1]
-        AN[Actor N]
-    end
-
-    subgraph Learner["Learner (main process)"]
-        VT[V-trace targets]
-        GU[gradient update]
-        OS[optimizer.step]
-    end
-
-    SM -->|lock-free reads| Actors
-    A0 -->|trajectory| VT
-    A1 -->|trajectory| VT
-    AN -->|trajectory| VT
-    VT --> GU --> OS -->|write new weights| SM
-```
-
-**Off-policy correction (V-trace):**
-```
-ρ̄_t = min(ρ̄, π_θ(a_t|s_t) / π_μ(a_t|s_t))   ← clipped IS weight
-v_t  = V(s_t) + δ_t + γ c̄_t (v_{t+1} − V(s_{t+1}))
-```
-Actors may lag behind the current learner policy (μ ≠ θ). V-trace corrects for this staleness so the learner can safely train on trajectories from any actor generation.
-
-**Throughput:** 4 actors achieve ≥ 2× single-actor sample throughput in tests on CartPole-v1.
-
-```python
-import torch.nn as nn
-import gymnasium as gym
-from tensor_optix.distributed import AsyncActorLearner
-
-obs_dim, n_actions = 4, 2
-
-actor  = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, n_actions))
-critic = nn.Sequential(nn.Linear(obs_dim, 64), nn.Tanh(), nn.Linear(64, 1))
-optimizer = torch.optim.Adam(
-    list(actor.parameters()) + list(critic.parameters()), lr=3e-4
-)
-
-learner = AsyncActorLearner(
-    actor=actor,
-    critic=critic,
-    optimizer=optimizer,
-    env_factory=lambda: gym.make("CartPole-v1"),
-    n_actors=4,
-    trajectory_len=64,
-    gamma=0.99,
-    rho_bar=1.0,   # V-trace IS clip ρ̄
-    c_bar=1.0,     # V-trace trace clip c̄
-    entropy_coef=0.01,
-    seed=0,
-)
-
-stats = learner.run(max_steps=500_000)
-# stats: {total_steps, total_updates, steps_per_second, elapsed}
-print(f"Throughput: {stats['steps_per_second']:.0f} steps/s")
-```
-
-**Platform note:** automatically selects `fork` on Linux and `spawn` on Windows / macOS.
-On non-Linux platforms the actor/critic models must have `share_memory()` called and
-`env_factory` must be picklable (module-level function or `functools.partial`).
-
----
-
-### Live Terminal Dashboard
-
-`RichDashboardCallback` renders a live terminal panel during training using the [Rich](https://github.com/Textualize/rich) library.
-
-```python
-# pip install rich   (optional dependency)
-from tensor_optix.callbacks import RichDashboardCallback
-
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
-    callbacks=[RichDashboardCallback(refresh_rate=2)],
-)
-opt.run()
-```
-
-The dashboard shows:
-- Real-time score sparkline (last 20 eval points)
-- Current loop state (ACTIVE / COOLING / DORMANT)
-- Live hyperparameter values
-- Smoothed score, best score, episode count
-- Estimated convergence progress
-
-No extra configuration required, pass it as a callback and it wires itself to the `LoopCallback` hooks automatically.
-
----
-
-### Parallel Environments, VectorBatchPipeline
-
-Run N environments simultaneously. Increases sample throughput N× over a single `BatchPipeline`.
-
-```python
-import gymnasium as gym
-from tensor_optix.pipeline.vector_pipeline import VectorBatchPipeline
-
-env_fns  = [lambda: gym.make("CartPole-v1")] * 8
-pipeline = VectorBatchPipeline(env_fns=env_fns, window_size=256)
-
-# Async (subprocess-based) for CPU-bound envs:
-pipeline = VectorBatchPipeline(env_fns=env_fns, window_size=256, async_envs=True)
-```
-
----
-
-### Observation & Reward Normalization
-
-```python
-from tensor_optix.core.normalizers import ObsNormalizer, RewardNormalizer
-
-obs_norm    = ObsNormalizer(obs_shape=(obs_dim,), clip=10.0)
-
-# Update stats from a collected rollout, then normalize in act():
-obs_norm.update(obs_batch)
-normed_obs = obs_norm.normalize(raw_obs)
-```
-
-`RewardNormalizer` is most useful with on-policy agents. Pass it directly to the agent, it handles the step/reset cycle at episode boundaries internally, so you don't have to track done flags manually:
-
-```python
-from tensor_optix.core.normalizers import RewardNormalizer
-
-reward_norm = RewardNormalizer(gamma=0.99, clip=10.0)
-
-agent = TFPPOAgent(
-    actor=actor, critic=critic, optimizer=optimizer, hyperparams=hp,
-    reward_normalizer=reward_norm,   # resets at done, normalizes before GAE
-)
-```
-
-The agent calls `step(r)` and `reset()` for each reward in the window during `learn()`, then normalizes the full batch before GAE. This is a correctness requirement for multi-episode windows, forgetting to reset the running return across episode boundaries biases the return variance estimate.
-
----
-
-### Extend Any Algorithm
-
-All algorithms implement `BaseAgent`. Subclass to add domain-specific logic without reimplementing PPO:
-
-```python
-class TradingPPO(TFPPOAgent):
-    """Adds action distribution logging to standard PPO."""
-
-    def learn(self, episode_data):
-        diag = super().learn(episode_data)           # full PPO update
-        obs  = tf.cast(episode_data.observations[:256], tf.float32)
-        probs = tf.nn.softmax(self._actor(obs, training=False))
-        probs_mean = tf.reduce_mean(probs, axis=0).numpy()
-        diag["p_flat"]  = float(probs_mean[0])
-        diag["p_long"]  = float(probs_mean[1])
-        diag["p_short"] = float(probs_mean[2])
-        return diag
-```
-
----
-
-## The Loop Interface
-
-The core loop calls exactly **six methods** on any agent. Nothing else is assumed.
-
-```python
-class BaseAgent(ABC):
-    def act(self, observation) -> any: ...         # any action type
-    def learn(self, episode_data) -> dict: ...     # any algorithm
-    def get_hyperparams(self) -> HyperparamSet: ...
-    def set_hyperparams(self, hp: HyperparamSet): ...
-    def save_weights(self, path: str): ...
-    def load_weights(self, path: str): ...
-```
-
-Any model, RL algorithms, evolutionary strategies, supervised sequence models, online forecasters, plugs in by implementing these six methods. No specific framework, action space, or learning paradigm is assumed.
-
----
-
-## How the Autonomous Loop Works
-
-Every episode flows through four components in sequence. Understanding this pipeline is the key to configuring tensor-optix effectively.
-
-```mermaid
-flowchart TD
-    A([Episode N]) --> B[agent.learn + evaluator.score]
-    B --> C{BackoffScheduler}
-
-    C -->|improvement detected| D[ACTIVE\ninterval resets to 1]
-    C -->|no improvement| E[COOLING\ninterval ×= backoff_factor]
-    E -->|consecutive plateau\n≥ dormant_threshold| F[DORMANT]
-
-    D -->|next episode| A
-    E -->|next episode| A
-
-    F --> G{MetaController}
-    G -->|val improving| H[SPAWN]
-    G -->|gap high & worsening| I[PRUNE]
-    G -->|budget exhausted| J[STOP]
-    G -->|otherwise| K[NO_OP  -  resume training]
-    K -->|next episode| A
-
-    H --> L[PolicyManager]
-    L --> L1[1. rollback if degraded]
-    L1 --> L2[2. clone best checkpoint]
-    L2 --> L3[3. perturb hyperparams σ]
-    L3 --> L4[4. add variant to ensemble]
-    L4 --> L5[5. prune if over size limit]
-    L5 -->|budget remaining| A
-    L5 -->|budget exhausted| J
-
-    J --> M([best weights restored\ntraining complete])
-```
-
-**Key insight:** `BackoffScheduler` only fires DORMANT events, it has no opinion on what to do next. `MetaController` makes that decision based on generalization signals. `PolicyManager` executes it. This separation means you can swap or bypass any layer without touching the others.
-
----
-
-## How It Works
-
-### Adaptive Eval Scheduling
-
-One of tensor-optix's core strengths is that **it decides when to evaluate**, not you, and not a fixed schedule.
-
-The `BackoffScheduler` dynamically controls eval frequency based on learning progress:
-
-```
-  [loop] ep=   1  raw=  -67.2  smoothed= -150.6  state=ACTIVE  interval=1
-  [loop] ep=   2  raw= -191.9  smoothed= -129.5  state=ACTIVE  interval=1
-  [loop] ep=   4  raw= -106.8  smoothed= -100.5  state=ACTIVE  interval=2
-  [loop] ep=   6  raw= -258.8  smoothed= -178.6  state=ACTIVE  interval=2
-  [loop] ep=   8  raw=   65.7  smoothed=  -96.6  state=ACTIVE  interval=4
-  [loop] ep=  16  raw=  208.1  smoothed=  136.9  state=ACTIVE  interval=8
-  [loop] ep=  17  raw=  194.8  smoothed=  201.5  state=ACTIVE  interval=1  ← improvement detected, reset
-```
-
-- **No improvement** → interval doubles (2, 4, 8...), more training time between evals, budget spent on learning
-- **Improvement detected** → interval snaps back to 1, dense eval to track the breakthrough
-- **DORMANT** → loop stops, best weights restored automatically
-
-Vanilla frameworks evaluate on a fixed schedule regardless of progress. tensor-optix spends the budget where it matters.
-
-Enable verbose output to see this in action:
-
-```python
-opt = RLOptimizer(agent=agent, pipeline=pipeline, verbose=True)
-```
-
-### The Loop States
-
-```
-ACTIVE   → learning detected, evaluates frequently
-COOLING  → no recent improvement, exponential backoff on eval frequency
-DORMANT  → plateau confirmed  -  training is done, loop stops cleanly
-```
-
-**DORMANT = trained.** Not a fixed episode count, the system backs off evaluation geometrically until improvement stops, then declares convergence and restores the best known weights.
-
-### Backoff Schedule
-
-```
-interval₀ = base_interval
-intervalₙ = min(intervalₙ₋₁ × backoff_factor, max_interval_episodes)
-
-Plateau detected when:  consecutive_no_improvement ≥ plateau_threshold
-DORMANT declared when:  consecutive_no_improvement ≥ dormant_threshold
-```
-
-Every improvement resets the counter. The system accelerates evaluation when learning is happening, backs off when it isn't.
-
-### Hyperparameter Optimization, Two Layers
-
-tensor-optix provides two complementary levels of hyperparameter optimization. They are designed to compose: run `TrialOrchestrator` first to find a good starting configuration, then hand those params to `RLOptimizer` for the final full-budget run with SPSA online adaptation.
-
-#### Layer 1, Online Adaptation (SPSA, within a single run)
-
-The default optimizer is `SPSAOptimizer` (Simultaneous Perturbation Stochastic Approximation). It adapts hyperparameters *during* a training run, episode by episode, responding to non-stationarity in real time.
-
-```
-Episode 1 (probe+):  sample Δ ∈ {−1, +1}ᴺ  (Rademacher vector)
-                     apply θ⁺ = θ + c·Δ,  record score f⁺
-
-Episode 2 (probe−):  apply θ⁻ = θ − c·Δ,  record score f⁻
-
-Gradient estimate:   ĝᵢ = (f⁺ − f⁻) / (2·c·Δᵢ)   ← unbiased for all i simultaneously
-
-Update:              x_new = clip(x + α·ĝ, 0, 1)   ← in normalized [0,1] param space
-                     θ_new = denormalize(x_new)
-```
-
-All probing is done in a normalized `[0, 1]` parameter space, a fixed perturbation scale applies equally to a learning rate of `3e-4` and a clip ratio of `0.2` without manual tuning.
-
-**Probe-aware degradation gating:** during probe episodes, score drops are self-inflicted perturbations, not genuine policy collapses. The loop skips degradation checks while the optimizer is probing.
-
-`BackoffOptimizer` is also available for single-parameter cycling via two-phase finite difference:
-
-```python
-from tensor_optix.optimizers.backoff_optimizer import BackoffOptimizer
-
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
-    optimizer=BackoffOptimizer(param_bounds={
-        "learning_rate": (1e-5, 1e-2),
-        "clip_ratio":    (0.05, 0.4),
-    }),
-)
-```
-
-#### Layer 2, Trial-Level Search (TrialOrchestrator, across independent runs)
-
-`TrialOrchestrator` runs N fully independent `RLOptimizer` trials, each with a different hyperparameter configuration, and uses **Optuna TPE** (Tree-structured Parzen Estimator) to select configurations. It is mathematically the same algorithm used by Stable-Baselines3, CleanRL, and RLlib for RL HPO sweeps.
-
-**When to use it:** before committing to a long training run. Give each trial 10–20% of your final budget, enough to rank configurations, not enough for full training.
-
-```python
-from tensor_optix import TrialOrchestrator, RLOptimizer
-# pip install optuna   (optional dependency)
-
-def make_agent(params: dict) -> BaseAgent:
-    net = tf.keras.Sequential([...])
-    return TFPPOAgent(
-        actor=net, critic=critic_net,
-        optimizer=tf.keras.optimizers.Adam(params["learning_rate"]),
-        hyperparams=HyperparamSet(params=params, episode_id=0),
-    )
-
-def make_pipeline() -> BasePipeline:
-    return BatchPipeline(env_id="LunarLander-v3", n_steps=2048)
-
-orchestrator = TrialOrchestrator(
-    agent_factory=make_agent,
-    pipeline_factory=make_pipeline,
-    param_space={
-        "learning_rate": ("log_float", 1e-4, 3e-3),   # log-uniform (good for lr)
-        "clip_ratio":    ("float",     0.1,  0.3),
-        "entropy_coef":  ("float",     0.001, 0.05),  # 0.001 floor prevents entropy collapse
-        "gamma":         ("float",     0.95, 0.999),
-    },
-    n_trials=20,          # number of independent runs
-    trial_steps=50_000,   # step budget per trial
-)
-best_params, best_score = orchestrator.run()
-
-# Final full-budget run with the best configuration found
-agent = make_agent(best_params)
-optimizer = RLOptimizer(agent=agent, pipeline=make_pipeline(), max_episodes=500)
-optimizer.run()
-```
-
-**Parameter space spec:**
-
-| Spec | Description |
-|---|---|
-| `("float", lo, hi)` | Uniform float in `[lo, hi]` |
-| `("log_float", lo, hi)` | Log-uniform float, use for learning rate, α |
-| `("int", lo, hi)` | Uniform integer |
-| `("log_int", lo, hi)` | Log-uniform integer, use for batch size, buffer size |
-| `("categorical", v1, v2, ...)` | One of the listed values |
-
-**How TPE works:**
-
-TPE fits two kernel density estimates, `p(x | good)` over the top-k% of trials and `p(x | bad)` over the rest. The next configuration is chosen by maximising the acquisition ratio `p(x | good) / p(x | bad)`. This is equivalent to Bayesian optimisation with a non-parametric surrogate, without the O(n³) cost of Gaussian Process inference.
-
-**MedianPruner:** after a short warmup, any trial whose score falls below the median of all trials at the same episode is terminated early. This cuts wall time by stopping clearly bad configurations without committing to a fixed bracket schedule.
-
-Each trial gets an isolated checkpoint directory, no cross-trial interference. The underlying `Optuna` study is accessible via `orchestrator.study` for inspection, plotting, and storage to SQLite for distributed sweeps.
-
-### Adaptive Improvement Margin
-
-A gain of +0.001 on a signal with ±5 noise is not a real improvement. The loop computes an adaptive floor before crediting any score as a new best:
-
-```
-effective_margin = max(user_margin, noise_k × std(recent_scores))
-```
-
-`noise_k = 2.0` by default. Gains below 2σ of recent score noise do not reset backoff, preventing noise-level fluctuations from blocking convergence detection.
-
----
-
-## The Science: Train + Val Together
-
-Without validation, every decision, checkpoint saves, rollbacks, spawn triggers, is made on training data alone. That is overfitting disguised as improvement.
-
-### Validation Pipeline
-
-```python
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=train_pipeline,
-    val_pipeline=val_pipeline,   # held-out  -  agent acts, never learns
-)
-```
-
-On every eval window, the loop runs one val episode (`act()` only, no `learn()`), then calls `evaluator.combine(train_metrics, val_metrics)`:
-
-```
-primary_score        = val_score          ← drives ALL checkpoint and rollback decisions
-generalization_gap   = train_score − val  ← surfaced in every EvalMetrics
-```
-
-Every adaptation decision, rollback, spawn, noise scale, MetaController, is driven by out-of-sample performance, not training performance.
-
-### External Checkpoint Scoring
-
-The training window mean is a noisy signal, it diverges from the true policy quality that matters at deployment. Pass `checkpoint_score_fn` to decouple checkpoint saving from training noise:
-
-```python
-def external_eval(agent) -> float:
-    # deterministic, fixed seed  -  measures true policy quality
-    return eval_policy(agent, env_id="LunarLander-v3", seed=42, n_episodes=5)
-
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
-    checkpoint_score_fn=external_eval,
-)
-```
-
-The best checkpoint is selected by the external score. The training signal still drives convergence detection, only checkpoint saving uses the external eval.
-
-### Three-Signal Adaptive Noise
-
-When spawning a policy variant, the mutation intensity is computed from three signals:
-
-**Signal 1, Val slope (improvement rate)**
-```
-t = clip(slope(val_scores) / max_slope, 0, 1)
-```
-`t → 1` when val is improving strongly. `t → 0` on plateau.
-
-**Signal 2, Generalization gap**
-```
-gap_penalty = clip(mean(train − val) / |mean(val)|, 0, 1)
-```
-Large gap means the model fits training data but not held-out data, explore different solutions.
-
-**Signal 3, Train/val correlation (Pearson)**
-```
-corr_penalty = clip(1 − Pearson(train_scores, val_scores), 0, 1)
-```
-`corr → 1` means train and val move together (healthy). `corr → 0` means train is moving but val isn't, a signal to explore.
-
-**Combined formula:**
-```
-effective_t = t × (1 − 0.5 × gap_penalty) × (1 − 0.5 × corr_penalty)
-noise_scale = max_scale − effective_t × (max_scale − min_scale)
-```
-
-Without a val pipeline, spawn noise adapts to the training improvement ratio:
-```
-σ = base_noise / (1 + improvement_ratio)
-```
-Exploit when improving, explore when stuck.
-
----
-
-## Policy Evolution
-
-### Automatic Rollback
-
-When `run()` returns, the agent **always holds the best known weights**, whether stopped by convergence, budget, or manual `stop()`. This is unconditional and requires no configuration.
-
-For mid-training rollback on degradation:
-
-```python
-opt = RLOptimizer(agent=agent, pipeline=pipeline, rollback_on_degradation=True)
-```
-
-### Spawn Budget, When Is Training Done?
-
-```python
-from tensor_optix import PolicyManager
-
-pm = PolicyManager(registry, max_spawns=3)
-cb = pm.as_callback(agent)
-cb.set_stop_fn(opt.stop)
-
-opt.run()  # returns cleanly when budget is exhausted
-```
-
-When budget is exhausted, a training report is printed automatically:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Training Complete
-  Reason           : Spawn budget exhausted
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Best score       : 0.8732
-  Val score        : 0.8612
-  Generalization   : 0.0120  (train − val)
-  Spawns used      : 3 / 3
-  Pruned agents    : 1
-  Ensemble size    : 3
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### Autonomous Spawning
-
-```python
-def make_agent():
-    return TFPPOAgent(actor=build_actor(), critic=build_critic(),
-                      optimizer=tf.keras.optimizers.Adam(3e-4),
-                      hyperparams=initial_hp)
-
-pm = PolicyManager(registry, max_spawns=5, max_ensemble_size=4)
-cb = pm.as_callback(agent, agent_factory=make_agent)
-cb.set_stop_fn(opt.stop)
-```
-
-On DORMANT: rebalance ensemble weights → rollback if degraded → clone best checkpoint → perturb hyperparams → add to ensemble → prune if over limit → stop when budget exhausted.
-
-### MetaController, Autonomous Decisions
-
-```python
-from tensor_optix import MetaController
-
-cb = pm.as_callback(
-    agent,
-    agent_factory=make_agent,
-    meta_controller=MetaController(
-        gap_threshold=0.3,
-        gap_slope_threshold=0.02,
-        improvement_threshold=0.05,
-    ),
-)
-```
-
-`MetaController` decides `SPAWN / PRUNE / STOP / NO_OP` on each DORMANT event based on generalization gap level, gap slope (overfitting progression), and val improvement rate.
-
-### Ensemble
-
-```python
-from tensor_optix import PolicyManager, EnsembleAgent
-
-pm = PolicyManager(registry)
-pm.add_agent(agent_a, weight=1.0)
-pm.add_agent(agent_b, weight=1.0)
-
-ensemble = EnsembleAgent(pm, primary_agent=agent_a)
-# Actions: a = Σ(wᵢ × aᵢ) / Σ(wᵢ)
-
-opt = RLOptimizer(
-    agent=ensemble,
-    pipeline=BatchPipeline(env=env, agent=ensemble, window_size=2048),
-    callbacks=[pm.as_callback(agent_a)],
-)
-```
-
----
-
-## Custom Evaluator
-
-```python
-from tensor_optix import BaseEvaluator, EpisodeData, EvalMetrics
-import numpy as np
-
-class SharpeEvaluator(BaseEvaluator):
-    def score(self, episode_data: EpisodeData, train_diagnostics: dict) -> EvalMetrics:
-        rewards = np.array(episode_data.rewards)
-        sharpe  = rewards.mean() / (rewards.std() + 1e-8)
-        return EvalMetrics(
-            primary_score=float(sharpe),
-            metrics={"sharpe": float(sharpe), "mean_reward": float(rewards.mean())},
-            episode_id=episode_data.episode_id,
-        )
-
-opt = RLOptimizer(agent=agent, pipeline=pipeline, evaluator=SharpeEvaluator())
-```
-
----
-
-## Live Pipeline
-
-```python
-from tensor_optix import LivePipeline
-
-pipeline = LivePipeline(
-    data_source=MarketFeed(),
-    agent=agent,
-    episode_boundary_fn=LivePipeline.every_n_seconds(300),
-)
 ```
 
 ---
 
 ## Callbacks
 
-### Built-in callbacks
-
 ```python
-from tensor_optix.callbacks import WandbCallback, TensorBoardCallback, RichDashboardCallback
+from tensor_optix.callbacks import RichDashboardCallback, WandbCallback, TensorBoardCallback
 
-# Weights & Biases  -  logs every on_episode_end and on_improvement event
-opt = RLOptimizer(agent=agent, pipeline=pipeline,
-                  callbacks=[WandbCallback(project="my-project")])
-
-# TensorBoard  -  writes to ./runs/ by default
-opt = RLOptimizer(agent=agent, pipeline=pipeline,
-                  callbacks=[TensorBoardCallback(log_dir="./runs/cartpole")])
-
-# Live terminal dashboard (requires `pip install rich`)
-opt = RLOptimizer(agent=agent, pipeline=pipeline,
-                  callbacks=[RichDashboardCallback(refresh_rate=2)])
+opt.add_callback(RichDashboardCallback())        # Rich live terminal panel
+opt.add_callback(WandbCallback(project="run"))
+opt.add_callback(TensorBoardCallback(log_dir="./tb"))
 ```
 
-### Custom callbacks
+Custom callbacks subclass `LoopCallback` and override any of:
 
 ```python
-from tensor_optix import LoopCallback
-
-class MyLogger(LoopCallback):
-    def on_improvement(self, snapshot):
-        print(f"New best: {snapshot.eval_metrics.primary_score:.4f}")
-
-    def on_dormant(self, window_id):
-        print(f"Converged at window {window_id}")
-
-opt = RLOptimizer(agent=agent, pipeline=pipeline, callbacks=[MyLogger()])
+class LoopCallback:
+    def on_loop_start(self) -> None: ...
+    def on_loop_stop(self) -> None: ...
+    def on_episode_end(self, episode_id: int, eval_metrics) -> None: ...
+    def on_improvement(self, snapshot) -> None: ...
+    def on_plateau(self, episode_id: int, state) -> None: ...
+    def on_dormant(self, episode_id: int) -> None: ...
+    def on_degradation(self, episode_id: int, eval_metrics) -> None: ...
+    def on_hyperparam_update(self, old: dict, new: dict) -> None: ...
 ```
-
-Available hooks: `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvement`, `on_plateau`, `on_dormant`, `on_degradation`, `on_hyperparam_update`.
 
 ---
 
-## Full Configuration
+## Distributed training (IMPALA + V-trace)
+
+`AsyncActorLearner` implements IMPALA-style async actor-learner. N actor subprocesses read weights from shared memory (lock-free), collect trajectories, and push them to a queue. The learner dequeues trajectories, applies V-trace importance-sampling correction, and writes updated weights back to shared memory.
 
 ```python
-opt = RLOptimizer(
-    agent=agent,
-    pipeline=pipeline,
+from tensor_optix.distributed import AsyncActorLearner
 
-    # ── Pipelines & components ────────────────────────────────────────────
-    val_pipeline=val_pipeline,              # held-out pipeline; agent acts only, never learns
-    evaluator=None,                         # default: TFEvaluator (or TorchEvaluator for PyTorch)
-    optimizer=None,                         # default: SPSAOptimizer (all params in 2 episodes)
-
-    # ── Checkpointing ─────────────────────────────────────────────────────
-    checkpoint_dir="./checkpoints",         # where snapshots are saved
-    max_snapshots=10,                       # keep only the N best snapshots on disk
-    checkpoint_score_fn=None,               # callable(agent) → float; when set, checkpoint
-                                            # selection uses this external eval instead of the
-                                            # noisy training signal. Use for deterministic evals.
-
-    # ── Budget ────────────────────────────────────────────────────────────
-    max_episodes=None,                      # hard cap; None = run until DORMANT
-
-    # ── Convergence detection (BackoffScheduler) ──────────────────────────
-    base_interval=1,                        # eval every N episodes at the start
-    backoff_factor=2.0,                     # multiply interval by this on each non-improvement
-    max_interval_episodes=100,              # interval cap  -  never wait more than this
-    plateau_threshold=5,                    # consecutive non-improvements → COOLING
-    dormant_threshold=20,                   # consecutive non-improvements → DORMANT (stop)
-                                            # off-policy agents (DQN, SAC) auto-set to 15  - 
-                                            # replay buffer scores are noisier than on-policy
-    score_smoothing=2,                      # rolling mean window applied before comparing scores;
-                                            # filters single-episode noise from convergence signals
-
-    # ── Improvement margin ────────────────────────────────────────────────
-    improvement_margin=0.0,                 # fixed minimum gain to count as improvement
-    noise_k=2.0,                            # adaptive margin multiplier: effective_margin =
-                                            # max(improvement_margin, noise_k × std(recent_scores))
-                                            # increase if the loop stops too early on noisy envs
-    score_window=20,                        # rolling window size for computing the noise floor
-
-    # ── Degradation detection ─────────────────────────────────────────────
-    rollback_on_degradation=False,          # restore best weights when degradation is detected
-                                            # safe for on-policy (PPO); skip for off-policy (DQN/SAC)
-    degradation_threshold=0.95,             # score must drop below best × threshold to fire
-    min_episodes_before_dormant=0,          # don't declare DORMANT before this many evals;
-                                            # auto-set per agent class when left at 0:
-                                            # DQN=60 (epsilon decay floor timing),
-                                            # SAC=30 (Q-function stabilisation)
-    min_episodes_before_degradation=5,      # don't fire degradation before this many evals;
-                                            # prevents false alarms during chaotic early training
-
-    # ── Misc ──────────────────────────────────────────────────────────────
-    callbacks=[],
-    verbose=False,                          # print per-episode eval output (raw, smoothed, state)
+learner = AsyncActorLearner(
+    actor=actor,
+    critic=critic,
+    optimizer=optimizer,
+    env_factory=lambda: gym.make("ALE/Pong-v5"),
+    n_actors=8,
+    trajectory_len=64,
 )
+stats = learner.run(max_steps=10_000_000)
+# stats["steps_per_second"] -> ~4x single-process throughput on CPU
 ```
 
 ---
 
-## Architecture
+## Neuroevo
 
-```
-tensor_optix/
-├── core/
-│   ├── types.py                # EpisodeData, EvalMetrics, HyperparamSet, LoopState
-│   ├── base_agent.py           # BaseAgent  -  6-method contract
-│   ├── base_evaluator.py       # BaseEvaluator  -  score, combine, compare
-│   ├── base_optimizer.py       # BaseOptimizer  -  suggest, on_improvement, on_plateau
-│   ├── base_pipeline.py        # BasePipeline  -  episodes() generator
-│   ├── loop_controller.py      # State machine + main loop
-│   ├── backoff_scheduler.py    # Convergence detection + state transitions
-│   ├── checkpoint_registry.py  # Snapshot storage and manifest
-│   ├── normalizers.py          # RunningMeanStd, ObsNormalizer, RewardNormalizer
-│   ├── trajectory_buffer.py    # compute_gae(), make_minibatches()
-│   ├── noisy_linear.py         # NoisyLinear  -  factorized Gaussian noise (Rainbow)
-│   ├── policy_manager.py       # PolicyManager + PolicyManagerCallback
-│   ├── ensemble_agent.py       # EnsembleAgent  -  multi-policy BaseAgent wrapper
-│   ├── regime_detector.py      # RegimeDetector  -  score-based regime classification
-│   ├── meta_controller.py      # MetaController  -  SPAWN/PRUNE/STOP/NO_OP decisions
-│   ├── her_buffer.py           # HERReplayBuffer  -  Hindsight Experience Replay
-│   └── diagnostic_controller.py# DiagnosticController  -  per-episode metric aggregation
-├── optimizers/
-│   ├── spsa_optimizer.py       # SPSAOptimizer  -  default, all params in 2 episodes
-│   ├── backoff_optimizer.py    # BackoffOptimizer  -  single-param finite difference
-│   ├── momentum_optimizer.py   # MomentumOptimizer  -  gradient-signed momentum
-│   └── pbt_optimizer.py        # PBTOptimizer  -  population-based exploit/explore
-├── adapters/
-│   ├── tensorflow/
-│   │   ├── tf_agent.py         # TFAgent  -  generic REINFORCE / A2C base
-│   │   └── tf_evaluator.py     # TFEvaluator  -  default scorer
-│   ├── pytorch/
-│   │   ├── torch_agent.py      # TorchAgent  -  generic REINFORCE / A2C base
-│   │   └── torch_evaluator.py  # TorchEvaluator  -  default scorer (no TF dep)
-│   └── jax/                    # NEW  -  JAX/Flax adapter
-│       ├── flax_agent.py       # FlaxAgent  -  REINFORCE base, nnx.Optimizer, pickle weights
-│       └── flax_evaluator.py   # FlaxEvaluator  -  total reward scorer
-├── algorithms/
-│   ├── tf_ppo.py               # TFPPOAgent  -  clipped surrogate, GAE-λ, n-epoch minibatch
-│   ├── tf_ppo_continuous.py    # TFGaussianPPOAgent  -  continuous PPO, squashed Gaussian
-│   ├── tf_dqn.py               # TFDQNAgent  -  PER replay, target net, ε-greedy
-│   ├── tf_sac.py               # TFSACAgent  -  twin critics, squashed Gaussian, auto-α
-│   ├── tf_td3.py               # TFTDDAgent  -  deterministic policy, delayed actor, target smoothing
-│   ├── torch_ppo.py            # TorchPPOAgent (CUDA auto-detect)
-│   ├── torch_ppo_continuous.py # TorchGaussianPPOAgent  -  continuous PPO (CUDA auto-detect)
-│   ├── torch_dqn.py            # TorchDQNAgent (CUDA auto-detect)
-│   ├── torch_sac.py            # TorchSACAgent (CUDA auto-detect)
-│   ├── torch_td3.py            # TorchTD3Agent  -  TD3: twin critics, delayed actor, noise smoothing
-│   ├── torch_recurrent_ppo.py  # TorchRecurrentPPOAgent  -  LSTM actor-critic, stateful act()
-│   ├── torch_rainbow_dqn.py    # TorchRainbowDQNAgent  -  Double/Dueling/PER/n-step/Noisy/C51
-│   └── flax_ppo.py             # FlaxPPOAgent  -  PPO via flax.nnx + optax (JAX backend)
-├── distributed/                # NEW  -  async actor-learner
-│   ├── async_learner.py        # AsyncActorLearner  -  IMPALA-style, platform-aware shared memory
-│   └── vtrace.py               # compute_vtrace_targets  -  pure-numpy V-trace IS correction
-├── callbacks/
-│   ├── wandb_callback.py       # WandbCallback  -  logs to Weights & Biases
-│   ├── tensorboard_callback.py # TensorBoardCallback  -  logs to TensorBoard
-│   └── rich_dashboard.py       # RichDashboardCallback  -  live terminal panel (requires rich)
-└── pipeline/
-    ├── batch_pipeline.py       # Continuous stepping, fixed windows
-    ├── live_pipeline.py        # Real-time streaming with reconnect
-    └── vector_pipeline.py      # Parallel envs via gymnasium.vector
-```
+`NeuronGraph` is a mutable directed graph of scalar neurons with variable-delay edges. `GraphAgent` wraps it as a `BaseAgent` with PPO-style weight learning. `TopologyController` mutates the graph live during the training loop.
 
-| Component | Responsibility |
-|-----------|---------------|
-| `TFPPOAgent` / `TorchPPOAgent` | Discrete PPO, GAE, clipping, entropy, n-epoch minibatch |
-| `TFGaussianPPOAgent` / `TorchGaussianPPOAgent` | Continuous PPO, squashed Gaussian actor, same PPO core |
-| `TFDQNAgent` / `TorchDQNAgent` | DQN with PER replay, n-step returns, target net, ε-greedy |
-| `TFSACAgent` / `TorchSACAgent` | SAC, twin critics, auto-entropy, soft target updates |
-| `TFTDDAgent` / `TorchTD3Agent` | TD3, deterministic actor, twin critics, delayed updates, target smoothing |
-| `TorchRecurrentPPOAgent` | LSTM actor-critic PPO, hidden state carried across steps, handles partial observability |
-| `TorchRainbowDQNAgent` | Rainbow DQN, Double/Dueling/PER/n-step/Noisy Nets/C51 (all six improvements) |
-| `FlaxPPOAgent` | PPO via Flax NNX + optax, XLA-compiled, convergence-parity with TorchPPOAgent |
-| `FlaxAgent` | Base agent for any `nnx.Module`, REINFORCE update, pickle-safe weight I/O |
-| `AsyncActorLearner` | IMPALA-style N-actor learner, POSIX shared memory, V-trace off-policy correction |
-| `compute_vtrace_targets` | Pure-numpy V-trace IS correction (Espeholt et al. 2018) |
-| `LoopController` | State machine, episode orchestration, eval, checkpoint |
-| `BackoffScheduler` | Adaptive eval scheduling + convergence detection |
-| `CheckpointRegistry` | Snapshot storage, best-checkpoint manifest |
-| `SPSAOptimizer` | SPSA, all N params in 2 episodes, normalized space (online, within a run) |
-| `BackoffOptimizer` | Two-phase finite difference hyperparameter tuning |
-| `PBTOptimizer` | Population-based exploit/explore hyperparameter tuning |
-| `TrialOrchestrator` | Optuna TPE trial-level HPO, N independent runs, MedianPruner (requires `optuna`) |
-| `PolicyManager` | Rollback, spawn, prune, boost, ensemble weights, adaptive noise |
-| `MetaController` | Rule-based SPAWN/PRUNE/STOP/NO_OP decisions |
-| `EnsembleAgent` | Weighted-average action combining across multiple agents |
-| `RegimeDetector` | Score-based regime classification (trending / ranging / volatile) |
-| `WandbCallback` | Logs scores, hyperparams, and diagnostics to Weights & Biases |
-| `TensorBoardCallback` | Logs to TensorBoard SummaryWriter |
-| `RichDashboardCallback` | Live terminal panel, sparkline, state, hyperparams (requires `rich`) |
-| `VectorBatchPipeline` | Parallel environment rollouts via gymnasium.vector |
-| `ObsNormalizer` | Online running mean/std observation normalization |
-| `RewardNormalizer` | Return-std reward scaling |
-| `TopologyAwareAdam` | Adam wrapper that resets (m, v) state for topology-changed parameters via `notify_topology_change(params)` |
-
----
-
-## Common Pitfalls & Best Practices
-
-### Device management
-
-Every built-in Torch agent (`TorchPPOAgent`, `TorchGaussianPPOAgent`, `TorchDQNAgent`, `TorchSACAgent`) accepts a `device` parameter and moves its networks there on construction. The default is `"auto"`, which selects CUDA if available.
-
-```python
-agent = TorchPPOAgent(actor=actor, critic=critic, optimizer=opt,
-                      hyperparams=hp, device="cuda")   # or "cpu", "auto"
-```
-
-The base `TorchAgent` adapter now also accepts `device="auto"` and applies it consistently in `act()` and `load_weights()`. If you subclass `TorchAgent` directly, pass `device` to `super().__init__()`, otherwise obs tensors and loaded checkpoints default to CPU even on a CUDA machine.
-
-**Watch out:** constructing the optimizer _before_ calling `.to(device)` on the model is safe because optimizers hold references to parameter tensors, not copies. But creating the optimizer _after_ `agent.load_weights()` restores weights to the wrong device can leave parameters split between CPU and GPU, which causes a silent slowdown rather than an error.
-
-### Ensemble memory on GPU
-
-Spawning agents with `PolicyManager.spawn_variant()` or `agent_factory` mode creates new networks on the target device. Calling `prune()` removes agents from the ensemble and automatically calls `agent.teardown()` on each removed agent, which moves its networks to CPU and calls `torch.cuda.empty_cache()`.
-
-If you remove agents from the ensemble by any other means (e.g., rebuilding `_ensemble` manually), call `teardown()` yourself:
-
-```python
-removed = pm.prune(bottom_k=2)   # teardown() is called automatically
-
-# If removing manually:
-agent.teardown()
-```
-
-For long PBT-style runs with frequent spawning, monitor GPU memory with `torch.cuda.memory_allocated()`. If memory grows despite pruning, the likely cause is optimizer state, gradient moments accumulate per parameter. Re-creating the optimizer on each spawn (as the built-in `agent_factory` pattern does) avoids this.
-
-### On-policy vs. off-policy rollback
-
-`rollback_on_degradation=True` is safe for PPO but harmful for DQN and SAC. Off-policy agents accumulate experience in a replay buffer across many policies. Rolling back weights without clearing the buffer means the restored policy immediately trains on transitions it never generated, corrupted Bellman targets drag it back down.
-
-The framework handles this automatically: any agent where `is_on_policy` returns `False` skips the weight rollback even when `rollback_on_degradation=True`. If you write a custom off-policy agent, override the property:
-
-```python
-@property
-def is_on_policy(self) -> bool:
-    return False
-```
-
-### Wiring PolicyManager early stopping
-
-`PolicyManager.as_callback()` returns a `PolicyManagerCallback` that stops training when the spawn budget is exhausted, but only if you wire the stop function:
-
-```python
-pm_cb = pm.as_callback(agent, agent_factory=my_factory)
-rl_opt = RLOptimizer(...)
-pm_cb.set_stop_fn(rl_opt.stop)   # required  -  without this, training runs the full budget
-rl_opt.add_callback(pm_cb)
-rl_opt.run()
-```
-
-Without `set_stop_fn`, the callback prints the training report when the budget runs out but cannot halt the loop. Training continues until `max_episodes` is reached.
-
-For the factory-mode PPO path (where `agent_factory` is passed to `RLOptimizer` and `pm_cb` is created inside the factory), wire the stop function inside the factory, `rl_opt` is already bound in the enclosing scope by the time the factory is called:
-
-```python
-def agent_factory_full(params):
-    agent = make_agent(params)
-    pm_cb = pm.as_callback(agent, agent_factory=lambda: make_agent(params))
-    pm_cb.set_stop_fn(rl_opt.stop)   # rl_opt is bound before run() calls this factory
-    rl_opt.add_callback(pm_cb)
-    return agent
-
-rl_opt = RLOptimizer(agent_factory=agent_factory_full, ...)
-rl_opt.run()
-```
-
-### Checkpoint directory hygiene
-
-Each run writes checkpoints to `checkpoint_dir`. If you reuse the same directory across restarts without clearing it, `CheckpointRegistry` will load stale snapshots from a previous run and roll back to them during training. Either pass a unique directory per run (include seed and timestamp) or call `shutil.rmtree(ckpt_dir, ignore_errors=True)` at the start of each run.
-
-### State dict key mismatches during weight averaging / spawning
-
-`average_weights()` and `load_weights()` use PyTorch `state_dict` keys. If the architecture passed to a spawned agent shell differs from the one that was checkpointed (different layer names, sizes, or number of layers), `load_state_dict()` will raise a `RuntimeError` with a key mismatch message. The framework does not catch this, it is user responsibility to pass a compatible shell. The safest pattern is to use the same `agent_factory` for both the primary agent and all spawned variants.
-
----
-
-## Math & Science Reference
-
-### SPSA Gradient Estimate (`SPSAOptimizer`)
-
-```
-Δ ~ Rademacher({−1, +1}ᴺ)          ← simultaneous perturbation vector
-
-θ⁺ = θ + c·Δ   →   f⁺ = score(θ⁺)
-θ⁻ = θ − c·Δ   →   f⁻ = score(θ⁻)
-
-ĝᵢ = (f⁺ − f⁻) / (2·c·Δᵢ)         ← unbiased estimator for all i
-
-x  = (θ − lo) / (hi − lo)           ← normalize to [0,1]
-x' = clip(x + α·ĝ, 0, 1)
-θ' = lo + x' · (hi − lo)            ← denormalize
-```
-
-Spall (1992) proved that this two-measurement estimator is unbiased and converges at the same asymptotic rate as finite difference with N measurements. Normalizing to `[0,1]` before updating ensures a fixed perturbation scale `c` applies equally to parameters of any magnitude.
-
-### GAE-λ (`trajectory_buffer.compute_gae`)
-
-```
-δₜ = rₜ + γ·V(sₜ₊₁)·(1−dₜ) − V(sₜ)
-Aₜ = δₜ + γλ·(1−dₜ)·Aₜ₊₁
-```
-
-The `(1−dₜ)` mask zeros both the bootstrap from V(sₜ₊₁) and the GAE propagation from Aₜ₊₁ simultaneously, so a single window containing multiple episode fragments is handled correctly without splitting by episode.
-
-### PPO Clipped Surrogate (`TFPPOAgent` / `TorchPPOAgent`)
-
-```
-rₜ(θ) = π_θ(aₜ|sₜ) / π_θ_old(aₜ|sₜ)
-
-L_clip = E[ min(rₜ·Âₜ, clip(rₜ, 1−ε, 1+ε)·Âₜ) ]
-L_vf   = E[ (V_θ(sₜ) − Rₜ)² ]
-L_ent  = E[ H(π_θ(·|sₜ)) ]
-
-L = −L_clip + c₁·L_vf − c₂·L_ent
-```
-
-### SAC Squashed Gaussian (`TFSACAgent` / `TorchSACAgent`)
-
-```
-u ~ N(μ_θ(s), σ_θ(s))
-a = tanh(u)
-
-log π(a|s) = log N(u; μ, σ) − Σᵢ log(1 − tanh²(uᵢ) + ε)
-```
-
-Auto-entropy: `L_α = −α · (log π(aₜ|sₜ) + H_target)` where `H_target = −dim(A)`.
-
-### A2C Advantage Baseline (`TFAgent` / `TorchAgent`)
-
-```
-Aₜ = Gₜ − V(sₜ)
-∇J ≈ Σ ∇log π(aₜ|sₜ) · Âₜ
-```
-
-By the policy gradient theorem, subtracting V(sₜ) does not bias the gradient while reducing variance. The `explained_variance` diagnostic in `learn()` measures critic quality: 1.0 = perfect, 0.0 = useless, <0 = harmful.
-
-### PBT Perturbation Modes (`PBTOptimizer`)
-
-**Log-scale** for `learning_rate`, `epsilon`, `weight_decay`:
-```
-δ_log = scale × log(high / low)
-θ' = clip(θ × exp(Uniform(−δ_log, +δ_log)), low, high)
-```
-Equal probability mass per decade, following Jaderberg et al. 2017.
-
-### Detrended Volatility (`RegimeDetector`)
-
-```
-residuals    = scores − linear_regression(scores)
-CV_detrended = std(residuals) / (|mean(scores)| + ε)
-```
-Avoids conflating a steadily improving score with stability.
-
-### Gap-Slope Overfitting Signal (`MetaController`)
-
-```
-gapₜ = (train_scoreₜ − val_scoreₜ) / |val_scoreₜ|
-slope = linear_regression_slope(gap₀, ..., gapₙ)
-slope > threshold → PRUNE
-```
-Detects active overfitting progression before gap level alone triggers.
-
-### V-trace Off-Policy Correction (`compute_vtrace_targets` / `AsyncActorLearner`)
-
-Espeholt et al. 2018 ([IMPALA](https://arxiv.org/abs/1802.01561)). Corrects actor-lag bias when actors run an older policy μ while the learner updates to θ.
-
-```
-ρ_t   = π_θ(a_t|s_t) / π_μ(a_t|s_t)          ← IS ratio
-ρ̄_t  = min(ρ̄, ρ_t)                            ← clipped IS weight
-c̄_t  = min(c̄, ρ_t)                            ← trace coefficient
-
-δ_t   = ρ̄_t · (r_t + γ·(1−done_t)·V(s_{t+1}) − V(s_t))
-
-v_t   = V(s_t) + δ_t + γ·(1−done_t)·c̄_t·(v_{t+1} − V(s_{t+1}))
-                                               ← backward recursion
-
-A_t   = ρ̄_t · (r_t + γ·(1−done_t)·v_{t+1} − V(s_t))
-                                               ← policy gradient advantage
-```
-
-With ρ̄ = c̄ = 1 and synchronous actors (μ = θ), reduces to standard on-policy GAE. The clip ρ̄ bounds the maximum IS weight, preventing gradient spikes from stale trajectories.
-
-### TD3 Target Policy Smoothing (`TorchTD3Agent` / `TFTDDAgent`)
-
-```
-a_noise = clip(N(0, σ), −c, c)              ← clipped Gaussian noise
-a_target = clip(π_θ_tgt(s') + a_noise, a_lo, a_hi)
-
-y = r + γ · min(Q_tgt1(s', a_target), Q_tgt2(s', a_target))
-```
-
-Smoothing prevents the critic from over-fitting to narrow deterministic action peaks. The actor is updated every `policy_delay` critic steps (default 2), giving the critic time to stabilise before actor gradients are computed.
-
-### Rainbow Categorical Distribution (`TorchRainbowDQNAgent`)
-
-Distributional Bellman target (Bellemare et al. 2017):
-```
-atoms: z_i ∈ {v_min + i·Δz},   i = 0..N-1,   Δz = (v_max − v_min) / (N-1)
-
-y     = r + γ · z_i   (projected onto support)
-
-L     = KL(target_dist ‖ Q_dist(s, a))       ← cross-entropy loss
-```
-The 51-atom categorical distribution represents the full return distribution rather than its mean, enabling value-based agents to reason about risk.
-
----
-
-## neuroevo, Free-Form Topology Evolution
-
-`tensor_optix.neuroevo` adds a mutable neural graph that grows and prunes itself during training. Unlike fixed-architecture networks, the compute graph is a directed graph of neurons with variable-delay edges, topology evolves alongside weights.
-
-Install:
 ```bash
 pip install tensor-optix[neuroevo]
 ```
 
-### Core idea
-
-Standard networks have a fixed topology set at construction. `neuroevo` starts small and grows only when statistical signals confirm the network is at capacity with learnable structure remaining, using **function-preserving operations**, every structural change leaves the network output identical at the moment of application. Learning then breaks symmetry from that preserved baseline.
-
-### Key components
-
-| Class | Role |
-|---|---|
-| `NeuronGraph` | Mutable directed graph, the policy network. Forward pass is compiled with `torch.compile(dynamic=False)` and retraced automatically after topology changes. |
-| `GraphAgent` | `BaseAgent` wrapping `NeuronGraph`, PPO-trained |
-| `TopologyController` | `LoopCallback` that grows/prunes using statistical signals from the training stream; calls `graph.invalidate_compile()` after every structural mutation; supports single graphs and multi-region `BrainNetwork` |
-| `Neuron` | Point neuron (bias + activation + delay buffer) |
-| `GRUNeuron` | Scalar GRU cell — gated recurrent computation, same graph interface as `Neuron` |
-| `LSTMNeuron` | Scalar LSTM cell — forget/input/output gates, same graph interface as `Neuron` |
-
-### Quickstart
+### Graph construction
 
 ```python
-import gymnasium as gym
-from tensor_optix.neuroevo import NeuronGraph, GraphAgent, TopologyController
-from tensor_optix import LoopController  # your existing loop
+from tensor_optix.neuroevo import NeuronGraph, GraphAgent, GRUNeuron, LSTMNeuron
 
-# Build a minimal graph: 4 inputs, 2 hidden, 3 outputs (2 actions + 1 value)
-g = NeuronGraph()
+graph = NeuronGraph()
+
 for _ in range(4):
-    g.add_neuron(role="input", activation="linear")
-for _ in range(2):
-    g.add_neuron(role="hidden", activation="tanh")
-for _ in range(3):
-    g.add_neuron(role="output", activation="linear")
-for inp in g.input_ids:
-    for hid in g.hidden_ids:
-        g.add_edge(inp, hid, weight=0.1, delay=0)
-for hid in g.hidden_ids:
-    for out in g.output_ids:
-        g.add_edge(hid, out, weight=0.1, delay=0)
+    graph.add_neuron(role="input", activation="linear")
+for _ in range(8):
+    graph.add_neuron(role="hidden", activation="tanh")
+    # or: graph.add_neuron(role="hidden", neuron=GRUNeuron())
+    # or: graph.add_neuron(role="hidden", neuron=LSTMNeuron())
+graph.add_neuron(role="output", activation="linear")  # last output neuron is the value head
 
-agent = GraphAgent(graph=g, obs_dim=4, n_actions=2)
-ctrl  = TopologyController.for_graph(g, grow_op="insert_edge", grow_cooldown=20)
+graph.add_edge(src_id, dst_id, weight=0.0, delay=0)   # feedforward (d=0)
+graph.add_edge(src_id, dst_id, weight=0.0, delay=1)   # recurrent (d>=1, reads from history buffer)
 
-# Plug into any tensor-optix LoopController
-loop = LoopController(agent=agent, pipeline=pipeline, callbacks=[ctrl])
-loop.run()
+agent = GraphAgent(graph, obs_dim=4, n_actions=2)
 ```
 
-### Heterogeneous neuron types
+All edges initialise at weight=0.0, which is function-preserving at insertion time.
 
-Graphs can mix point neurons, GRU cells, and LSTM cells freely. Pass a pre-constructed neuron instance via the `neuron=` kwarg:
+### Neuron types
 
-```python
-from tensor_optix.neuroevo.graph.neuron import GRUNeuron, LSTMNeuron
-
-g = NeuronGraph()
-g.add_neuron("input",  "linear")                      # point neuron
-g.add_neuron("hidden", neuron=GRUNeuron())            # GRU cell
-g.add_neuron("hidden", neuron=LSTMNeuron())           # LSTM cell
-g.add_neuron("hidden", "tanh", cell_type="inhibitory") # point neuron + Dale's Law
-```
-
-All neuron types share the same graph interface — the `TopologyController` is fully type-blind. Type-specific behaviour is encapsulated in each neuron via a protocol:
-
-| Method | What it does |
-|---|---|
-| `neuron.step(weighted_sum)` | Full forward: bias + activation for point neurons; full gate computation for GRU/LSTM |
-| `neuron.importance(incident_w)` | `I(v) = Σ\|w_e\| × (‖h‖₁/d + ε)` — normalised by hidden dim so scores are comparable across types |
-| `neuron.can_merge_with(other)` | Returns `True` only if both neurons are the same concrete type |
-| `neuron.make_relay()` | Always returns a **linear point neuron** regardless of self's type — the only choice that gives exact function preservation (GRU/LSTM relays have 24–36% error in the tanh activation range, verified mathematically) |
-| `neuron.split_copy()` | Deep-copies all internal parameters into a new neuron; caller halves outgoing edge weights |
-
-### Topology operations
-
-All operations are **function-preserving**, output is identical before and after.
-
-**Grow:**
-- `insert_neuron_on_edge(graph, edge_id)`, inserts a linear relay neuron on an existing edge, splitting its delay; relay type is always linear regardless of surrounding neuron types
-- `split_neuron(graph, neuron_id)`, duplicates a neuron via `split_copy()`, halves outgoing weights; works for point neurons, GRU, and LSTM
-- `add_input_neuron(graph)`, adds a new input neuron with zero-weight connections (for new task dimensions)
-- `add_free_edge(graph, src, dst, delay)`, adds any edge with `w=0`
-
-**Prune:**
-- `prune_edge(graph, edge_id)`, removes a low-magnitude edge
-- `prune_neuron(graph, neuron_id)`, redistributes signal then removes neuron
-- `merge_neurons(graph, id_a, id_b)`, collapses two near-identical neurons into one; `TopologyController` only merges neurons that pass `can_merge_with()` (same type)
-
-### Variable-delay recurrence
-
-Every edge carries a `delay` parameter, the number of timesteps back it reads:
-
-```
-h_v^(t) = σ( b_v + Σ w_{uv} · h_u^(t-d) )
-```
-
-`delay=0` is feedforward; `delay≥1` is recurrent. Both are handled by the same forward pass via per-neuron history buffers. This makes the network naturally suited to POMDPs and temporal tasks without a separate LSTM.
-
-### TopologyController trigger logic
-
-Topology decisions are driven by three independent statistical signals computed from the live score history and parameter gradients. The scheduler state is a hint, not a command.
-
-**GROW** fires only when all three conditions hold simultaneously:
-
-| Signal | Condition | What it measures |
+| Type | Hidden state | Gradient through state |
 |---|---|---|
-| Improvement test | Slope β not significantly positive (autocorrelation-corrected t-test) | Training is genuinely stuck |
-| Structure test | Lag-1 autocorrelation `r₁ > 2/√n` (adaptive threshold) | Residual errors have learnable structure |
-| Capacity test | Gradient utilisation `> 0.70` | Network has no unused headroom |
+| `Neuron` | None (point neuron) | N/A |
+| `GRUNeuron` | Scalar h, detached | No |
+| `LSTMNeuron` | Scalar h and c, detached | No |
+| `TrainableGRUNeuron` | Scalar h, not detached | Yes, up to chunk_len steps |
+| `TrainableLSTMNeuron` | Scalar h and c, not detached | Yes, up to chunk_len steps |
 
-**PRUNE** (neuron) fires when all hold:
-- Average importance `< prune_neuron_threshold` over observation window
-- Gradient magnitude `< grad_eps` (neuron is truly inactive, not just waiting)
-- Neuron age `> maturation_window` (never prune a freshly added neuron)
+All types implement the same protocol: `step()`, `importance()`, `can_merge_with()`, `make_relay()`, `split_copy()`. `NeuronGraph` and `TopologyController` are type-blind.
 
-**PRUNE** (edge): `|w| < threshold` for `prune_edge_patience` consecutive episodes.
+### Trainable recurrent neurons
 
-**MERGE** fires when:
-- `neuron_a.can_merge_with(neuron_b)` — same concrete type (a GRU cell will never merge with a point neuron)
-- Pearson correlation of **signed** activation histories `> merge_similarity_threshold` — anti-correlated neurons (complementary features) are never merged
-- Both neurons have non-trivial importance (redundant but not dead)
-
-After every GROW, the `BackoffScheduler` is partially reset (interval halved by default) so the loop treats the grown network as a fresh start, but retains memory that this region has been hard before.
-
-### Multi-region TopologyController
-
-`TopologyController` operates on a `Dict[str, NeuronGraph]` internally. Each region has its own cooldown counter and gradient-utilisation buffer — a saturated encoder region can grow without triggering growth in the decision region. The score buffer and statistical signal math are shared (eval score reflects the whole agent).
+`TrainableGRUNeuron` and `TrainableLSTMNeuron` set `is_recurrent = True`. `RecurrentGraphAgent` detects this flag and switches from shuffled-minibatch PPO to sequential chunk training with truncated BPTT.
 
 ```python
-# Single graph
-ctrl = TopologyController.for_graph(graph, scheduler)
+from tensor_optix.neuroevo import TrainableGRUNeuron, TrainableLSTMNeuron, RecurrentGraphAgent
 
-# BrainNetwork — one controller manages all regions
-ctrl = TopologyController.for_brain(brain, scheduler)
+graph = NeuronGraph()
+# ... input and output neurons ...
+graph.add_neuron(role="hidden", neuron=TrainableGRUNeuron())
+graph.add_neuron(role="hidden", neuron=TrainableLSTMNeuron())
 
-# Manual multi-region
-ctrl = TopologyController(
-    {"encoder": encoder_graph, "decision": decision_graph},
-    scheduler=scheduler,
+agent = RecurrentGraphAgent(
+    graph, obs_dim=4, n_actions=2,
+    hyperparams=HyperparamSet(params={"chunk_len": 64}),
 )
+# Falls back to standard shuffled-minibatch PPO if no recurrent neurons are present
 ```
 
-Both `for_graph` and the direct constructor accept all the same keyword arguments (`grow_op`, `grow_cooldown`, `prune_neuron_threshold`, etc.).
-
-### Math reference
-
-**Insert neuron on edge** `(u→v, w, d)`:
-```
-Add: (u → new, w=1.0, d₁=⌊d/2⌋)
-Add: (new → v, w=w,   d₂=d−d₁)
-h_new = linear passthrough at init → output preserved exactly
-
-Relay is always a linear point neuron regardless of surrounding neuron types.
-GRU/LSTM relays have 24–36% error in the tanh activation range (|tanh(x)−x|
-at x=1 is 23.8%); a linear relay gives exact identity. Gradient descent
-adapts the relay to a gated cell if the task requires it.
-```
-
-**Split neuron** `v_k → v_k1, v_k2`:
-```
-Incoming: both copies receive full weight
-Outgoing: both copies send w/2  (sum = w)
-Output preserved: w·h = w/2·h + w/2·h
-```
-
-**New input neuron** for observation dim `x_i`:
-```
-w_{new→j} = 0  ∀ j ∈ V
-Output preserved: zero weight = silent neuron at init
-```
-
-### TopologyAwareAdam
-
-After a grow or prune operation, Adam's stored momentum (m, v) for the affected parameters reflects the pre-change loss landscape. Those stale estimates distort the first several updates and can cause transient instability. `TopologyAwareAdam` solves this with a single call:
+### Topology controller
 
 ```python
-from tensor_optix.neuroevo import TopologyAwareAdam
+from tensor_optix.neuroevo import TopologyController
 
-opt = TopologyAwareAdam(graph.parameters(), lr=3e-4)
-
-# After growing a new edge:
-new_edge_params = [graph.get_edge(eid).weight for eid in new_edge_ids]
-opt.notify_topology_change(new_edge_params)
-
-# After a merge (surviving neuron absorbed a neighbour's weight):
-opt.notify_topology_change([surviving_neuron.bias])
-
-# Standard Adam interface otherwise:
-opt.zero_grad()
-loss.backward()
-opt.step()
+controller = TopologyController.for_graph(
+    graph=graph,
+    scheduler=opt._scheduler,
+    grow_grad_threshold=0.7,         # fraction of hidden neurons with |grad| > eps required to grow
+    prune_neuron_threshold=1e-4,     # importance score below this -> prune candidate
+    prune_edge_threshold=1e-3,       # |weight| below this for prune_edge_patience episodes -> prune
+    merge_similarity_threshold=0.95, # Pearson correlation threshold for merge
+)
+opt.add_callback(controller)
+opt.run()
 ```
 
-`notify_topology_change(params)` deletes the (m, v) state for the given `nn.Parameter` objects. Adam treats them as freshly created on the next step. Parameters not tracked by the optimizer are silently ignored. All other parameters continue uninterrupted with their full history intact.
+Grow fires only when all three signals agree:
+1. Improvement slope t-test is not significant (gradient updates are not making progress)
+2. Score residuals have significant autocorrelation (capacity is underutilised)
+3. Gradient utilization exceeds `grow_grad_threshold` (existing neurons are saturated)
 
-`TopologyAwareAdam` is a drop-in replacement for `torch.optim.Adam`: it delegates `step`, `zero_grad`, `state_dict`, `load_state_dict`, and `add_param_group` to the inner optimizer unchanged.
-
-### Compiled forward pass
-
-`NeuronGraph.forward` is compiled with `torch.compile(dynamic=False)` on construction. On the first call after construction (or after `invalidate_compile()`), dynamo traces `_raw_forward` and emits a fused kernel covering the weight matrix assembly, the feedforward matmul, recurrent edge scatter, and all per-neuron `step()` calls. Subsequent calls reuse the compiled kernel with no Python overhead.
-
-`TopologyController` calls `graph.invalidate_compile()` automatically after every grow, prune, and merge operation. You only need to call it manually if you mutate the graph directly outside the controller:
-
-```python
-# Direct mutation outside TopologyController — invalidate manually
-g.add_edge(src=nid_a, dst=nid_b, weight=0.0, delay=1)
-g.invalidate_compile()
-```
-
-`invalidate_compile()` pre-builds the matrix cache before recompiling so the new compiled trace always starts with a clean graph structure. On PyTorch < 2.0 the method is a no-op and eager mode is used throughout.
-
----
-
-## Bio-Plausible Brain Networks
-
-Building on `neuroevo`, tensor-optix 1.13.0 introduces four biologically-inspired features that can be combined to build brain-like networks.
-
-### Dale's Law
-
-Every real neuron is either excitatory (sends positive signals) or inhibitory (sends negative signals) — it never switches. Set `cell_type` on any neuron and `enforce_dale()` is called automatically after every optimizer step.
-
-```python
-from tensor_optix.neuroevo import NeuronGraph
-
-g = NeuronGraph()
-exc = g.add_neuron(role="hidden", activation="relu",  cell_type="excitatory")
-inh = g.add_neuron(role="hidden", activation="tanh",  cell_type="inhibitory")
-fre = g.add_neuron(role="hidden", activation="tanh",  cell_type="any")  # default, unconstrained
-```
-
-`GraphAgent.learn()` calls `graph.enforce_dale()` after every optimizer step, clamping excitatory outgoing weights to `>= 0` and inhibitory to `<= 0`.
-
-#### Softplus mode
-
-The clamp approach has a gradient dead zone: any weight that hits the boundary gets zero gradient from that direction. Pass `dale_mode="softplus"` to use an unconstrained raw parameter θ instead:
-
-```python
-g = NeuronGraph(dale_mode="softplus")
-exc = g.add_neuron(role="hidden", activation="relu", cell_type="excitatory")
-inh = g.add_neuron(role="hidden", activation="tanh", cell_type="inhibitory")
-
-eid = g.add_edge(src=exc, dst=inh, weight=0.5)   # θ = softplus_inv(0.5) stored internally
-g.effective_weight(eid)                            # returns softplus(θ) ≈ 0.5
-```
-
-In softplus mode:
-- Effective weight = `softplus(θ)` for excitatory source neurons, `−softplus(θ)` for inhibitory.
-- Unconstrained neurons (`cell_type="any"`) use θ directly as the weight.
-- Zero-weight init uses θ=−10 (`softplus(−10) ≈ 4.5×10⁻⁵`, well below the prune threshold).
-- `enforce_dale()` is a no-op — the sign constraint is baked into every forward pass.
-- Use `graph.effective_weight(edge_id)` anywhere you need the true magnitude (topology ops, importance scoring).
-
----
+For multi-region graphs, use `TopologyController.for_brain(brain, scheduler=...)`. Each region gets independent signal buffers and cooldown timers.
 
 ### BrainNetwork
 
-Organize neurons into named brain regions with controlled inter-region connectivity. Each region is a full `NeuronGraph` that can evolve independently.
-
 ```python
-from tensor_optix.neuroevo import NeuronGraph, BrainNetwork
+from tensor_optix.neuroevo import BrainNetwork, TopologyController
 
-sensory   = NeuronGraph()   # build each region ...
-memory    = NeuronGraph()
-executive = NeuronGraph()
-motor     = NeuronGraph()
+brain = BrainNetwork()
+brain.add_region("sensory",   sensory_graph)
+brain.add_region("memory",    memory_graph)
+brain.add_region("executive", executive_graph)
 
-brain = BrainNetwork(name="agent_brain", output_regions=["motor"])
-brain.add_region("sensory",   sensory)
-brain.add_region("memory",    memory)
-brain.add_region("executive", executive)
-brain.add_region("motor",     motor)
+brain.add_pathway("sensory",  "memory",    n_connections=8, delay=1)
+brain.add_pathway("memory",   "executive", n_connections=8, delay=0)
 
-# Sparse learnable pathways between regions (zero-weight at init — function preserving)
-brain.add_pathway("sensory",   "memory",    n_connections=8,  delay=1)
-brain.add_pathway("memory",    "executive", n_connections=4,  delay=2)
-brain.add_pathway("executive", "motor",     n_connections=16, delay=0)
-
-out = brain({"sensory": obs_tensor})  # only motor region outputs
-print(brain.summary())
+controller = TopologyController.for_brain(brain, scheduler=opt._scheduler)
 ```
 
----
+Inter-region edges are learnable parameters. Regions are executed in topological order each forward pass.
 
-### HebbianHook
+### Hebbian learning
 
-Local Hebbian learning running alongside PPO. Neurons that fire together, wire together.
+`HebbianHook` applies an Oja-style local weight update after each episode. The rule is: `dw = eta * mean_t(h_pre * h_post) - lambda * w`. Call `record()` after each `act()` to accumulate co-activation products, then `apply()` after the PPO gradient step.
 
 ```python
 from tensor_optix.neuroevo import HebbianHook
 
-# Attach to a single graph or all regions of a BrainNetwork
-hook = HebbianHook.from_brain(brain, hebbian_lr=1e-3, weight_decay=1e-4)
+hook = HebbianHook(graph, hebbian_lr=1e-3, weight_decay=1e-4)
 
-for episode in training_loop:
-    obs = env.reset()
-    while not done:
-        action = agent.act(obs)
-        hook.record()              # snapshot co-activations after each forward pass
-        obs, reward, done, _ = env.step(action)
+for step in episode:
+    action = agent.act(obs)
+    hook.record()
+    obs, reward, done, _ = env.step(action)
 
-    agent.learn(episode_data)      # PPO gradient update
-    hook.apply_and_reset()         # Hebbian update + clear accumulators
+agent.learn(episode_data)
+hook.apply()
+hook.reset()
 ```
 
-`Δw = η · mean(h_pre · h_post) − λ · w`
+Use `HebbianHook.from_brain(brain, ...)` for `BrainNetwork` graphs.
 
-Respects Dale's Law by default (`respect_dale=True`).
+### Neuromodulation
 
----
-
-### NeuromodulatorSignal
-
-A global broadcast signal that reads the training regime and adjusts plasticity across the entire neuroevo stack — analogous to dopamine, norepinephrine, and acetylcholine.
+`NeuromodulatorSignal` takes a `RegimeDetector` classification and applies coordinated parameter changes across `HebbianHook`, `GraphAgent`, and `TopologyController` simultaneously.
 
 ```python
 from tensor_optix.neuroevo import NeuromodulatorSignal
-from tensor_optix.core.regime_detector import RegimeDetector
+from tensor_optix.core import RegimeDetector
 
-signal = NeuromodulatorSignal(
-    detector=RegimeDetector(),
-    hebbian_hook=hook,          # modulates hebbian_lr
-    agent=agent,                # modulates entropy_coef
-    topology_controller=tc,     # modulates grow/prune thresholds
-)
+detector = RegimeDetector()
+mod = NeuromodulatorSignal(hook=hook, agent=agent, controller=controller)
 
-# In your training loop, after each episode:
-regime = signal.step(metrics_history)
-# "trending"  → dopamine ↑    — consolidate, lower plasticity, exploit
-# "ranging"   → acetylcholine ↑ — plateau, raise plasticity, grow topology
-# "volatile"  → norepinephrine ↑ — dampen Hebbian, boost exploration
-print(signal.state)
+regime = detector.detect(metrics_history)  # "trending" | "ranging" | "volatile"
+mod.apply(regime)
+# trending  -> lower entropy coefficient, reduce hebbian_lr (consolidate)
+# volatile  -> raise entropy coefficient, raise grow thresholds (explore)
+# ranging   -> raise hebbian_lr (local plasticity)
 ```
 
-All four features compose freely: `BrainNetwork` regions can have Dale-typed neurons, `HebbianHook.from_brain()` covers all of them, and `NeuromodulatorSignal` broadcasts regime changes to both the hook and the topology controllers of individual regions.
+### Dale's Law
+
+```python
+# clamp mode (default): outgoing weights clamped post-step
+graph = NeuronGraph(dale_mode="clamp")
+graph.add_neuron(role="hidden", activation="relu", cell_type="excitatory")  # weights >= 0
+graph.add_neuron(role="hidden", activation="tanh", cell_type="inhibitory")  # weights <= 0
+
+# softplus mode: raw parameter theta, effective weight = softplus(theta) * sign
+# gradient-safe, no dead zone at the clamp boundary
+# enforce_dale() is a no-op in this mode
+graph = NeuronGraph(dale_mode="softplus")
+w = graph.effective_weight(edge_id)  # reads post-softplus value
+```
+
+### TopologyAwareAdam
+
+Drop-in Adam replacement that resets (m, v) momentum state for parameters touched by a grow, prune, or merge operation. Stale momentum estimates from before a structural change would otherwise corrupt the first update on modified parameters.
+
+```python
+from tensor_optix.neuroevo import TopologyAwareAdam
+
+optimizer = TopologyAwareAdam(graph.parameters(), lr=3e-4)
+optimizer.notify_topology_change(new_params)  # call after any topology mutation
+```
 
 ---
 
-## License
+## Core utilities
 
-MIT, Copyright (c) 2026 sup3rus3r
+### Normalizers
+
+Online Welford mean/variance. `ObsNormalizer` normalises observations. `RewardNormalizer` divides rewards by return standard deviation (not reward std), preserving sign.
+
+```python
+from tensor_optix.core.normalizers import ObsNormalizer, RewardNormalizer
+
+obs_norm = ObsNormalizer(shape=(obs_dim,))
+obs_norm.update(obs_batch)
+normalized = obs_norm.normalize(obs)
+
+rew_norm = RewardNormalizer()
+```
+
+### Hindsight Experience Replay
+
+Wraps `PrioritizedReplayBuffer` with episode-level goal relabeling. Supports `future` (default), `final`, and `episode` relabeling strategies.
+
+```python
+from tensor_optix.core.her_buffer import HERBuffer
+
+her = HERBuffer(obs_dim=obs_dim, act_dim=act_dim, goal_dim=goal_dim, strategy="future", k=4)
+her.store_episode(obs_list, act_list, rew_list, next_obs_list, done_list,
+                  achieved_goals, compute_reward_fn)
+obs_b, act_b, rew_b, next_b, done_b, weights, idx, n = her.sample(batch_size)
+```
+
+### Checkpoint registry
+
+```python
+from tensor_optix.core.checkpoint_registry import CheckpointRegistry
+
+registry = CheckpointRegistry(checkpoint_dir="./checkpoints", max_snapshots=10)
+registry.save(agent, eval_metrics, hyperparams)
+registry.load_best(agent)
+registry.load_ensemble(agent, top_k=3)   # stochastic weight averaging over top-k snapshots
+```
+
+### Regime detection
+
+Classifies score history into one of three regimes using detrended coefficient of variation. Detrended CV measures noise around the trend, not raw score variance.
+
+```python
+from tensor_optix.core import RegimeDetector
+
+detector = RegimeDetector()
+regime = detector.detect(metrics_history)   # "trending" | "ranging" | "volatile"
+```
+
+---
+
+## Requirements
+
+- Python >= 3.11
+- gymnasium >= 1.0
+- numpy >= 1.24
+
+The core loop, `PolicyManager`, and all ensemble and evolution logic have no framework dependency. Framework installs are opt-in via extras.

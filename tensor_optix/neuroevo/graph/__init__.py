@@ -1,4 +1,4 @@
-from .neuron import Neuron, ACTIVATIONS, CELL_TYPES
+from .neuron import Neuron, ACTIVATIONS, CELL_TYPES, TrainableGRUNeuron, TrainableLSTMNeuron
 from .neuron_graph import NeuronGraph, Edge
 from .topology_ops import (
     insert_neuron_on_edge,
@@ -15,6 +15,7 @@ from .topology_ops import (
 
 __all__ = [
     "Neuron", "ACTIVATIONS", "CELL_TYPES",
+    "TrainableGRUNeuron", "TrainableLSTMNeuron",
     "NeuronGraph", "Edge",
     "insert_neuron_on_edge", "split_neuron", "add_input_neuron", "add_free_edge",
     "prune_edge", "prune_neuron", "merge_neurons",
