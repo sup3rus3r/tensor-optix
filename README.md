@@ -4,7 +4,7 @@ tensor-optix is a training loop framework with statistical convergence control, 
 
 The core loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected using a corrected t-test on the smoothed score slope plus lag-1 autocorrelation, not a fixed patience counter. Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape. Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
 
-The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
+The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. The forward pass is compiled with `torch.compile` automatically — `inductor` on Linux/Mac, `aot_eager` on Windows (Triton-free). `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to retrace cleanly from the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
 
 The entire system, including neuroevo, is accessed through a six-method `BaseAgent` interface:
 
@@ -434,6 +434,25 @@ from tensor_optix.neuroevo import TopologyAwareAdam
 optimizer = TopologyAwareAdam(graph.parameters(), lr=3e-4)
 optimizer.notify_topology_change(new_params)  # call after any topology mutation
 ```
+
+### Compiled forward
+
+`NeuronGraph.forward` is wrapped with `torch.compile` on construction. The backend is selected automatically by platform:
+
+| Platform | Backend | Notes |
+|---|---|---|
+| Linux / macOS | `inductor` | Full kernel fusion via Triton |
+| Windows | `aot_eager` | AOT Autograd + graph capture, no Triton required |
+| PyTorch < 2.0 | eager fallback | `torch.compile` not available, runs unchanged |
+
+`TopologyController` calls `graph.invalidate_compile()` after every grow, prune, and merge. If you mutate the graph directly outside the controller, call it yourself:
+
+```python
+graph.add_edge(src_id, dst_id, weight=0.0, delay=1)
+graph.invalidate_compile()
+```
+
+`invalidate_compile()` rebuilds the matrix cache before recompiling so the new compiled trace always starts with a fully resolved graph structure. `torch._dynamo.reset()` is called first to evict stale kernels — this is process-global, so all `NeuronGraph` instances in the process retrace on their next forward call.
 
 ---
 

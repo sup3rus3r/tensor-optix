@@ -239,9 +239,13 @@ class NeuronGraph(nn.Module):
     # ------------------------------------------------------------------
 
     def _make_compiled_fwd(self):
-        if hasattr(torch, "compile"):
-            return torch.compile(self._raw_forward, dynamic=False)
-        return self._raw_forward
+        if not hasattr(torch, "compile"):
+            return self._raw_forward
+        import sys
+        # Inductor requires Triton, which is not available on Windows.
+        # aot_eager gives AOT Autograd + graph capture without Triton.
+        backend = "inductor" if sys.platform != "win32" else "aot_eager"
+        return torch.compile(self._raw_forward, backend=backend, dynamic=False)
 
     def invalidate_compile(self) -> None:
         """
