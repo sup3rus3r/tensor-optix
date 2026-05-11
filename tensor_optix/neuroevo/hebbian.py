@@ -39,9 +39,10 @@ import torch
 
 from .graph.neuron_graph import NeuronGraph
 from .brain_network import BrainNetwork
+from tensor_optix.core.loop_controller import LoopCallback
 
 
-class HebbianHook:
+class HebbianHook(LoopCallback):
     """
     Accumulates co-activation statistics across a full episode, then applies
     a local Hebbian weight update to every edge in one or more NeuronGraphs.

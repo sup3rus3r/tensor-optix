@@ -53,6 +53,7 @@ Usage::
 
 import logging
 from typing import List, Optional, TYPE_CHECKING
+from tensor_optix.core.loop_controller import LoopCallback
 
 if TYPE_CHECKING:
     from tensor_optix.core.regime_detector import RegimeDetector
@@ -93,7 +94,7 @@ _DEFAULT_PRUNE_THRESHOLD_SCALE = {
 }
 
 
-class NeuromodulatorSignal:
+class NeuromodulatorSignal(LoopCallback):
     """
     Reads the current training regime and modulates learning parameters
     across HebbianHook, GraphAgent, and TopologyController.
