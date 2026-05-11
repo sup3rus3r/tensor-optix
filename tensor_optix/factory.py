@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 def make_agent(
     algorithm_or_env,
     env=None,
+    algorithm: Optional[str] = None,
     framework: str = "torch",
     deterministic: bool = False,
     hidden_sizes: Tuple[int, ...] = (256, 256),
@@ -115,7 +116,8 @@ def make_agent(
             )
     else:
         env = algorithm_or_env
-        algorithm = None
+        if algorithm is not None:
+            algorithm = algorithm.upper()
 
     obs_space = env.observation_space
     act_space = env.action_space
@@ -194,10 +196,14 @@ def make_agent(
             )
 
     # ------------------------------------------------------------------
-    # Route by action space
+    # Route by action space  (algorithm name overrides default when given)
     # ------------------------------------------------------------------
     if isinstance(act_space, Discrete):
         n_actions = int(act_space.n)
+        if algorithm == "DQN":
+            return _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device)
+        if algorithm == "RAINBOW":
+            return _make_rainbow(obs_dim, n_actions, hyperparams, device)
         return _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device)
 
     elif isinstance(act_space, Box):
@@ -207,7 +213,7 @@ def make_agent(
                 f"Got shape: {act_space.shape}."
             )
         act_dim = int(act_space.shape[0])
-        if deterministic:
+        if deterministic or algorithm == "TD3":
             return _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
         else:
             return _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
@@ -306,6 +312,69 @@ def _make_ppo_tf(obs_dim, n_actions, hidden_sizes, hp):
     optimizer = tf.keras.optimizers.Adam(float(hp.params.get("learning_rate", 3e-4)))
     return TFPPOAgent(
         actor=actor, critic=critic, optimizer=optimizer, hyperparams=hp,
+    )
+
+
+def _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device):
+    """Build a DQN agent for discrete action spaces."""
+    import torch
+    import torch.nn as nn
+    from tensor_optix.algorithms.torch_dqn import TorchDQNAgent
+
+    hp = hyperparams or HyperparamSet(params={
+        "learning_rate":      1e-3,
+        "gamma":              0.99,
+        "epsilon":            1.0,
+        "epsilon_min":        0.05,
+        "epsilon_decay":      0.995,
+        "batch_size":         64,
+        "target_update_freq": 10,
+        "replay_capacity":    10_000,
+    }, episode_id=0)
+
+    layers, prev = [], obs_dim
+    for h in hidden_sizes:
+        layers += [nn.Linear(prev, h), nn.ReLU()]
+        prev = h
+    layers.append(nn.Linear(prev, n_actions))
+    q_net = nn.Sequential(*layers)
+
+    return TorchDQNAgent(
+        q_network=q_net,
+        n_actions=n_actions,
+        optimizer=torch.optim.Adam(q_net.parameters(), lr=float(hp.params.get("learning_rate", 1e-3))),
+        hyperparams=hp,
+        device=device,
+    )
+
+
+def _make_rainbow(obs_dim, n_actions, hyperparams, device):
+    """Build a Rainbow DQN agent for discrete action spaces."""
+    import torch
+    from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+
+    hp = hyperparams or HyperparamSet(params={
+        "learning_rate":      6.25e-5,
+        "gamma":              0.99,
+        "batch_size":         32,
+        "target_update_freq": 200,
+        "replay_capacity":    100_000,
+        "per_alpha":          0.5,
+        "per_beta":           0.4,
+        "n_step":             3,
+        "v_min":              0.0,
+        "v_max":              500.0,
+        "n_atoms":            51,
+    }, episode_id=0)
+
+    q_net = RainbowQNetwork.build(obs_dim, n_actions)
+    return TorchRainbowDQNAgent(
+        q_network=q_net,
+        n_actions=n_actions,
+        obs_dim=obs_dim,
+        optimizer=torch.optim.Adam(q_net.parameters(), lr=float(hp.params.get("learning_rate", 6.25e-5))),
+        hyperparams=hp,
+        device=device,
     )
 
 

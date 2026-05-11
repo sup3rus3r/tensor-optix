@@ -60,6 +60,7 @@ class Optimizer:
         callbacks: Optional[List] = None,
         rollback_on_degradation: bool = False,
         checkpoint_dir: str = "./tensor_optix_checkpoints",
+        optimizer=None,
         **kwargs,
     ):
         from tensor_optix.optimizer import RLOptimizer
@@ -121,16 +122,19 @@ class Optimizer:
             )
 
         # ------------------------------------------------------------------
-        # SPSA optimizer
+        # SPSA optimizer — explicit takes priority over auto-detection
         # ------------------------------------------------------------------
-        spsa_opt = None
-        if hasattr(agent, "default_param_bounds") and agent.default_param_bounds:
+        if optimizer is not None:
+            spsa_opt = optimizer
+            logger.info("Optimizer: using provided optimizer %s", type(optimizer).__name__)
+        elif hasattr(agent, "default_param_bounds") and agent.default_param_bounds:
             spsa_opt = SPSAOptimizer(
                 param_bounds=agent.default_param_bounds,
                 log_params=getattr(agent, "default_log_params", []),
             )
             logger.info("Optimizer: SPSA active with bounds: %s", list(agent.default_param_bounds.keys()))
         else:
+            spsa_opt = None
             logger.warning(
                 "Optimizer: SPSA inactive — agent has no default_param_bounds. "
                 "Add default_param_bounds to enable online hyperparameter tuning."
