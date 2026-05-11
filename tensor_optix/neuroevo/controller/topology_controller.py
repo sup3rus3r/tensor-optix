@@ -137,6 +137,9 @@ class TopologyController(LoopCallback):
         max_neurons: int = 256,
         min_hidden_neurons: int = 1,
     ) -> None:
+        # Accept a single NeuronGraph as a convenience shorthand for {"default": graph}
+        if isinstance(regions, NeuronGraph):
+            regions = {"default": regions}
         self._regions = regions
         self.scheduler = scheduler
 
@@ -288,14 +291,29 @@ class TopologyController(LoopCallback):
         graph = self._regions[region_name]
 
         if self._episodes_since_grow[region_name] < self.grow_cooldown:
+            remaining = self.grow_cooldown - self._episodes_since_grow[region_name]
+            if remaining % 5 == 0 and remaining > 0:
+                logger.info(
+                    "EVO warming up — grow/prune eligible in %d episodes (cooldown)", remaining
+                )
             return False
         if graph.n_neurons() >= self.max_neurons:
             return False
         if len(self._score_buffer) < self.min_score_buffer:
+            have = len(self._score_buffer)
+            if have % 5 == 0:
+                logger.info(
+                    "EVO: collecting baseline scores (%d/%d)", have, self.min_score_buffer
+                )
             return False
 
         scores = np.array(self._score_buffer, dtype=float)
         n = len(scores)
+
+        # With fewer than 3 scores, statistical tests are meaningless — allow grow.
+        if n < 3:
+            return True
+
         t = np.arange(n, dtype=float)
 
         beta = float(np.cov(t, scores)[0, 1] / (np.var(t) + 1e-10))

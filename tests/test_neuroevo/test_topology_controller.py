@@ -45,27 +45,27 @@ class TestGrowOnPlateau:
     def test_insert_edge_grow_increases_neurons(self):
         g, *_ = make_graph_with_hidden()
         n_before = g.n_neurons()
-        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=0)
+        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=0, min_score_buffer=0)
         ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
         assert g.n_neurons() > n_before
 
     def test_split_neuron_grow_increases_neurons(self):
         g, *_ = make_graph_with_hidden()
         n_before = g.n_neurons()
-        ctrl = TopologyController(g, grow_op="split_neuron", grow_cooldown=0)
+        ctrl = TopologyController(g, grow_op="split_neuron", grow_cooldown=0, min_score_buffer=0)
         ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
         assert g.n_neurons() > n_before
 
     def test_add_edge_grow_increases_edges(self):
         g, *_ = make_graph_with_hidden()
         e_before = g.n_edges()
-        ctrl = TopologyController(g, grow_op="add_edge", grow_cooldown=0)
+        ctrl = TopologyController(g, grow_op="add_edge", grow_cooldown=0, min_score_buffer=0)
         ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
         assert g.n_edges() > e_before
 
     def test_grow_cooldown_suppresses_second_grow(self):
         g, *_ = make_graph_with_hidden()
-        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=5)
+        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=5, min_score_buffer=0)
         ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
         n_after_first = g.n_neurons()
         # Simulate 2 episodes (< cooldown of 5)
@@ -76,7 +76,7 @@ class TestGrowOnPlateau:
 
     def test_grow_fires_after_cooldown_expires(self):
         g, *_ = make_graph_with_hidden()
-        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=3)
+        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=3, min_score_buffer=0)
         ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
         n_after_first = g.n_neurons()
         for ep in range(11, 15):  # 4 episodes > cooldown
@@ -88,7 +88,7 @@ class TestGrowOnPlateau:
 
     def test_max_neurons_suppresses_grow(self):
         g, *_ = make_graph_with_hidden()
-        ctrl = TopologyController(g, grow_op="split_neuron", grow_cooldown=0, max_neurons=3)
+        ctrl = TopologyController(g, grow_op="split_neuron", grow_cooldown=0, max_neurons=3, min_score_buffer=0)
         n_before = g.n_neurons()  # already 3
         ctrl.on_plateau(episode_id=1, state=LoopState.COOLING)
         assert g.n_neurons() == n_before
@@ -112,7 +112,7 @@ class TestSchedulerReset:
 
         fs = FakeScheduler()
         ctrl = TopologyController(
-            g, grow_op="insert_edge", grow_cooldown=0, backoff_reset_factor=0.5
+            g, grow_op="insert_edge", grow_cooldown=0, backoff_reset_factor=0.5, min_score_buffer=0
         )
         ctrl.set_scheduler(fs)
         ctrl.on_plateau(episode_id=5, state=LoopState.COOLING)
@@ -130,7 +130,7 @@ class TestSchedulerReset:
 
         fs = FakeScheduler()
         ctrl = TopologyController(
-            g, grow_op="insert_edge", grow_cooldown=0, backoff_reset_factor=0.0
+            g, grow_op="insert_edge", grow_cooldown=0, backoff_reset_factor=0.0, min_score_buffer=0
         )
         ctrl.set_scheduler(fs)
         ctrl.on_plateau(episode_id=5, state=LoopState.COOLING)
@@ -179,6 +179,7 @@ class TestNeuronPruning:
             prune_neuron_threshold=1e-6,
             min_prune_observations=5,
             grow_cooldown=999,
+            maturation_window=0,
         )
         # Accumulate importance over enough episodes to pass min_prune_observations
         for ep in range(10):

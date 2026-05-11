@@ -239,30 +239,43 @@ class NeuronGraph(nn.Module):
     # ------------------------------------------------------------------
 
     def _make_compiled_fwd(self):
+        # NeuronGraph forward mutates Python-side neuron state (_current, push_history).
+        # torch.compile traces pure computation and does not replay Python side-effects,
+        # so we run the forward pass in eager mode. Compile is available via
+        # compile_forward() for users who manage state externally.
+        return self._raw_forward
+
+    def compile_forward(self):
+        """
+        Replace the forward pass with a torch.compile'd version.
+
+        Call this ONLY when the graph topology is static and you manage neuron
+        state (reset_state, push_history) manually outside the forward call.
+        Not recommended for general use — prefer the default eager forward.
+        """
         if not hasattr(torch, "compile"):
-            return self._raw_forward
+            return
         import sys
-        # Inductor requires Triton, which is not available on Windows.
-        # aot_eager gives AOT Autograd + graph capture without Triton.
         backend = "inductor" if sys.platform != "win32" else "aot_eager"
-        return torch.compile(self._raw_forward, backend=backend, dynamic=False)
+        self._fwd = torch.compile(self._raw_forward, backend=backend, dynamic=False)
 
     def invalidate_compile(self) -> None:
         """
-        Recompile the forward pass after a topology change or device move.
+        Reset the forward function after a topology change or device move.
 
-        Rebuilds the matrix cache first so the compiled trace always starts
-        with _matrix_dirty=False — avoids a second recompile on the first call.
-
-        Note: torch._dynamo.reset() is process-global; it evicts compiled
-        kernels for every NeuronGraph in the process, not just this one.
-        All graphs recompile on their next forward call.
+        In eager mode (default): rebuilds matrix cache and resets to _raw_forward.
+        If compile_forward() was previously called: resets dynamo state and
+        re-compiles with the new topology.
         """
         if self._neurons:
             self._rebuild_matrix_structure()
-        if hasattr(torch, "_dynamo"):
-            torch._dynamo.reset()
-        self._fwd = self._make_compiled_fwd()
+        compiled = self._fwd is not self._raw_forward
+        if compiled:
+            if hasattr(torch, "_dynamo"):
+                torch._dynamo.reset()
+            self.compile_forward()
+        else:
+            self._fwd = self._raw_forward
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -286,7 +299,9 @@ class NeuronGraph(nn.Module):
         if self._matrix_dirty:
             self._rebuild_matrix_structure()
 
-        # Build h_prev [n]: inject obs at input slots, use stored state elsewhere
+        # h[n]: current activation vector, updated in-place as we walk topo order.
+        # Input neurons are seeded from obs. Non-input neurons start from their
+        # stored (previous-timestep) state but are overwritten once step() runs.
         h_list: List[torch.Tensor] = []
         for nid in self._neuron_index:
             if nid in self._input_pos:
@@ -294,37 +309,37 @@ class NeuronGraph(nn.Module):
                 self._neurons[nid]._current = val.unsqueeze(0)  # type: ignore
                 h_list.append(val)
             else:
-                # Detach: h_prev carries values from the previous timestep only.
-                # Gradient flows within this forward pass, not across steps —
-                # consistent with how push_history() already detaches history.
+                # Previous-timestep value: detached so gradients don't flow across steps.
                 h_list.append(self._neurons[nid]._current.detach().squeeze(0))  # type: ignore
-        h_prev = torch.stack(h_list)  # [n]
+        h = torch.stack(h_list)  # [n] — will be updated in topo order below
 
-        # One matmul for all d=0 edges
+        # Precompute weight matrix (differentiable — weights change during training).
         W = self._assemble_W()
-        pre = W @ h_prev  # [n]  — weighted input sums, no bias (each neuron's
-                          #        step() handles its own bias internally)
 
-        # Add delay>0 contributions (rare — recurrent edges only)
+        # Delay>0 (recurrent) edge contributions — always use previous-timestep history.
+        rec_pre: Optional[torch.Tensor] = None
         if self._rec_edges:
-            rec_dst: List[int] = []
-            rec_vals: List[torch.Tensor] = []
+            rec_pre = torch.zeros(len(self._neuron_index), device=self._device)
             for edge in self._rec_edges:
                 src_neuron: Neuron = self._neurons[edge.src]  # type: ignore
-                h = src_neuron.get_delayed(edge.delay).squeeze(0)
+                hist = src_neuron.get_delayed(edge.delay).squeeze(0)
                 w = self._effective_rec_weight(edge)
-                rec_dst.append(self._nid_to_idx[edge.dst])
-                rec_vals.append(w * h)
-            rec_dst_t = torch.tensor(rec_dst, dtype=torch.long, device=self._device)
-            pre = pre.scatter_add(0, rec_dst_t, torch.stack(rec_vals))
+                rec_pre[self._nid_to_idx[edge.dst]] = rec_pre[self._nid_to_idx[edge.dst]] + w * hist
 
-        # Apply per-neuron step() in topological order (non-input neurons).
-        # step() handles bias + activation for PointNeurons, and the full
-        # gating computation for GRUNeuron / LSTMNeuron.
+        # Walk non-input neurons in topological order.
+        # For each neuron, sum the feedforward inputs from the CURRENT h (which
+        # already holds updated values for upstream neurons processed earlier),
+        # then call step() and write the result back into h.
+        # This makes feedforward propagation complete in a single forward pass.
         for nid in self._topo_order:
             neuron: Neuron = self._neurons[nid]  # type: ignore
             idx = self._nid_to_idx[nid]
-            neuron.step(pre[idx].unsqueeze(0))
+            # Feedforward: dot product of W[idx] with current h (row = dst neuron)
+            pre_ff = (W[idx] * h).sum()
+            pre = pre_ff + (rec_pre[idx] if rec_pre is not None else 0.0)
+            neuron.step(pre.unsqueeze(0))
+            h = h.clone()
+            h[idx] = neuron._current.squeeze(0)  # type: ignore
 
         # Push all neurons' current activations into history
         for nid in self._neurons:

@@ -12,10 +12,8 @@ enforces it:
     MultiDiscrete   →  NotImplementedError
     Dict / Tuple    →  NotImplementedError
 
-Using SAC on a Discrete env is a *type error*: SAC outputs actions in (-1,1)
-while Discrete requires integer indices.  Using PPO on a Box env with a
-softmax head is undefined on a continuous manifold.  make_agent() prevents
-both mismatches by construction.
+When neuroevo=True the policy is a NeuronGraph wrapped in GraphAgent (PPO-based).
+The algorithm argument in that case influences hyperparameter defaults only.
 
 Usage::
 
@@ -23,22 +21,30 @@ Usage::
     from tensor_optix import make_agent
 
     env   = gym.make("CartPole-v1")
-    agent = make_agent(env)                          # TorchPPOAgent
+    agent = make_agent(env)                                  # TorchPPOAgent
+    agent = make_agent("PPO", env)                           # same
+    agent = make_agent("PPO", env, neuroevo=True)            # GraphAgent + NeuronGraph
 
     env   = gym.make("LunarLanderContinuous-v3")
-    agent = make_agent(env)                          # TorchSACAgent
-    agent = make_agent(env, deterministic=True)      # TorchTD3Agent
-    agent = make_agent(env, framework="tf")          # TFSACAgent
+    agent = make_agent(env)                                  # TorchSACAgent
+    agent = make_agent("SAC", env)                           # same
+    agent = make_agent("SAC", env, neuroevo=True)            # GraphAgent + NeuronGraph
+    agent = make_agent(env, deterministic=True)              # TorchTD3Agent
+    agent = make_agent(env, framework="tf")                  # TFSACAgent
 
 Only flat 1-D observation spaces (gym.spaces.Box with shape=(n,)) are
-supported.  Image observations require custom network architectures.
+supported for non-neuroevo paths.  Image observations require custom
+network architectures.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Optional, Tuple
 
 from tensor_optix.core.types import HyperparamSet
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -46,12 +52,21 @@ from tensor_optix.core.types import HyperparamSet
 # ---------------------------------------------------------------------------
 
 def make_agent(
-    env,
+    algorithm_or_env,
+    env=None,
     framework: str = "torch",
     deterministic: bool = False,
     hidden_sizes: Tuple[int, ...] = (256, 256),
     hyperparams: Optional[HyperparamSet] = None,
     device: str = "auto",
+    # Neuroevo options
+    neuroevo: bool = False,
+    graph_in: Optional[int] = None,
+    graph_hidden: int = 8,
+    graph_out: Optional[int] = None,
+    hebbian_lr: float = 1e-3,
+    hebbian_decay: float = 1e-4,
+    grow_cooldown: int = 20,
 ):
     """
     Inspect *env* and return a fully-constructed agent with default networks.
@@ -87,6 +102,20 @@ def make_agent(
         When the action space type has no supported algorithm, or when the
         observation space is not a flat 1-D Box.
     """
+    # ------------------------------------------------------------------
+    # Parse positional overloading: make_agent(env) or make_agent("SAC", env)
+    # ------------------------------------------------------------------
+    if isinstance(algorithm_or_env, str):
+        algorithm = algorithm_or_env.upper()
+        if env is None:
+            raise ValueError(
+                "When algorithm is passed as first argument, env must be provided "
+                "as the second argument: make_agent('SAC', env)"
+            )
+    else:
+        env = algorithm_or_env
+        algorithm = None
+
     obs_space = env.observation_space
     act_space = env.action_space
 
@@ -115,6 +144,39 @@ def make_agent(
         )
 
     obs_dim = int(obs_space.shape[0])
+
+    # ------------------------------------------------------------------
+    # Neuroevo path — wraps a NeuronGraph in GraphAgent
+    # ------------------------------------------------------------------
+    if neuroevo:
+        if isinstance(act_space, Discrete):
+            act_dim = int(act_space.n)
+            continuous = False
+        elif isinstance(act_space, Box):
+            if len(act_space.shape) != 1:
+                raise NotImplementedError(
+                    f"neuroevo make_agent() only supports 1-D continuous action spaces. "
+                    f"Got shape: {act_space.shape}."
+                )
+            act_dim = int(act_space.shape[0])
+            continuous = True
+        else:
+            raise NotImplementedError(
+                f"neuroevo make_agent() does not support {type(act_space).__name__} action spaces."
+            )
+        return _make_neuroevo_agent(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            continuous=continuous,
+            graph_in=graph_in,
+            graph_hidden=graph_hidden,
+            graph_out=graph_out,
+            hebbian_lr=hebbian_lr,
+            hebbian_decay=hebbian_decay,
+            grow_cooldown=grow_cooldown,
+            hyperparams=hyperparams,
+            device=device,
+        )
 
     # ------------------------------------------------------------------
     # Route by action space
@@ -398,3 +460,89 @@ def _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp):
         critic_optimizer=tf.keras.optimizers.Adam(lr),
         hyperparams=hp,
     )
+
+
+# ---------------------------------------------------------------------------
+# Neuroevo builder
+# ---------------------------------------------------------------------------
+
+def _make_neuroevo_agent(
+    obs_dim, act_dim, continuous,
+    graph_in, graph_hidden, graph_out,
+    hebbian_lr, hebbian_decay, grow_cooldown,
+    hyperparams, device,
+):
+    """Build a GraphAgent backed by a NeuronGraph with Hebbian + TopologyController."""
+    from tensor_optix.neuroevo import (
+        NeuronGraph, GraphAgent, HebbianHook, TopologyController,
+    )
+    from tensor_optix.neuroevo.graph.neuron import TrainableGRUNeuron
+    import torch
+
+    # Input projection: cap at 16 for large obs spaces
+    n_in = graph_in if graph_in is not None else min(obs_dim, 16)
+    # Output: act_dim action neurons + 1 value neuron
+    n_out = graph_out if graph_out is not None else act_dim + 1
+
+    graph = NeuronGraph(dale_mode="softplus")
+
+    # Input neurons
+    in_neurons = []
+    for i in range(n_in):
+        nid = graph.add_neuron(role="input", cell_type="excitatory", neuron_id=f"i{i}")
+        in_neurons.append(nid)
+
+    # Hidden GRU neurons
+    hidden_neurons = []
+    for j in range(graph_hidden):
+        gru = TrainableGRUNeuron(neuron_id=f"h{j}", cell_type="excitatory")
+        nid = graph.add_neuron(role="hidden", neuron=gru)
+        hidden_neurons.append(nid)
+
+    # Output neurons
+    out_neurons = []
+    for k in range(n_out):
+        nid = graph.add_neuron(role="output", cell_type="excitatory", neuron_id=f"o{k}")
+        out_neurons.append(nid)
+
+    # Wire input → hidden → output
+    for src in in_neurons:
+        for dst in hidden_neurons:
+            graph.add_edge(src, dst, weight=0.1)
+    for src in hidden_neurons:
+        for dst in out_neurons:
+            graph.add_edge(src, dst, weight=0.1)
+
+    _hp = hyperparams or HyperparamSet(params={
+        "learning_rate":  3e-4,
+        "clip_ratio":     0.2,
+        "entropy_coef":   0.01,
+        "vf_coef":        0.5,
+        "gamma":          0.99,
+        "gae_lambda":     0.95,
+        "n_epochs":       4,
+        "minibatch_size": 64,
+        "max_grad_norm":  0.5,
+    }, episode_id=0)
+
+    agent = GraphAgent(
+        graph=graph,
+        obs_dim=n_in,
+        n_actions=act_dim,
+        continuous=continuous,
+        hyperparams=_hp,
+        device=device,
+    )
+
+    # Attach callbacks that can be used by Optimizer
+    agent._neuroevo_callbacks = [
+        HebbianHook(graph, lr=hebbian_lr, decay=hebbian_decay),
+        TopologyController(graph, grow_cooldown=grow_cooldown),
+    ]
+
+    logger.info(
+        "make_agent(neuroevo=True): obs_dim=%d → graph_in=%d, hidden=%d (GRU), out=%d, "
+        "continuous=%s, dale_mode=softplus",
+        obs_dim, n_in, graph_hidden, n_out, continuous,
+    )
+    return agent

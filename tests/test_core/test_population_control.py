@@ -15,6 +15,9 @@ class FixedAgent:
     def act(self, obs):
         return np.array([self._action], dtype=float)
 
+    def teardown(self):
+        pass
+
 
 def make_pm(*weights):
     """Create a PolicyManager with N agents at given weights."""

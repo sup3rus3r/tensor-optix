@@ -3,10 +3,8 @@ import importlib.machinery
 from unittest.mock import MagicMock
 
 # Stub TensorFlow before any tensor_optix import can trigger the real TF C++
-# library.  When TF is properly installed the stub is never used (the
-# `if mod_name not in sys.modules` guard is a no-op).  When TF is absent or
-# broken (e.g. during a CUDA-enabled reinstall), the stub prevents a hard
-# segfault from TF's native initialisation code.
+# library.  Only stubs when TF is genuinely absent or broken — if TF can be
+# imported successfully, the real module is used and the stub is skipped.
 def _make_tf_mock(name: str) -> MagicMock:
     m = MagicMock()
     m.__spec__    = importlib.machinery.ModuleSpec(name=name, loader=None, origin=None)
@@ -17,10 +15,23 @@ def _make_tf_mock(name: str) -> MagicMock:
     m.__loader__  = None
     return m
 
-for _tf_mod in ["tensorflow", "tensorflow.keras", "tensorflow.keras.layers",
-                "tensorflow.keras.optimizers", "tensorflow.keras.models"]:
-    if _tf_mod not in sys.modules:
-        sys.modules[_tf_mod] = _make_tf_mock(_tf_mod)
+_tf_available = False
+try:
+    # Suppress TF GPU initialization at import time to avoid SIGFPE on
+    # unsupported GPU hardware (e.g. compute capability 12.0a / RTX 5070).
+    import os as _os
+    _os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    _os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")  # CPU-only for tests
+    import tensorflow as _real_tf  # noqa: F401
+    _tf_available = True
+except (ImportError, RuntimeError, OSError):
+    pass
+
+if not _tf_available:
+    for _tf_mod in ["tensorflow", "tensorflow.keras", "tensorflow.keras.layers",
+                    "tensorflow.keras.optimizers", "tensorflow.keras.models"]:
+        if _tf_mod not in sys.modules:
+            sys.modules[_tf_mod] = _make_tf_mock(_tf_mod)
 
 import pytest
 import numpy as np

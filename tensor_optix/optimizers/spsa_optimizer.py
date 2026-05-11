@@ -70,10 +70,12 @@ class SPSAOptimizer(BaseOptimizer):
         self._log_params: set = set(log_params or [])
         self._warmup_episodes = warmup_episodes
         self._episodes_seen: int = 0
+        self._episodes_since_probe: int = 0
 
         self._param_names: List[str] = []
         self._phase: str = self._PHASE_IDLE
         self._currently_probing: bool = False
+        self._max_idle_episodes: int = 20  # force probe cycle if idle unexpectedly long
 
         # State for the current 2-episode cycle
         self._delta: Optional[np.ndarray] = None     # Rademacher vector
@@ -146,6 +148,12 @@ class SPSAOptimizer(BaseOptimizer):
         latest_score = metrics_history[-1].primary_score
         new_params = dict(current_hyperparams.params)
 
+        self._episodes_since_probe += 1
+
+        # Defensive guard: if somehow stuck in IDLE beyond max_idle_episodes, force a cycle.
+        if self._phase == self._PHASE_IDLE and self._episodes_since_probe > self._max_idle_episodes:
+            logger.debug("SPSA: idle for %d episodes, forcing new probe cycle", self._episodes_since_probe)
+
         if self._phase == self._PHASE_IDLE:
             # Start new cycle: sample Δ, apply +c·Δ probe
             raw = self._current_raw(current_hyperparams)
@@ -198,6 +206,7 @@ class SPSAOptimizer(BaseOptimizer):
 
             self._phase = self._PHASE_IDLE
             self._currently_probing = False
+            self._episodes_since_probe = 0
 
         return HyperparamSet(
             params=new_params,

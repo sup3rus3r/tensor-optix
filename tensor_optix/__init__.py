@@ -50,12 +50,14 @@ from .core.replay_buffer import PrioritizedReplayBuffer
 from .core.diagnostic_controller import DiagnosticController
 from .callbacks import WandbCallback, TensorBoardCallback, RichDashboardCallback
 from .factory import make_agent
+from .simple import Optimizer
+from .utils import optimal_window_size
 from .core.her_buffer import HERReplayBuffer
 from .config import TrainConfig, load_config, apply_overrides, config_to_dict, build_agent_from_config
 __all__ += [
     "TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController",
     "WandbCallback", "TensorBoardCallback", "RichDashboardCallback",
-    "make_agent", "HERReplayBuffer",
+    "make_agent", "Optimizer", "optimal_window_size", "HERReplayBuffer",
     "TrainConfig", "load_config", "apply_overrides", "config_to_dict", "build_agent_from_config",
 ]
 
@@ -109,25 +111,29 @@ except (ImportError, RuntimeError):
 try:
     from .neuroevo import (
         NeuronGraph, Edge, Neuron, CELL_TYPES,
+        TrainableGRUNeuron, TrainableLSTMNeuron,
         insert_neuron_on_edge, split_neuron, add_input_neuron, add_free_edge,
         prune_edge, prune_neuron, merge_neurons,
         neuron_importance, edge_importance, cosine_similarity_neurons,
-        GraphAgent,
+        GraphAgent, RecurrentGraphAgent,
         TopologyController,
         BrainNetwork, Pathway, InterRegionEdge,
         HebbianHook,
         NeuromodulatorSignal,
+        TopologyAwareAdam,
     )
     __all__ += [
         "NeuronGraph", "Edge", "Neuron", "CELL_TYPES",
+        "TrainableGRUNeuron", "TrainableLSTMNeuron",
         "insert_neuron_on_edge", "split_neuron", "add_input_neuron", "add_free_edge",
         "prune_edge", "prune_neuron", "merge_neurons",
         "neuron_importance", "edge_importance", "cosine_similarity_neurons",
-        "GraphAgent",
+        "GraphAgent", "RecurrentGraphAgent",
         "TopologyController",
         "BrainNetwork", "Pathway", "InterRegionEdge",
         "HebbianHook",
         "NeuromodulatorSignal",
+        "TopologyAwareAdam",
     ]
 except (ImportError, RuntimeError):
     pass

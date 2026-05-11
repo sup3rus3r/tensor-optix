@@ -125,6 +125,9 @@ class FixedAgent:
     def get_hyperparams(self):
         return self._hyperparams.copy()
 
+    def teardown(self):
+        pass
+
     def set_hyperparams(self, hp):
         self._hyperparams = hp
 

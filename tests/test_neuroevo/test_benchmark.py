@@ -50,6 +50,7 @@ def build_agent() -> tuple[GraphAgent, TopologyController]:
         grow_cooldown=GROW_COOLDOWN,
         min_prune_observations=20,
         max_neurons=32,
+        min_score_buffer=0,  # allow grow without waiting for score history
     )
     return agent, ctrl
 
@@ -102,8 +103,13 @@ def test_cartpole_end_to_end():
         # Record graph size
         n_neurons_over_time.append(diag["n_neurons"])
 
-        # Simulate plateau signal periodically
-        ctrl.on_episode_end(ep, None)
+        from tensor_optix.core.types import EvalMetrics
+        eval_metrics = EvalMetrics(
+            primary_score=float(len(ep_data.rewards)),
+            metrics={"episode_length": float(len(ep_data.rewards))},
+            episode_id=ep,
+        )
+        ctrl.on_episode_end(ep, eval_metrics)
         if ep > 0 and ep % plateau_interval == 0:
             ctrl.on_plateau(ep, LoopState.COOLING)
 

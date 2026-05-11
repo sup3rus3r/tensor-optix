@@ -4,7 +4,7 @@ tensor-optix is a training loop framework with statistical convergence control, 
 
 The core loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected using a corrected t-test on the smoothed score slope plus lag-1 autocorrelation, not a fixed patience counter. Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape. Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
 
-The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. The forward pass is compiled with `torch.compile` automatically — `inductor` on Linux/Mac, `aot_eager` on Windows (Triton-free). `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to retrace cleanly from the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
+The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. Weights for excitatory and inhibitory neurons follow softplus Dale's Law: raw parameter θ maps to `softplus(θ)` (excitatory) or `-softplus(θ)` (inhibitory), eliminating gradient dead zones at weight boundaries. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to reset for the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
 
 The entire system, including neuroevo, is accessed through a six-method `BaseAgent` interface:
 
@@ -80,16 +80,50 @@ All agents implement `BaseAgent` and are interchangeable with `RLOptimizer`.
 
 ### Auto-selection
 
-`make_agent` inspects the environment action space and returns a fully constructed agent.
+`make_agent` inspects the environment action space and returns a fully constructed agent. Pass an algorithm name as the first argument, or let it be inferred.
 
 ```python
 from tensor_optix import make_agent
 import gymnasium as gym
 
 env = gym.make("LunarLanderContinuous-v3")
-agent = make_agent(env)                       # -> TorchSACAgent
-agent = make_agent(env, framework="tf")       # -> TFSACAgent
-agent = make_agent(env, deterministic=True)   # -> TorchTD3Agent
+agent = make_agent(env)                         # -> TorchSACAgent
+agent = make_agent("SAC", env)                  # same
+agent = make_agent(env, framework="tf")         # -> TFSACAgent
+agent = make_agent(env, deterministic=True)     # -> TorchTD3Agent
+
+# Neuroevo path: NeuronGraph + GraphAgent with Hebbian + TopologyController
+agent = make_agent("SAC", env, neuroevo=True)
+agent = make_agent("PPO", env, neuroevo=True, graph_hidden=16, hebbian_lr=1e-3)
+```
+
+Neuroevo options: `graph_in` (input neurons, default `min(obs_dim, 16)`), `graph_hidden` (GRU neurons, default 8), `graph_out` (output neurons, default `act_dim + 1`), `hebbian_lr`, `hebbian_decay`, `grow_cooldown`.
+
+---
+
+## One-line training with Optimizer
+
+`Optimizer` wraps `RLOptimizer` with sensible defaults. It auto-computes `window_size`, wires neuroevo callbacks, and activates SPSA when the agent has `default_param_bounds`.
+
+```python
+from tensor_optix import make_agent, Optimizer
+import gymnasium as gym
+
+env   = gym.make("HumanoidStandup-v5")
+agent = make_agent("SAC", env, neuroevo=True)
+opt   = Optimizer(agent, env)
+opt.run()
+
+# Vectorized: 8 parallel envs
+opt = Optimizer(agent, lambda: gym.make("CartPole-v1"), n_envs=8)
+opt.run()
+```
+
+`optimal_window_size(env, algorithm)` computes the window size formula used internally: `clip(k * mean_episode_steps, 512, 8192)` where k=4.0 for on-policy (PPO) and k=1.0 for off-policy (SAC/TD3).
+
+```python
+from tensor_optix import optimal_window_size
+window = optimal_window_size(env, "PPO")  # e.g. 2000 for CartPole
 ```
 
 ---
@@ -437,13 +471,15 @@ optimizer.notify_topology_change(new_params)  # call after any topology mutation
 
 ### Compiled forward
 
-`NeuronGraph.forward` is wrapped with `torch.compile` on construction. The backend is selected automatically by platform:
+`NeuronGraph` runs in **eager mode by default**. Because `_raw_forward` mutates Python-side neuron state (`neuron._current`, `push_history`), `torch.compile` cannot safely trace it without replaying those side effects. The default eager path is safe for training, recurrent neurons, and dynamic topologies.
 
-| Platform | Backend | Notes |
-|---|---|---|
-| Linux / macOS | `inductor` | Full kernel fusion via Triton |
-| Windows | `aot_eager` | AOT Autograd + graph capture, no Triton required |
-| PyTorch < 2.0 | eager fallback | `torch.compile` not available, runs unchanged |
+If the topology is static and you manage neuron state externally, you can opt in to a compiled forward:
+
+```python
+graph.compile_forward()   # one-time call; re-call after any topology mutation
+```
+
+The backend is selected automatically: `inductor` on Linux/macOS, `aot_eager` on Windows. Has no effect on PyTorch < 2.0.
 
 `TopologyController` calls `graph.invalidate_compile()` after every grow, prune, and merge. If you mutate the graph directly outside the controller, call it yourself:
 
@@ -452,7 +488,7 @@ graph.add_edge(src_id, dst_id, weight=0.0, delay=1)
 graph.invalidate_compile()
 ```
 
-`invalidate_compile()` rebuilds the matrix cache before recompiling so the new compiled trace always starts with a fully resolved graph structure. `torch._dynamo.reset()` is called first to evict stale kernels — this is process-global, so all `NeuronGraph` instances in the process retrace on their next forward call.
+`invalidate_compile()` rebuilds the matrix cache and resets to eager mode. If `compile_forward()` was previously called, it also evicts stale Dynamo kernels (`torch._dynamo.reset()`) and recompiles — this reset is process-global, so all `NeuronGraph` instances in the process retrace on their next forward call.
 
 ---
 
