@@ -95,9 +95,16 @@ agent = make_agent(env, deterministic=True)     # -> TorchTD3Agent
 # Neuroevo path: NeuronGraph + GraphAgent with Hebbian + TopologyController
 agent = make_agent("SAC", env, neuroevo=True)
 agent = make_agent("PPO", env, neuroevo=True, graph_hidden=16, hebbian_lr=1e-3)
+
+# Feature-extractor mode: NeuronGraph → features concatenated to obs, fed into SAC
+agent = make_agent("SAC", env, neuroevo=True, neuroevo_mode="feature_extractor")
 ```
 
 Neuroevo options: `graph_in` (input neurons, default `min(obs_dim, 16)`), `graph_hidden` (GRU neurons, default 8), `graph_out` (output neurons, default `act_dim + 1`), `hebbian_lr`, `hebbian_decay`, `grow_cooldown`.
+
+`neuroevo_mode` controls how the graph is used:
+- `"policy"` (default) — graph IS the policy, wrapped as `GraphAgent` (PPO-based)
+- `"feature_extractor"` — graph runs in parallel as a feature extractor; its `graph_out`-dim output is concatenated with the raw observation before SAC actor/critic networks. The base SAC layer handles exploration and replay; the graph adds adaptive temporal features via GRU + LSTM neurons with Hebbian learning.
 
 ---
 

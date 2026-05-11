@@ -61,6 +61,7 @@ def make_agent(
     device: str = "auto",
     # Neuroevo options
     neuroevo: bool = False,
+    neuroevo_mode: str = "policy",   # "policy" | "feature_extractor"
     graph_in: Optional[int] = None,
     graph_hidden: int = 8,
     graph_out: Optional[int] = None,
@@ -164,19 +165,33 @@ def make_agent(
             raise NotImplementedError(
                 f"neuroevo make_agent() does not support {type(act_space).__name__} action spaces."
             )
-        return _make_neuroevo_agent(
-            obs_dim=obs_dim,
-            act_dim=act_dim,
-            continuous=continuous,
-            graph_in=graph_in,
-            graph_hidden=graph_hidden,
-            graph_out=graph_out,
-            hebbian_lr=hebbian_lr,
-            hebbian_decay=hebbian_decay,
-            grow_cooldown=grow_cooldown,
-            hyperparams=hyperparams,
-            device=device,
-        )
+        if neuroevo_mode == "feature_extractor":
+            return _make_neuroevo_feature_extractor(
+                obs_dim=obs_dim,
+                act_dim=act_dim,
+                graph_in=graph_in or 16,
+                graph_out=graph_out or 8,
+                graph_hidden=graph_hidden,
+                hebbian_lr=hebbian_lr,
+                grow_cooldown=grow_cooldown,
+                hidden_sizes=hidden_sizes,
+                hyperparams=hyperparams,
+                device=device,
+            )
+        else:
+            return _make_neuroevo_agent(
+                obs_dim=obs_dim,
+                act_dim=act_dim,
+                continuous=continuous,
+                graph_in=graph_in,
+                graph_hidden=graph_hidden,
+                graph_out=graph_out,
+                hebbian_lr=hebbian_lr,
+                hebbian_decay=hebbian_decay,
+                grow_cooldown=grow_cooldown,
+                hyperparams=hyperparams,
+                device=device,
+            )
 
     # ------------------------------------------------------------------
     # Route by action space
@@ -525,18 +540,23 @@ def _make_neuroevo_agent(
         "max_grad_norm":  0.5,
     }, episode_id=0)
 
+    import torch as _torch
+    _resolved_device = (
+        "cuda" if (device == "auto" and _torch.cuda.is_available()) else
+        ("cpu" if device == "auto" else device)
+    )
     agent = GraphAgent(
         graph=graph,
         obs_dim=n_in,
         n_actions=act_dim,
         continuous=continuous,
         hyperparams=_hp,
-        device=device,
+        device=_resolved_device,
     )
 
     # Attach callbacks that can be used by Optimizer
     agent._neuroevo_callbacks = [
-        HebbianHook(graph, lr=hebbian_lr, decay=hebbian_decay),
+        HebbianHook(graph, hebbian_lr=hebbian_lr, weight_decay=hebbian_decay),
         TopologyController(graph, grow_cooldown=grow_cooldown),
     ]
 
@@ -544,5 +564,166 @@ def _make_neuroevo_agent(
         "make_agent(neuroevo=True): obs_dim=%d → graph_in=%d, hidden=%d (GRU), out=%d, "
         "continuous=%s, dale_mode=softplus",
         obs_dim, n_in, graph_hidden, n_out, continuous,
+    )
+    return agent
+
+
+def _make_neuroevo_feature_extractor(
+    obs_dim, act_dim, graph_in, graph_out, graph_hidden,
+    hebbian_lr, grow_cooldown, hidden_sizes, hyperparams, device,
+):
+    """
+    Hybrid agent: a NeuronGraph feature extractor feeding a SAC policy.
+
+    The graph projects obs_dim → graph_out features that are concatenated
+    with the raw observation before SAC's actor/critic networks.  A fixed
+    orthogonal projection compresses obs_dim → graph_in first so the graph
+    always sees a manageable input regardless of env dimensionality.
+    """
+    import torch
+    import torch.nn as nn
+    import numpy as np
+    from tensor_optix.neuroevo import (
+        NeuronGraph, HebbianHook, TopologyController,
+    )
+    from tensor_optix.neuroevo.graph.neuron import TrainableGRUNeuron, TrainableLSTMNeuron
+    from tensor_optix.neuroevo.neuromodulator import NeuromodulatorSignal
+    from tensor_optix.core.regime_detector import RegimeDetector
+    from tensor_optix.algorithms.torch_sac import TorchSACAgent
+    from tensor_optix.core.types import EpisodeData as _ED
+
+    # Fixed orthogonal projection: obs_dim → graph_in
+    _proj = torch.randn(obs_dim, graph_in)
+    if obs_dim >= graph_in:
+        _proj, _ = torch.linalg.qr(_proj)
+    else:
+        _proj = _proj / (_proj.norm(dim=0, keepdim=True) + 1e-8)
+    _proj_np = _proj.numpy()
+
+    # Build graph
+    graph = NeuronGraph()
+    in_ids      = [graph.add_neuron(role="input",  activation="linear")            for _ in range(graph_in)]
+    sensory_ids = [graph.add_neuron(role="hidden", neuron=TrainableGRUNeuron())     for _ in range(graph_hidden)]
+    memory_ids  = [graph.add_neuron(role="hidden", neuron=TrainableLSTMNeuron())    for _ in range(graph_hidden)]
+    out_ids     = [graph.add_neuron(role="output", activation="tanh")               for _ in range(graph_out)]
+
+    stride = max(1, graph_in // graph_hidden)
+    for i, s in enumerate(sensory_ids):
+        for j in range(i * stride, min((i + 1) * stride, graph_in)):
+            graph.add_edge(in_ids[j], s, weight=0.1)
+    # leftover input neurons → first sensory
+    for j in range(graph_hidden * stride, graph_in):
+        graph.add_edge(in_ids[j], sensory_ids[0], weight=0.1)
+    for i, m in enumerate(memory_ids):
+        graph.add_edge(sensory_ids[i % graph_hidden],                          m, weight=0.1, delay=1)
+        graph.add_edge(sensory_ids[(i + graph_hidden // 2) % graph_hidden],    m, weight=0.1, delay=1)
+    for o in out_ids:
+        for m in memory_ids:
+            graph.add_edge(m, o, weight=0.1)
+
+    _device = torch.device(
+        "cuda" if (device == "auto" and torch.cuda.is_available()) else
+        ("cpu" if device == "auto" else device)
+    )
+    graph.to(_device)
+
+    def _project(obs: np.ndarray) -> np.ndarray:
+        return (obs @ _proj_np).astype(np.float32)
+
+    def _graph_features(obs: np.ndarray) -> np.ndarray:
+        x = torch.tensor(_project(obs), device=_device)
+        with torch.no_grad():
+            out = graph(x)
+        return out.cpu().numpy()
+
+    def _augment(obs: np.ndarray) -> np.ndarray:
+        return np.concatenate([obs, _graph_features(obs)])
+
+    # SAC networks on augmented obs
+    sac_obs_dim = obs_dim + graph_out
+    hp = hyperparams or HyperparamSet(params={
+        "learning_rate":    3e-4,
+        "gamma":            0.99,
+        "tau":              0.005,
+        "batch_size":       256,
+        "updates_per_step": 1,
+        "replay_capacity":  1_000_000,
+        "per_alpha":        0.0,
+        "per_beta":         0.4,
+        "n_step":           1,
+    }, episode_id=0)
+
+    def _mlp(in_dim, out_dim):
+        layers, prev = [], in_dim
+        for h in hidden_sizes:
+            layers += [nn.Linear(prev, h), nn.ReLU()]
+            prev = h
+        layers.append(nn.Linear(prev, out_dim))
+        return nn.Sequential(*layers)
+
+    actor     = _mlp(sac_obs_dim, act_dim * 2)
+    critic1   = _mlp(sac_obs_dim + act_dim, 1)
+    critic2   = _mlp(sac_obs_dim + act_dim, 1)
+    log_alpha = torch.zeros(1, requires_grad=True)
+    lr        = float(hp.params.get("learning_rate", 3e-4))
+
+    class _NeuroSACAgent(TorchSACAgent):
+        default_param_bounds = {
+            "learning_rate": (1e-5, 1e-3),
+            "gamma":         (0.97, 0.999),
+            "tau":           (1e-3, 1e-1),
+        }
+        default_log_params = ["learning_rate", "tau"]
+
+        def act(self, observation):
+            return super().act(_augment(np.asarray(observation, dtype=np.float32)))
+
+        def learn(self, episode_data):
+            aug = np.array(
+                [_augment(np.asarray(o, dtype=np.float32)) for o in episode_data.observations],
+                dtype=np.float32,
+            )
+            final = (
+                _augment(np.asarray(episode_data.final_obs, dtype=np.float32))
+                if episode_data.final_obs is not None else None
+            )
+            ep = _ED(
+                observations=aug,
+                actions=episode_data.actions,
+                rewards=episode_data.rewards,
+                terminated=episode_data.terminated,
+                truncated=episode_data.truncated,
+                infos=episode_data.infos,
+                episode_id=episode_data.episode_id,
+                episode_starts=episode_data.episode_starts,
+                final_obs=final,
+            )
+            return super().learn(ep)
+
+    agent = _NeuroSACAgent(
+        actor=actor,
+        critic1=critic1,
+        critic2=critic2,
+        action_dim=act_dim,
+        actor_optimizer=torch.optim.Adam(actor.parameters(), lr=lr),
+        critic_optimizer=torch.optim.Adam(
+            list(critic1.parameters()) + list(critic2.parameters()), lr=lr,
+        ),
+        alpha_optimizer=torch.optim.Adam([log_alpha], lr=lr),
+        hyperparams=hp,
+        device=device,
+    )
+
+    hebbian = HebbianHook(graph, hebbian_lr=hebbian_lr)
+    ctrl    = TopologyController.for_graph(graph, grow_cooldown=grow_cooldown)
+    mod     = NeuromodulatorSignal(RegimeDetector(), hebbian_hook=hebbian)
+
+    agent._neuroevo_graph     = graph
+    agent._neuroevo_callbacks = [ctrl, hebbian, mod]
+
+    logger.info(
+        "make_agent(neuroevo=True, neuroevo_mode='feature_extractor'): "
+        "obs_dim=%d → graph_in=%d, hidden=%d, graph_out=%d, sac_obs=%d",
+        obs_dim, graph_in, graph_hidden, graph_out, sac_obs_dim,
     )
     return agent
