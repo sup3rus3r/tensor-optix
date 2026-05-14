@@ -373,6 +373,95 @@ class NeuronGraph(nn.Module):
     def all_neuron_ids(self) -> List[str]:
         return list(self._neurons.keys())
 
+    # ------------------------------------------------------------------
+    # Serialization — topology-aware save / load
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """
+        Serialize the full graph topology (structure only — weights come from
+        state_dict). The returned dict is JSON-serializable and captures enough
+        information for from_dict() to reconstruct an identical graph that will
+        accept the original state_dict without key mismatches.
+        """
+        neurons = []
+        for role, ids in [
+            ("input",  self._input_ids),
+            ("hidden", self._hidden_ids),
+            ("output", self._output_ids),
+        ]:
+            for nid in ids:
+                n: Neuron = self._neurons[nid]  # type: ignore
+                neurons.append({
+                    "neuron_id":       nid,
+                    "role":            role,
+                    "type":            type(n).__name__,
+                    "activation_name": getattr(n, "activation_name", "tanh"),
+                    "max_delay":       n._max_delay,
+                    "cell_type":       n.cell_type,
+                })
+
+        edges = []
+        for eid, e in self._edges.items():
+            edges.append({
+                "edge_id": eid,
+                "src":     e.src,
+                "dst":     e.dst,
+                "delay":   e.delay,
+            })
+
+        return {
+            "dale_mode": self._dale_mode,
+            "neurons":   neurons,
+            "edges":     edges,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "NeuronGraph":
+        """
+        Reconstruct a NeuronGraph from a topology dict produced by to_dict().
+        Neurons are added with their original IDs so state_dict keys match
+        exactly after a subsequent load_state_dict() call.
+        """
+        from .neuron import GRUNeuron, LSTMNeuron, TrainableGRUNeuron, TrainableLSTMNeuron
+
+        _type_map = {
+            "Neuron":              Neuron,
+            "GRUNeuron":           GRUNeuron,
+            "LSTMNeuron":          LSTMNeuron,
+            "TrainableGRUNeuron":  TrainableGRUNeuron,
+            "TrainableLSTMNeuron": TrainableLSTMNeuron,
+        }
+
+        graph = cls(dale_mode=d.get("dale_mode", "clamp"))
+
+        for spec in d["neurons"]:
+            neuron_cls = _type_map.get(spec["type"], Neuron)
+            if spec["type"] == "Neuron":
+                neuron = neuron_cls(
+                    activation=spec["activation_name"],
+                    neuron_id=spec["neuron_id"],
+                    max_delay=spec["max_delay"],
+                    cell_type=spec["cell_type"],
+                )
+            else:
+                neuron = neuron_cls(
+                    neuron_id=spec["neuron_id"],
+                    max_delay=spec["max_delay"],
+                    cell_type=spec["cell_type"],
+                )
+            graph.add_neuron(role=spec["role"], neuron=neuron)
+
+        for spec in d["edges"]:
+            graph.add_edge(
+                src=spec["src"],
+                dst=spec["dst"],
+                delay=spec["delay"],
+                edge_id=spec["edge_id"],
+            )
+
+        return graph
+
     @property
     def input_ids(self) -> List[str]:
         return list(self._input_ids)

@@ -141,6 +141,7 @@ class TopologyController(LoopCallback):
         if isinstance(regions, NeuronGraph):
             regions = {"default": regions}
         self._regions = regions
+        self._brain: Optional["BrainNetwork"] = None
         self.scheduler = scheduler
 
         self.grow_op = grow_op
@@ -211,7 +212,9 @@ class TopologyController(LoopCallback):
         **kwargs,
     ) -> "TopologyController":
         """BrainNetwork convenience constructor — one region per brain region."""
-        return cls(brain.regions, scheduler=scheduler, **kwargs)
+        tc = cls(brain.regions, scheduler=scheduler, **kwargs)
+        tc._brain = brain
+        return tc
 
     # ------------------------------------------------------------------
     # Backward-compatibility: expose .graph for single-region users
@@ -258,7 +261,7 @@ class TopologyController(LoopCallback):
                 self._do_grow(episode_id, region_name, graph)
 
             self._check_edge_pruning(graph)
-            self._check_neuron_pruning(episode_id, graph)
+            self._check_neuron_pruning(episode_id, graph, region_name)
 
         if episode_id % self.merge_check_interval == 0:
             for graph in self._regions.values():
@@ -460,7 +463,7 @@ class TopologyController(LoopCallback):
     # Prune — neuron
     # ------------------------------------------------------------------
 
-    def _check_neuron_pruning(self, episode_id: int, graph: NeuronGraph) -> bool:
+    def _check_neuron_pruning(self, episode_id: int, graph: NeuronGraph, region_name: str = "default") -> bool:
         if self._accum_steps < self.min_prune_observations:
             return False
         hidden = list(graph.hidden_ids)
@@ -490,6 +493,8 @@ class TopologyController(LoopCallback):
                     nid[:8], avg_importance, grad_mag, episode_id - birth,
                 )
                 prune_neuron(graph, nid, redistribute=True)
+                if self._brain is not None:
+                    self._brain.notify_neuron_pruned(region_name, nid)
                 self._neuron_importance_accum.pop(nid, None)
                 self._neuron_birth.pop(nid, None)
                 self._act_history.pop(nid, None)

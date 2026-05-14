@@ -42,12 +42,15 @@ Usage example::
     out = brain(obs_tensor)
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 from .graph.neuron_graph import NeuronGraph, Edge
 from .graph.neuron import Neuron
@@ -154,6 +157,10 @@ class BrainNetwork(nn.Module):
     @property
     def region_names(self) -> List[str]:
         return list(self._region_order)
+
+    @property
+    def regions(self) -> Dict[str, NeuronGraph]:
+        return {name: self._regions[name] for name in self._region_order}  # type: ignore
 
     # ------------------------------------------------------------------
     # Pathway management
@@ -278,6 +285,21 @@ class BrainNetwork(nn.Module):
 
     def all_inter_region_edges(self) -> List[InterRegionEdge]:
         return list(self._edges.values())
+
+    def notify_neuron_pruned(self, region_name: str, neuron_id: str) -> None:
+        """Remove all InterRegionEdges that reference a pruned neuron."""
+        dangling = [
+            eid for eid, e in self._edges.items()
+            if (e.src_region == region_name and e.src_neuron == neuron_id)
+            or (e.dst_region == region_name and e.dst_neuron == neuron_id)
+        ]
+        for eid in dangling:
+            logger.info(
+                "BrainNetwork: removing dangling inter-region edge %s "
+                "(references pruned neuron %s in region '%s')",
+                eid[:8], neuron_id[:8], region_name,
+            )
+            self.remove_inter_region_edge(eid)
 
     # ------------------------------------------------------------------
     # Forward pass

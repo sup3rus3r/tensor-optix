@@ -212,17 +212,71 @@ class GraphAgent(BaseAgent):
 
     def save_weights(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-        state = {"graph": self.graph.state_dict(), "episode": self._episode_count}
+        state = {
+            "topology": self.graph.to_dict(),
+            "graph":    self.graph.state_dict(),
+            "episode":  self._episode_count,
+        }
         if self.continuous:
             state["log_std"] = self.log_std.data
         torch.save(state, path)
 
     def load_weights(self, path: str) -> None:
-        state = torch.load(path, map_location=self.device)
+        state = torch.load(path, map_location=self.device, weights_only=False)
+        if "topology" in state:
+            # Reconstruct topology so state_dict keys match exactly — handles
+            # evolved graphs where neurons were added or pruned since construction.
+            from ..graph.neuron_graph import NeuronGraph
+            self.graph = NeuronGraph.from_dict(state["topology"]).to(self.device)
         self.graph.load_state_dict(state["graph"])
         self._episode_count = state.get("episode", 0)
         if self.continuous and "log_std" in state:
             self.log_std.data.copy_(state["log_std"])
+
+    @classmethod
+    def from_checkpoint(cls, path: str, device: str = "auto") -> "GraphAgent":
+        """
+        Load a fully-evolved GraphAgent from a checkpoint saved by save_weights().
+
+        Unlike load_weights(), this does not require a pre-constructed agent —
+        it reconstructs the topology from the checkpoint and returns a ready
+        agent.
+
+            agent = GraphAgent.from_checkpoint("checkpoints/best.pt")
+            agent.act(obs)
+        """
+        from ..graph.neuron_graph import NeuronGraph
+
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        if "topology" not in state:
+            raise ValueError(
+                f"Checkpoint at '{path}' has no topology key. "
+                "It was saved before topology-aware checkpointing was introduced. "
+                "Construct the agent manually and call load_weights() instead."
+            )
+        graph = NeuronGraph.from_dict(state["topology"])
+        n_inputs   = len(graph.input_ids)
+        n_outputs  = len(graph.output_ids)
+        continuous = "log_std" in state
+        # Last output neuron is always the value head; remaining are action outputs.
+        n_actions  = n_outputs - 1
+
+        _device = (
+            ("cuda" if torch.cuda.is_available() else "cpu")
+            if device == "auto" else device
+        )
+        agent = cls(
+            graph=graph,
+            obs_dim=n_inputs,
+            n_actions=n_actions,
+            continuous=continuous,
+            device=_device,
+        )
+        agent.graph.load_state_dict(state["graph"])
+        agent._episode_count = state.get("episode", 0)
+        if continuous and "log_std" in state:
+            agent.log_std.data.copy_(state["log_std"].to(agent.device))
+        return agent
 
     def perturb_weights(self, noise_scale: float) -> None:
         with torch.no_grad():
