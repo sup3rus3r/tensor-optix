@@ -1,16 +1,23 @@
 """
 tensor_optix.simple — one-line Optimizer entry point.
 
+    # RL (existing)
     opt = optix.Optimizer(agent, env)
     opt = optix.Optimizer(agent, env, n_envs=8)
+
+    # ML — any nn.Module + Dataset or DataLoader
+    opt = optix.Optimizer(model, dataset)
+    opt = optix.Optimizer(model, dataset, loss="cross_entropy")
+    opt = optix.Optimizer(autoencoder, dataset, loss="reconstruction")
+
     opt.run()
 
 Handles:
-  - window_size auto-computation via optimal_window_size
-  - n_envs=1 → BatchPipeline, n_envs>1 → VectorBatchPipeline
-  - neuroevo callbacks wired automatically when agent has _neuroevo_callbacks
-  - SPSA wired when agent has default_param_bounds
-  - Loud diagnostics for silent failures
+  - RL path: window_size auto-computation, BatchPipeline / VectorBatchPipeline,
+    neuroevo callbacks, SPSA
+  - ML path: auto-detects nn.Module + Dataset/DataLoader, builds MLAgent +
+    DatasetPipeline, wires SPSA, rollback, convergence detection
+  - loss="auto" (default for ML): detects loss from dataset sample
 """
 
 from __future__ import annotations
@@ -61,13 +68,36 @@ class Optimizer:
         rollback_on_degradation: bool = False,
         checkpoint_dir: str = "./tensor_optix_checkpoints",
         optimizer=None,
+        loss="auto",
+        batch_size: int = 64,
+        shuffle: bool = True,
         **kwargs,
     ):
         from tensor_optix.optimizer import RLOptimizer
+        from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
+
+        # ------------------------------------------------------------------
+        # ML path — nn.Module + Dataset/DataLoader
+        # ------------------------------------------------------------------
+        if _is_ml_mode(agent, env):
+            self._rl_optimizer = _build_ml_optimizer(
+                model=agent,
+                dataset=env,
+                loss=loss,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                max_episodes=max_episodes,
+                callbacks=callbacks or [],
+                rollback_on_degradation=rollback_on_degradation,
+                checkpoint_dir=checkpoint_dir,
+                optimizer=optimizer,
+                **kwargs,
+            )
+            return
+
         from tensor_optix.pipeline.batch_pipeline import BatchPipeline
         from tensor_optix.pipeline.vector_pipeline import VectorBatchPipeline
         from tensor_optix.utils.window_size import optimal_window_size
-        from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
 
         # ------------------------------------------------------------------
         # Determine algorithm name for window_size computation
@@ -157,6 +187,84 @@ class Optimizer:
     def run(self):
         """Start training. Blocks until max_episodes or KeyboardInterrupt."""
         return self._rl_optimizer.run()
+
+
+def _is_ml_mode(agent, env) -> bool:
+    """True when the user passed an nn.Module + Dataset/DataLoader instead of agent + env."""
+    import torch.nn as nn
+    from torch.utils.data import Dataset, DataLoader
+    return (
+        isinstance(agent, nn.Module)
+        and not isinstance(agent, _BaseAgentCheck())
+        and isinstance(env, (Dataset, DataLoader))
+    )
+
+
+class _BaseAgentCheck:
+    """Lazy sentinel — returns BaseAgent type without importing at module level."""
+    def __instancecheck__(self, instance):
+        from tensor_optix.core.base_agent import BaseAgent
+        return isinstance(instance, BaseAgent)
+
+
+def _build_ml_optimizer(
+    model,
+    dataset,
+    loss,
+    batch_size,
+    shuffle,
+    max_episodes,
+    callbacks,
+    rollback_on_degradation,
+    checkpoint_dir,
+    optimizer,
+    **kwargs,
+):
+    """Wire MLAgent + DatasetPipeline + RLOptimizer for the ML training path."""
+    from tensor_optix.ml.loss_registry import resolve_loss
+    from tensor_optix.ml.ml_agent import MLAgent
+    from tensor_optix.ml.dataset_pipeline import DatasetPipeline
+    from tensor_optix.optimizer import RLOptimizer
+    from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
+
+    # Resolve loss — auto-detect from dataset when loss="auto"
+    loss_key = loss if isinstance(loss, str) else "custom"
+    loss_fn = resolve_loss(loss, dataset=dataset)
+
+    # Build MLAgent
+    ml_agent = MLAgent(model=model, loss_fn=loss_fn)
+    logger.info("Optimizer: ML mode — %s, loss='%s'", type(model).__name__, loss_key)
+
+    # Build DatasetPipeline
+    pipeline = DatasetPipeline(
+        dataset=dataset,
+        agent=ml_agent,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        loss_key=loss_key,
+    )
+
+    # SPSA
+    all_callbacks = list(callbacks)
+    if optimizer is not None:
+        spsa_opt = optimizer
+    else:
+        spsa_opt = SPSAOptimizer(
+            param_bounds=MLAgent.default_param_bounds,
+            log_params=MLAgent.default_log_params,
+        )
+        logger.info("Optimizer: SPSA active for ML (learning_rate, weight_decay)")
+
+    return RLOptimizer(
+        agent=ml_agent,
+        pipeline=pipeline,
+        optimizer=spsa_opt,
+        callbacks=all_callbacks if all_callbacks else None,
+        max_episodes=max_episodes,
+        rollback_on_degradation=rollback_on_degradation,
+        checkpoint_dir=checkpoint_dir,
+        **kwargs,
+    )
 
 
 def _infer_algorithm_name(agent) -> str:

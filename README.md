@@ -4,7 +4,7 @@ tensor-optix is a training loop framework with statistical convergence control, 
 
 The core loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected using a corrected t-test on the smoothed score slope plus lag-1 autocorrelation, not a fixed patience counter. Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape. Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
 
-The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. Weights for excitatory and inhibitory neurons follow softplus Dale's Law: raw parameter θ maps to `softplus(θ)` (excitatory) or `-softplus(θ)` (inhibitory), eliminating gradient dead zones at weight boundaries. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to reset for the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
+The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. Weights for excitatory and inhibitory neurons follow softplus Dale's Law: raw parameter θ maps to `softplus(θ)` (excitatory) or `-softplus(θ)` (inhibitory), eliminating gradient dead zones at weight boundaries. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to reset for the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges — when a neuron is pruned from a region, all inter-region edges referencing it are automatically cleaned up. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
 
 The entire system, including neuroevo, is accessed through a six-method `BaseAgent` interface:
 
@@ -87,16 +87,22 @@ from tensor_optix import make_agent
 import gymnasium as gym
 
 env = gym.make("LunarLanderContinuous-v3")
-agent = make_agent(env)                         # -> TorchSACAgent
-agent = make_agent("SAC", env)                  # same
-agent = make_agent(env, framework="tf")         # -> TFSACAgent
-agent = make_agent(env, deterministic=True)     # -> TorchTD3Agent
+agent = make_agent(env)                          # -> TorchSACAgent (continuous)
+agent = make_agent("SAC", env)                   # same, explicit
+agent = make_agent(env, framework="tf")          # -> TFSACAgent
+agent = make_agent(env, deterministic=True)      # -> TorchTD3Agent
+
+# Discrete action spaces
+env = gym.make("CartPole-v1")
+agent = make_agent(env)                          # -> TorchPPOAgent (default discrete)
+agent = make_agent(env, algorithm="DQN")         # -> TorchDQNAgent
+agent = make_agent(env, algorithm="RAINBOW")     # -> TorchRainbowDQNAgent
 
 # Neuroevo path: NeuronGraph + GraphAgent with Hebbian + TopologyController
-agent = make_agent("SAC", env, neuroevo=True)
+agent = make_agent(env, neuroevo=True)
 agent = make_agent("PPO", env, neuroevo=True, graph_hidden=16, hebbian_lr=1e-3)
 
-# Feature-extractor mode: NeuronGraph → features concatenated to obs, fed into SAC
+# Feature-extractor mode: NeuronGraph -> features concatenated to obs, fed into SAC
 agent = make_agent("SAC", env, neuroevo=True, neuroevo_mode="feature_extractor")
 ```
 
@@ -284,6 +290,8 @@ class LoopCallback:
     def on_hyperparam_update(self, old: dict, new: dict) -> None: ...
 ```
 
+`HebbianHook` and `NeuromodulatorSignal` are both `LoopCallback` subclasses and can be passed directly to `Optimizer` or `RLOptimizer` via `callbacks=`.
+
 ---
 
 ## Distributed training (IMPALA + V-trace)
@@ -391,7 +399,26 @@ Grow fires only when all three signals agree:
 2. Score residuals have significant autocorrelation (capacity is underutilised)
 3. Gradient utilization exceeds `grow_grad_threshold` (existing neurons are saturated)
 
-For multi-region graphs, use `TopologyController.for_brain(brain, scheduler=...)`. Each region gets independent signal buffers and cooldown timers.
+For multi-region graphs, use `TopologyController.for_brain(brain, scheduler=...)`. Each region gets independent signal buffers and cooldown timers. When a neuron is pruned from a region, all inter-region `BrainNetwork` edges referencing it are automatically removed.
+
+### Save and load
+
+Topology-aware checkpointing works identically to non-evo agents. The topology (neuron types, roles, edges) is saved alongside weights so the graph is fully reconstructed on load — no manual topology reconstruction required.
+
+```python
+# Save
+agent.save_weights("checkpoint.pt")
+
+# Load into any agent instance — topology is reconstructed automatically
+agent2 = make_agent(env, neuroevo=True)
+agent2.load_weights("checkpoint.pt")
+
+# Or skip constructing an agent entirely
+agent3 = GraphAgent.from_checkpoint("checkpoint.pt")
+agent3.act(obs)
+```
+
+Rollback on degradation uses the same path internally — when the loop restores a best checkpoint, the topology at the time of that checkpoint is fully restored, even if the graph has grown or been pruned since.
 
 ### BrainNetwork
 
@@ -430,24 +457,32 @@ hook.apply()
 hook.reset()
 ```
 
-Use `HebbianHook.from_brain(brain, ...)` for `BrainNetwork` graphs.
+`HebbianHook` is a `LoopCallback` — pass it directly to `Optimizer` or `RLOptimizer` via `callbacks=` and it wires itself automatically. Use `HebbianHook.from_brain(brain, ...)` for `BrainNetwork` graphs.
 
 ### Neuromodulation
 
-`NeuromodulatorSignal` takes a `RegimeDetector` classification and applies coordinated parameter changes across `HebbianHook`, `GraphAgent`, and `TopologyController` simultaneously.
+`NeuromodulatorSignal` takes a `RegimeDetector` classification and applies coordinated parameter changes across `HebbianHook`, `GraphAgent`, and `TopologyController` simultaneously. It is a `LoopCallback` and can be passed directly to `Optimizer`.
 
 ```python
 from tensor_optix.neuroevo import NeuromodulatorSignal
 from tensor_optix.core import RegimeDetector
 
-detector = RegimeDetector()
-mod = NeuromodulatorSignal(hook=hook, agent=agent, controller=controller)
+signal = NeuromodulatorSignal(
+    detector=RegimeDetector(),
+    hebbian_hook=hook,           # optional
+    agent=agent,                 # optional — modulates entropy_coef
+    topology_controller=tc,      # optional — modulates grow/prune thresholds
+)
 
-regime = detector.detect(metrics_history)  # "trending" | "ranging" | "volatile"
-mod.apply(regime)
-# trending  -> lower entropy coefficient, reduce hebbian_lr (consolidate)
-# volatile  -> raise entropy coefficient, raise grow thresholds (explore)
-# ranging   -> raise hebbian_lr (local plasticity)
+# In your training loop, after each episode:
+signal.step(metrics_history)
+# trending  -> lower entropy_coef, lower hebbian_lr (consolidate)
+# ranging   -> raise hebbian_lr, lower grow threshold (explore structure)
+# volatile  -> lower hebbian_lr, raise entropy_coef (cautious plasticity)
+
+# Or wire as a callback — called automatically each episode
+opt = Optimizer(agent, env, callbacks=[hook, signal])
+opt.run()
 ```
 
 ### Dale's Law
@@ -496,6 +531,68 @@ graph.invalidate_compile()
 ```
 
 `invalidate_compile()` rebuilds the matrix cache and resets to eager mode. If `compile_forward()` was previously called, it also evicts stale Dynamo kernels (`torch._dynamo.reset()`) and recompiles — this reset is process-global, so all `NeuronGraph` instances in the process retrace on their next forward call.
+
+---
+
+## ML support
+
+tensor-optix also supports general ML training via `Optimizer`. Pass any `nn.Module` and a PyTorch `Dataset` or `DataLoader` — the same SPSA hyperparameter tuning, rollback on degradation, convergence detection, and checkpointing apply automatically.
+
+```python
+import tensor_optix as optix
+import torch.nn as nn
+
+# Supervised — loss auto-detected from dataset
+model = nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 10))
+opt = optix.Optimizer(model, train_dataset)
+opt.run()
+
+# Explicit loss
+opt = optix.Optimizer(model, train_dataset, loss="cross_entropy")
+opt = optix.Optimizer(model, train_dataset, loss="mse")
+
+# Autoencoder
+opt = optix.Optimizer(autoencoder, train_dataset, loss="reconstruction")
+
+# VAE — model must return (reconstruction, mu, logvar)
+opt = optix.Optimizer(vae, train_dataset, loss="vae")
+
+# Contrastive (SimCLR) — dataset yields (view1, view2) pairs
+opt = optix.Optimizer(encoder, pairs_dataset, loss="contrastive")
+
+# DataLoader works too
+opt = optix.Optimizer(model, DataLoader(dataset, batch_size=64))
+
+# Custom loss
+opt = optix.Optimizer(model, dataset, loss=nn.HuberLoss())
+opt.run()
+```
+
+Available `loss=` strings:
+
+| String | Criterion | Use case |
+|---|---|---|
+| `"auto"` | detected from data | default |
+| `"cross_entropy"` | `CrossEntropyLoss` | multi-class classification |
+| `"bce"` | `BCEWithLogitsLoss` | binary classification |
+| `"mse"` | `MSELoss` | regression |
+| `"mae"` | `L1Loss` | regression, outlier-robust |
+| `"huber"` | `HuberLoss` | regression, very outlier-robust |
+| `"reconstruction"` | MSE(output, input) | autoencoders |
+| `"vae"` | ELBO: recon + KL | variational autoencoders |
+| `"contrastive"` | NT-Xent | SimCLR-style contrastive learning |
+
+Any `nn.Module` or callable can be passed directly as `loss=`.
+
+Save and load work identically to RL agents:
+
+```python
+agent = optix.Optimizer(model, dataset, loss="cross_entropy")
+# Checkpoints written automatically to checkpoint_dir
+# Load back:
+from tensor_optix.ml import MLAgent
+ml_agent.load_weights("checkpoint.pt")
+```
 
 ---
 
