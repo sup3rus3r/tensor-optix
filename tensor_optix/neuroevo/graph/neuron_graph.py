@@ -97,8 +97,12 @@ class NeuronGraph(nn.Module):
         self._matrix_dirty: bool = True
         self._ff_dst: Optional[torch.Tensor] = None
         self._ff_src: Optional[torch.Tensor] = None
-        self._ff_params: List[nn.Parameter] = []
-        self._ff_cell_types: List[str] = []   # parallel to _ff_params, for softplus mode
+        # Single packed Parameter for all d=0 edge weights — rebuilt on topology change.
+        # Eliminates per-forward torch.stack over thousands of individual Parameters.
+        # Starts as None so it doesn't register as a parameter until first rebuild.
+        self._ff_weight_vec: Optional[nn.Parameter] = None
+        self._ff_params: List[nn.Parameter] = []   # unused after first rebuild; kept for compat
+        self._ff_cell_types: List[str] = []
         self._rec_edges: List[Edge] = []
         self._topo_order: List[str] = []
         self._input_pos: Dict[str, int] = {}
@@ -106,6 +110,19 @@ class NeuronGraph(nn.Module):
         # Compiled forward — rebuilt after every topology change and device move.
         # Falls back to _raw_forward on PyTorch < 2.0.
         self._fwd = self._make_compiled_fwd()
+
+    def state_dict(self, *args, **kwargs):
+        # Ensure packed layout before saving so ff weights appear as _ff_weight_vec,
+        # not as individual _edge_weights.* keys that were added by add_edge().
+        if self._matrix_dirty and self._neurons:
+            self._rebuild_matrix_structure()
+        return super().state_dict(*args, **kwargs)
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        # Ensure packed layout so the module's parameter keys match the checkpoint.
+        if self._matrix_dirty and self._neurons:
+            self._rebuild_matrix_structure()
+        return super().load_state_dict(state_dict, strict=strict)
 
     def to(self, *args, **kwargs):
         result = super().to(*args, **kwargs)
@@ -585,32 +602,61 @@ class NeuronGraph(nn.Module):
         """
         Rebuild all topology-derived caches. Called lazily in forward()
         whenever _matrix_dirty is True (after any add/remove operation).
+
+        All d=0 edge weights are packed into a single _ff_weight_vec Parameter
+        so _assemble_W can read them as one tensor instead of stacking thousands
+        of individual scalar Parameters every forward pass.
         """
         self._nid_to_idx = {nid: i for i, nid in enumerate(self._neuron_index)}
         self._input_pos = {nid: i for i, nid in enumerate(self._input_ids)}
 
         ff_dst: List[int] = []
         ff_src: List[int] = []
-        ff_params: List[nn.Parameter] = []
         ff_cell_types: List[str] = []
+        ff_edge_ids: List[str] = []
         rec_edges: List[Edge] = []
 
         for edge in self._edges.values():
             if edge.delay == 0:
                 ff_dst.append(self._nid_to_idx[edge.dst])
                 ff_src.append(self._nid_to_idx[edge.src])
-                ff_params.append(edge.weight)
                 ff_cell_types.append(self.get_neuron(edge.src).cell_type)
+                ff_edge_ids.append(edge.edge_id)
             else:
                 rec_edges.append(edge)
 
         if ff_dst:
             self._ff_dst = torch.tensor(ff_dst, dtype=torch.long, device=self._device)
             self._ff_src = torch.tensor(ff_src, dtype=torch.long, device=self._device)
+            # Collect current weight values (edge.weight may be an individual
+            # Parameter from add_edge() or a view from the previous rebuild).
+            with torch.no_grad():
+                packed = torch.tensor(
+                    [self._edges[eid].weight.item() for eid in ff_edge_ids],
+                    dtype=torch.float32,
+                    device=self._device,
+                )
+            self._ff_weight_vec = nn.Parameter(packed)
+            # Remove individual ff Parameters from ParameterDict — they are now
+            # represented by the packed vector and must not appear twice in state_dict.
+            for eid in ff_edge_ids:
+                param_key = eid.replace("-", "_")
+                if param_key in self._edge_weights:
+                    del self._edge_weights[param_key]
+            # Update each edge.weight to be an element-view of the packed vector
+            # so that enforce_dale(), effective_weight(), and gradient inspection work.
+            # retain_grad() ensures edge.weight.grad is populated after backward(),
+            # which topology_controller uses for dead-edge detection.
+            for i, eid in enumerate(ff_edge_ids):
+                view = self._ff_weight_vec[i]
+                view.retain_grad()
+                self._edges[eid].weight = view
         else:
             self._ff_dst = None
             self._ff_src = None
-        self._ff_params = ff_params
+            self._ff_weight_vec = nn.Parameter(torch.empty(0, device=self._device))
+
+        self._ff_params = []          # no longer used; cleared to free references
         self._ff_cell_types = ff_cell_types
         self._rec_edges = rec_edges
         self._topo_order = self._topological_order()
@@ -619,16 +665,17 @@ class NeuronGraph(nn.Module):
     def _assemble_W(self) -> torch.Tensor:
         """
         Build the [n, n] weight matrix for d=0 edges differentiably.
-        Weights are stacked from Parameters so gradients flow through W.
+        Uses _ff_weight_vec (a single Parameter rebuilt on topology change)
+        instead of stacking individual scalar Parameters each call.
         In softplus mode, applies softplus(θ)*sign for constrained neurons.
-        Called every forward pass (weights change during training).
+        Called every forward pass.
         """
         n = len(self._neuron_index)
-        if not self._ff_params:
+        if self._ff_weight_vec is None or self._ff_weight_vec.numel() == 0:
             return torch.zeros(n, n, device=self._device)
-        raw = torch.stack(self._ff_params)          # [num_ff]
+        raw = self._ff_weight_vec                        # [num_ff] — single Parameter, no stack
         weights = self._apply_dale(raw, self._ff_cell_types)
-        flat_idx = self._ff_dst * n + self._ff_src  # [num_ff]
+        flat_idx = self._ff_dst * n + self._ff_src       # [num_ff]
         W_flat = torch.zeros(n * n, device=self._device)
         W_flat = W_flat.scatter_add(0, flat_idx, weights)
         return W_flat.view(n, n)
