@@ -135,6 +135,9 @@ class NeuronGraph(nn.Module):
         except StopIteration:
             pass
         result._matrix_dirty = True  # index tensors must be rebuilt on new device
+        # _current and _history are plain tensors — not moved by nn.Module.to().
+        # Call reset_state() on each neuron so they land on the new device.
+        # (reset_state() uses self.bias.device, which super().to() already moved.)
         result.reset_state()
         result.invalidate_compile()
         return result
@@ -164,6 +167,7 @@ class NeuronGraph(nn.Module):
         else:
             n = Neuron(activation=activation, neuron_id=neuron_id, max_delay=max_delay, cell_type=cell_type)
         n = n.to(self._device)
+        n.reset_state()   # _current/_history are plain tensors; .to() doesn't move them
         nid = n.neuron_id
         self._neurons[nid] = n
         self._in_edges[nid] = []
