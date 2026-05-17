@@ -105,6 +105,10 @@ class NeuronGraph(nn.Module):
         self._ff_cell_types: List[str] = []
         self._rec_edges: List[Edge] = []
         self._topo_order: List[str] = []
+        # Per-level activation groups: List[List[(idx_tensor, nid_list, act_fn)]]
+        # Outer list = topo levels; inner = neurons grouped by activation within that level.
+        self._level_act_groups: list = []
+        self._is_uniform: bool = False   # True → use _fast_forward (no rec edges, no GRU/LSTM)
         self._input_pos: Dict[str, int] = {}
 
         # Compiled forward — rebuilt after every topology change and device move.
@@ -286,13 +290,13 @@ class NeuronGraph(nn.Module):
         """
         if self._neurons:
             self._rebuild_matrix_structure()
-        compiled = self._fwd is not self._raw_forward
+        # After rebuild, _fwd is already set to fast or raw path.
+        # Only re-invoke compile if user had previously called compile_forward().
+        compiled = self._fwd not in (self._raw_forward, self._fast_forward)
         if compiled:
             if hasattr(torch, "_dynamo"):
                 torch._dynamo.reset()
             self.compile_forward()
-        else:
-            self._fwd = self._raw_forward
 
     # ------------------------------------------------------------------
     # Forward pass
@@ -660,6 +664,9 @@ class NeuronGraph(nn.Module):
         self._ff_cell_types = ff_cell_types
         self._rec_edges = rec_edges
         self._topo_order = self._topological_order()
+        self._is_uniform = self._check_uniform()
+        self._level_act_groups = self._compute_level_act_groups() if self._is_uniform else []
+        self._fwd = self._fast_forward if self._is_uniform else self._raw_forward
         self._matrix_dirty = False
 
     def _assemble_W(self) -> torch.Tensor:
@@ -679,6 +686,101 @@ class NeuronGraph(nn.Module):
         W_flat = torch.zeros(n * n, device=self._device)
         W_flat = W_flat.scatter_add(0, flat_idx, weights)
         return W_flat.view(n, n)
+
+    def _check_uniform(self) -> bool:
+        """True when the fast vectorized path is valid: no recurrent edges and
+        all non-input neurons are base Neurons (not GRU/LSTM).
+        Mixed activations are fine — _compute_level_act_groups handles them."""
+        if self._rec_edges:
+            return False
+        non_input = self._hidden_ids + self._output_ids
+        if not non_input:
+            return False
+        return all(type(self._neurons[nid]) is Neuron for nid in non_input)
+
+    def _compute_level_act_groups(self) -> list:
+        """
+        BFS topo levels, then group neurons within each level by activation.
+        Returns List[List[(idx_tensor, nid_list, act_fn)]].
+        One matmul per activation group per level — handles mixed-activation graphs.
+        """
+        from .neuron import ACTIVATIONS
+        non_input = set(self._hidden_ids) | set(self._output_ids)
+        in_degree: Dict[str, int] = {nid: 0 for nid in non_input}
+        input_set = set(self._input_ids)
+        for edge in self._edges.values():
+            if edge.delay == 0 and edge.dst in in_degree and edge.src not in input_set:
+                in_degree[edge.dst] += 1
+
+        queue = [nid for nid in non_input if in_degree[nid] == 0]
+        result = []
+        while queue:
+            # Group neurons in this level by activation function name
+            by_act: Dict[str, List[str]] = {}
+            for nid in queue:
+                act_name = self._neurons[nid].activation_name  # type: ignore
+                by_act.setdefault(act_name, []).append(nid)
+            level_groups = []
+            for act_name, nids in by_act.items():
+                idx_t = torch.tensor(
+                    [self._nid_to_idx[nid] for nid in nids],
+                    dtype=torch.long, device=self._device,
+                )
+                level_groups.append((idx_t, nids, ACTIVATIONS[act_name]))
+            result.append(level_groups)
+
+            next_q: List[str] = []
+            for nid in queue:
+                for e in self.edges_from(nid):
+                    if e.delay == 0 and e.dst in in_degree:
+                        in_degree[e.dst] -= 1
+                        if in_degree[e.dst] == 0:
+                            next_q.append(e.dst)
+            queue = next_q
+        return result
+
+    def _fast_forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Vectorized forward for uniform graphs (same activation, no recurrent edges).
+        Replaces the per-neuron clone loop with one matmul slice per topo level.
+        """
+        if obs.shape[0] != len(self._input_ids):
+            raise ValueError(
+                f"obs dim {obs.shape[0]} != {len(self._input_ids)} input neurons"
+            )
+        if self._matrix_dirty:
+            self._rebuild_matrix_structure()
+            if not self._is_uniform:   # topology change made graph irregular — fall back
+                return self._raw_forward(obs)
+
+        h_list: List[torch.Tensor] = []
+        for nid in self._neuron_index:
+            if nid in self._input_pos:
+                val = obs[self._input_pos[nid]]
+                self._neurons[nid]._current = val.unsqueeze(0)  # type: ignore
+                h_list.append(val)
+            else:
+                h_list.append(self._neurons[nid]._current.detach().squeeze(0))  # type: ignore
+        h = torch.stack(h_list)
+
+        W = self._assemble_W()
+
+        for act_groups in self._level_act_groups:
+            for level_idx, level_nids, act_fn in act_groups:
+                pre = (W[level_idx] * h.unsqueeze(0)).sum(dim=1)   # [k]
+                bias = torch.stack([self._neurons[nid].bias.squeeze(0) for nid in level_nids])  # type: ignore
+                vals = act_fn(pre + bias)
+                h = h.index_put((level_idx,), vals)
+                for j, nid in enumerate(level_nids):
+                    self._neurons[nid]._current = vals[j].unsqueeze(0)  # type: ignore
+
+        for nid in self._neurons:
+            self._neurons[nid].push_history()  # type: ignore
+
+        return torch.cat([
+            self._neurons[nid]._current  # type: ignore
+            for nid in self._output_ids
+        ], dim=0)
 
     def _topological_order(self) -> List[str]:
         """
