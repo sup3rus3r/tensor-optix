@@ -184,6 +184,9 @@ class RLOptimizer:
         # Inject agent into pipeline if pipeline supports it
         if hasattr(pipeline, "set_agent"):
             pipeline.set_agent(agent)
+        val_pipeline = kw.get("val_pipeline")
+        if val_pipeline and hasattr(val_pipeline, "set_agent"):
+            val_pipeline.set_agent(agent)
 
         # Off-policy agents (DQN, SAC) need more patience before convergence.
         # Each agent class may declare default_min_episodes_before_dormant to express

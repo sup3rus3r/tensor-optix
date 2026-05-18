@@ -84,7 +84,13 @@ class TensorBoardCallback(LoopCallback):
     def on_loop_start(self) -> None:
         try:
             from torch.utils.tensorboard import SummaryWriter
-        except ImportError:
+        except ImportError as e:
+            if "tensorboard" in str(e).lower():
+                raise ImportError(
+                    "tensorboard package is required for TensorBoardCallback. "
+                    "Install it with: pip install tensorboard  "
+                    "or: pip install tensor-optix[tensorboard]"
+                )
             raise ImportError(
                 "torch is required for TensorBoardCallback (SummaryWriter). "
                 "Install it with: pip install torch  "

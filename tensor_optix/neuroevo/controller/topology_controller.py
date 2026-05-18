@@ -146,6 +146,7 @@ class TopologyController(LoopCallback):
 
         self.grow_op = grow_op
         self.grow_grad_threshold = grow_grad_threshold
+        self.grow_gap_threshold  = grow_grad_threshold  # alias for NeuromodulatorSignal
         self.grow_cooldown = grow_cooldown
         self.backoff_reset_factor = backoff_reset_factor
         self.grad_eps = grad_eps

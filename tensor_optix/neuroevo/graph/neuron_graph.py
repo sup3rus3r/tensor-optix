@@ -221,6 +221,8 @@ class NeuronGraph(nn.Module):
         dst_neuron: Neuron = self._neurons[dst]  # type: ignore
         if delay > dst_neuron.max_delay:
             dst_neuron.expand_history(delay)
+        if delay >= 1:
+            dst_neuron._has_delayed_readers = True  # type: ignore
 
         self._matrix_dirty = True
         return eid
@@ -237,6 +239,14 @@ class NeuronGraph(nn.Module):
             self._in_edges[edge.dst] = [
                 e for e in self._in_edges[edge.dst] if e != edge_id
             ]
+        # Recompute flag: clear if no remaining incoming edge has delay >= 1
+        if edge.dst in self._neurons:
+            dst_neuron: Neuron = self._neurons[edge.dst]  # type: ignore
+            dst_neuron._has_delayed_readers = any(  # type: ignore
+                self._edges[e].delay >= 1
+                for e in self._in_edges[edge.dst]
+                if e in self._edges
+            )
         self._matrix_dirty = True
 
     def remove_neuron(self, neuron_id: str) -> None:
@@ -366,9 +376,10 @@ class NeuronGraph(nn.Module):
             h = h.clone()
             h[idx] = neuron._current.squeeze(0)  # type: ignore
 
-        # Push all neurons' current activations into history
+        # Push history only for neurons that have delayed incoming edges
         for nid in self._neurons:
-            self._neurons[nid].push_history()  # type: ignore
+            if self._neurons[nid]._has_delayed_readers:  # type: ignore
+                self._neurons[nid].push_history()  # type: ignore
 
         # Collect output
         return torch.cat([
@@ -779,7 +790,8 @@ class NeuronGraph(nn.Module):
                     self._neurons[nid]._current = vals[j].unsqueeze(0)  # type: ignore
 
         for nid in self._neurons:
-            self._neurons[nid].push_history()  # type: ignore
+            if self._neurons[nid]._has_delayed_readers:  # type: ignore
+                self._neurons[nid].push_history()  # type: ignore
 
         return torch.cat([
             self._neurons[nid]._current  # type: ignore

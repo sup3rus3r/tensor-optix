@@ -77,6 +77,7 @@ class Neuron(nn.Module):
             maxlen=self._max_delay,
         )
         self._current: torch.Tensor = torch.zeros(1)
+        self._has_delayed_readers: bool = False
 
     # ------------------------------------------------------------------
     # Protocol — step
