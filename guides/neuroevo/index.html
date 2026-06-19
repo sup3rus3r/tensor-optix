@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Build a neuroevo agent - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Build a neuroevo agent";
+        var mkdocs_page_input_path = "guides\\neuroevo.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Build a neuroevo agent</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#quickest-path-make_agent">Quickest path: make_agent</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#building-a-graph-manually">Building a graph manually</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#neuron-types">Neuron types</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#trainable-recurrent-neurons">Trainable recurrent neurons</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#the-topology-controller">The topology controller</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#save-and-load">Save and load</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#brainnetwork-composing-multiple-regions">BrainNetwork: composing multiple regions</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#hebbian-learning">Hebbian learning</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#neuromodulation">Neuromodulation</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#dales-law">Dale's Law</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#compiled-forward">Compiled forward</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#reference">Reference</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Guides</li>
+      <li class="breadcrumb-item active">Build a neuroevo agent</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/neuroevo.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="build-a-neuroevo-agent">Build a neuroevo agent</h1>
+<pre><code class="language-bash">pip install tensor-optix[neuroevo]
+</code></pre>
+<p>The neuroevo subsystem represents a policy as a <code>NeuronGraph</code>: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) connected by variable-delay edges. A <code>TopologyController</code> runs as a loop callback and mutates this graph live during training - growing capacity when the existing network is saturated, pruning dead neurons and edges, and merging redundant ones.</p>
+<h2 id="quickest-path-make_agent">Quickest path: make_agent</h2>
+<pre><code class="language-python">from tensor_optix import make_agent
+import gymnasium as gym
+
+env = gym.make(&quot;LunarLanderContinuous-v3&quot;)
+agent = make_agent(env, neuroevo=True)
+agent = make_agent(&quot;PPO&quot;, env, neuroevo=True, graph_hidden=16, hebbian_lr=1e-3)
+
+# Feature-extractor mode: NeuronGraph -&gt; features concatenated to obs, fed into SAC
+agent = make_agent(&quot;SAC&quot;, env, neuroevo=True, neuroevo_mode=&quot;feature_extractor&quot;)
+</code></pre>
+<p><code>neuroevo_mode</code> controls how the graph is used:</p>
+<ul>
+<li><code>"policy"</code> (default) - the graph <em>is</em> the policy, wrapped as <code>GraphAgent</code> (PPO-based).</li>
+<li><code>"feature_extractor"</code> - the graph runs in parallel as a feature extractor; its output is concatenated with the raw observation before SAC's actor/critic networks. SAC handles exploration and replay; the graph adds adaptive temporal features via GRU + LSTM neurons with Hebbian learning.</li>
+</ul>
+<p>Neuroevo options on <code>make_agent</code>: <code>graph_in</code> (default <code>min(obs_dim, 16)</code>), <code>graph_hidden</code> (default 8), <code>graph_out</code> (default <code>act_dim + 1</code>), <code>hebbian_lr</code>, <code>hebbian_decay</code>, <code>grow_cooldown</code>.</p>
+<h2 id="building-a-graph-manually">Building a graph manually</h2>
+<pre><code class="language-python">from tensor_optix.neuroevo import NeuronGraph, GraphAgent, GRUNeuron, LSTMNeuron
+
+graph = NeuronGraph()
+
+for _ in range(4):
+    graph.add_neuron(role=&quot;input&quot;, activation=&quot;linear&quot;)
+for _ in range(8):
+    graph.add_neuron(role=&quot;hidden&quot;, activation=&quot;tanh&quot;)
+    # or: graph.add_neuron(role=&quot;hidden&quot;, neuron=GRUNeuron())
+    # or: graph.add_neuron(role=&quot;hidden&quot;, neuron=LSTMNeuron())
+graph.add_neuron(role=&quot;output&quot;, activation=&quot;linear&quot;)  # last output neuron is the value head
+
+graph.add_edge(src_id, dst_id, weight=0.0, delay=0)   # feedforward (d=0)
+graph.add_edge(src_id, dst_id, weight=0.0, delay=1)   # recurrent (d&gt;=1, reads from history buffer)
+
+agent = GraphAgent(graph, obs_dim=4, n_actions=2)
+</code></pre>
+<p>All edges initialize at <code>weight=0.0</code>, which is function-preserving at insertion time - this is the same Net2Net-style principle behind every topology operation (see <a href="../../reference/neuroevo/topology-ops/">Topology operations</a>).</p>
+<h2 id="neuron-types">Neuron types</h2>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Hidden state</th>
+<th>Gradient through state</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Neuron</code></td>
+<td>None (point neuron)</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><code>GRUNeuron</code></td>
+<td>Scalar h, detached</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>LSTMNeuron</code></td>
+<td>Scalar h and c, detached</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>TrainableGRUNeuron</code></td>
+<td>Scalar h, not detached</td>
+<td>Yes, up to <code>chunk_len</code> steps</td>
+</tr>
+<tr>
+<td><code>TrainableLSTMNeuron</code></td>
+<td>Scalar h and c, not detached</td>
+<td>Yes, up to <code>chunk_len</code> steps</td>
+</tr>
+</tbody>
+</table>
+<p>All types implement the same protocol (<code>step()</code>, <code>importance()</code>, <code>can_merge_with()</code>, <code>make_relay()</code>, <code>split_copy()</code>) - <code>NeuronGraph</code> and <code>TopologyController</code> are type-blind.</p>
+<h2 id="trainable-recurrent-neurons">Trainable recurrent neurons</h2>
+<p><code>TrainableGRUNeuron</code>/<code>TrainableLSTMNeuron</code> set <code>is_recurrent = True</code>. <code>RecurrentGraphAgent</code> detects this and switches from shuffled-minibatch PPO to sequential chunk training with truncated BPTT:</p>
+<pre><code class="language-python">from tensor_optix.neuroevo import TrainableGRUNeuron, TrainableLSTMNeuron, RecurrentGraphAgent
+from tensor_optix.core.types import HyperparamSet
+
+graph = NeuronGraph()
+# ... input and output neurons ...
+graph.add_neuron(role=&quot;hidden&quot;, neuron=TrainableGRUNeuron())
+graph.add_neuron(role=&quot;hidden&quot;, neuron=TrainableLSTMNeuron())
+
+agent = RecurrentGraphAgent(
+    graph, obs_dim=4, n_actions=2,
+    hyperparams=HyperparamSet(params={&quot;chunk_len&quot;: 64}),
+)
+# Falls back to standard shuffled-minibatch PPO if no recurrent neurons are present
+</code></pre>
+<h2 id="the-topology-controller">The topology controller</h2>
+<pre><code class="language-python">from tensor_optix.neuroevo import TopologyController
+
+controller = TopologyController.for_graph(
+    graph=graph,
+    scheduler=opt._scheduler,
+    grow_grad_threshold=0.7,         # fraction of hidden neurons with |grad| &gt; eps required to grow
+    prune_neuron_threshold=1e-4,     # importance score below this -&gt; prune candidate
+    prune_edge_threshold=1e-3,       # |weight| below this for prune_edge_patience episodes -&gt; prune
+    merge_similarity_threshold=0.95, # Pearson correlation threshold for merge
+)
+opt.add_callback(controller)
+opt.run()
+</code></pre>
+<p>A grow operation fires only when all three statistical signals agree:</p>
+<ol>
+<li><strong>Improvement test</strong> - the score slope is <em>not</em> significantly positive (a corrected t-test) - i.e. gradient updates have stalled.</li>
+<li><strong>Structure test</strong> - score residuals show significant lag-1 autocorrelation - i.e. there's unexplained structure the model isn't capturing.</li>
+<li><strong>Capacity test</strong> - gradient utilization across hidden neurons exceeds <code>grow_grad_threshold</code> - i.e. existing neurons are saturated, not idle.</li>
+</ol>
+<p>For multi-region graphs, use <code>TopologyController.for_brain(brain, scheduler=...)</code> - each region gets independent signal buffers and cooldown timers, so a saturated encoder region can grow without triggering growth elsewhere.</p>
+<h2 id="save-and-load">Save and load</h2>
+<p>Topology is saved alongside weights, so a checkpoint fully reconstructs the graph on load - no manual topology bookkeeping:</p>
+<pre><code class="language-python">agent.save_weights(&quot;checkpoint.pt&quot;)
+
+agent2 = make_agent(env, neuroevo=True)
+agent2.load_weights(&quot;checkpoint.pt&quot;)
+
+# Or skip constructing an agent entirely
+agent3 = GraphAgent.from_checkpoint(&quot;checkpoint.pt&quot;)
+agent3.act(obs)
+</code></pre>
+<p>Rollback on degradation uses the same path - when the loop restores a best checkpoint, the topology <em>at the time of that checkpoint</em> is fully restored, even if the graph has grown or been pruned since.</p>
+<h2 id="brainnetwork-composing-multiple-regions">BrainNetwork: composing multiple regions</h2>
+<pre><code class="language-python">from tensor_optix.neuroevo import BrainNetwork, TopologyController
+
+brain = BrainNetwork()
+brain.add_region(&quot;sensory&quot;,   sensory_graph)
+brain.add_region(&quot;memory&quot;,    memory_graph)
+brain.add_region(&quot;executive&quot;, executive_graph)
+
+brain.add_pathway(&quot;sensory&quot;,  &quot;memory&quot;,    n_connections=8, delay=1)
+brain.add_pathway(&quot;memory&quot;,   &quot;executive&quot;, n_connections=8, delay=0)
+
+controller = TopologyController.for_brain(brain, scheduler=opt._scheduler)
+</code></pre>
+<p>Inter-region edges are learnable parameters; when a neuron is pruned from a region, <code>BrainNetwork</code> automatically removes all inter-region edges referencing it.</p>
+<h2 id="hebbian-learning">Hebbian learning</h2>
+<pre><code class="language-python">from tensor_optix.neuroevo import HebbianHook
+
+hook = HebbianHook(graph, hebbian_lr=1e-3, weight_decay=1e-4)
+
+for step in episode:
+    action = agent.act(obs)
+    hook.record()
+    obs, reward, done, _ = env.step(action)
+
+agent.learn(episode_data)
+hook.apply()
+hook.reset()
+</code></pre>
+<p><code>HebbianHook</code> is a <code>LoopCallback</code> - pass it directly via <code>callbacks=</code> and it wires itself automatically. Use <code>HebbianHook.from_brain(brain, ...)</code> for <code>BrainNetwork</code> graphs.</p>
+<h2 id="neuromodulation">Neuromodulation</h2>
+<pre><code class="language-python">from tensor_optix.neuroevo import NeuromodulatorSignal
+from tensor_optix.core import RegimeDetector
+
+signal = NeuromodulatorSignal(
+    detector=RegimeDetector(),
+    hebbian_hook=hook,           # optional
+    agent=agent,                 # optional - modulates entropy_coef
+    topology_controller=tc,      # optional - modulates grow/prune thresholds
+)
+
+opt = Optimizer(agent, env, callbacks=[hook, signal])
+opt.run()
+</code></pre>
+<p><code>NeuromodulatorSignal</code> maps a <code>RegimeDetector</code> classification (trending / ranging / volatile) to coordinated parameter changes: trending → lower Hebbian lr and entropy (consolidate); ranging → raise Hebbian lr, lower grow threshold (explore structure); volatile → lower Hebbian lr, raise entropy (cautious plasticity).</p>
+<h2 id="dales-law">Dale's Law</h2>
+<pre><code class="language-python"># clamp mode (default): outgoing weights clamped post-step
+graph = NeuronGraph(dale_mode=&quot;clamp&quot;)
+graph.add_neuron(role=&quot;hidden&quot;, activation=&quot;relu&quot;, cell_type=&quot;excitatory&quot;)  # weights &gt;= 0
+graph.add_neuron(role=&quot;hidden&quot;, activation=&quot;tanh&quot;, cell_type=&quot;inhibitory&quot;)  # weights &lt;= 0
+
+# softplus mode: raw parameter theta, effective weight = softplus(theta) * sign
+# gradient-safe, no dead zone at the clamp boundary
+graph = NeuronGraph(dale_mode=&quot;softplus&quot;)
+w = graph.effective_weight(edge_id)  # reads post-softplus value
+</code></pre>
+<h2 id="compiled-forward">Compiled forward</h2>
+<p><code>NeuronGraph</code> runs eager by default - <code>_raw_forward</code> mutates Python-side neuron state, which <code>torch.compile</code> can't safely trace without replaying side effects. If your topology is static and you manage neuron state externally, opt in:</p>
+<pre><code class="language-python">graph.compile_forward()   # one-time call; re-call after any topology mutation
+</code></pre>
+<p><code>TopologyController</code> calls <code>graph.invalidate_compile()</code> automatically after every grow/prune/merge. If you mutate the graph directly outside the controller, call it yourself.</p>
+<h2 id="reference">Reference</h2>
+<p>Full class and function documentation: <a href="../../reference/neuroevo/">Neuroevo reference</a>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../ml-mode/" class="btn btn-neutral float-left" title="Train any PyTorch model (ML mode)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../onnx-export/" class="btn btn-neutral float-right" title="Export to ONNX">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../ml-mode/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../onnx-export/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

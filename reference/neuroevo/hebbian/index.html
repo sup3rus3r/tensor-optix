@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>HebbianHook - tensor-optix</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "HebbianHook";
+        var mkdocs_page_input_path = "reference\\neuroevo\\hebbian.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" >Neuroevo</a>
+    <ul class="current">
+                <li class="toctree-l2"><a class="reference internal" href="../">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">HebbianHook</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#hebbianhook_1">HebbianHook</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#usage-with-graphagent">Usage with GraphAgent</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+          <li class="breadcrumb-item">Neuroevo</li>
+      <li class="breadcrumb-item active">HebbianHook</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/neuroevo/hebbian.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="hebbianhook">HebbianHook</h1>
+<pre><code>HebbianHook - local Hebbian learning running alongside PPO gradient updates.
+
+Rule (Oja-style with decay to prevent unbounded growth):
+    Δw(u→v) = η · mean_t(h_u^t · h_v^t) - λ · w(u→v)
+
+    η  : hebbian_lr   - how fast co-activation strengthens connections
+    λ  : weight_decay - prevents weights from growing without bound
+    t  : timestep index within the current episode
+</code></pre>
+<h2 id="hebbianhook_1">HebbianHook</h2>
+<pre><code class="language-python">class HebbianHook(LoopCallback):
+    &quot;&quot;&quot;
+    Accumulates co-activation statistics across a full episode, then applies
+    a local Hebbian weight update to every edge in one or more NeuronGraphs.
+
+    Parameters
+    ----------
+    graphs : NeuronGraph | list[NeuronGraph]
+        The graph(s) to apply Hebbian updates to. Pass a list to cover all
+        regions of a BrainNetwork, or use HebbianHook.from_brain().
+    hebbian_lr : float
+        Hebbian learning rate η. Typical range: 1e-4 – 1e-2.
+    weight_decay : float
+        Decay coefficient λ. Prevents unbounded growth. Typical: 1e-4 – 1e-3.
+    clip_weight : float | None
+        If set, clamps all weights to [-clip_weight, +clip_weight] after update.
+    respect_dale : bool
+        If True, calls graph.enforce_dale() after each Hebbian update so
+        Dale's Law constraints are maintained.
+    &quot;&quot;&quot;
+
+    @classmethod
+    def from_brain(cls, brain, hebbian_lr=1e-3, weight_decay=1e-4,
+                    clip_weight=None, respect_dale=True) -&gt; &quot;HebbianHook&quot;:
+        &quot;&quot;&quot;Create a HebbianHook covering all regions of a BrainNetwork.&quot;&quot;&quot;
+
+    def record(self) -&gt; None:
+        &quot;&quot;&quot;
+        Snapshot the current co-activation product (h_pre · h_post) for every
+        edge across all tracked graphs.
+
+        Call this immediately after each forward pass / agent.act() while
+        neurons still hold their _current activations for this timestep.
+        &quot;&quot;&quot;
+
+    def apply(self) -&gt; None:
+        &quot;&quot;&quot;
+        Apply the Hebbian update using accumulated co-activation statistics.
+        Δw = η · mean(h_pre · h_post) - λ · w
+
+        Call once per episode, after agent.learn() so PPO and Hebbian updates
+        are both applied before the next episode starts.
+        &quot;&quot;&quot;
+
+    def reset(self) -&gt; None:
+        &quot;&quot;&quot;Clear all accumulated co-activation data. Call at episode start or end.&quot;&quot;&quot;
+
+    def apply_and_reset(self) -&gt; None:
+        &quot;&quot;&quot;Apply the Hebbian update then immediately clear accumulators.&quot;&quot;&quot;
+
+    @property
+    def n_steps_recorded(self) -&gt; int:
+        &quot;&quot;&quot;Number of timesteps recorded since last reset.&quot;&quot;&quot;
+
+    def mean_coactivation(self) -&gt; Dict[str, float]:
+        &quot;&quot;&quot;
+        Return a dict of edge_id -&gt; mean co-activation value across all graphs.
+        Useful for logging how strongly pairs of neurons are correlating.
+        &quot;&quot;&quot;
+</code></pre>
+<h3 id="usage-with-graphagent">Usage with GraphAgent</h3>
+<pre><code class="language-python">hook = HebbianHook(graph, hebbian_lr=1e-3, weight_decay=1e-4)
+
+for step in episode:
+    action = agent.act(obs)
+    hook.record()
+    obs, reward, done, _ = env.step(action)
+
+agent.learn(episode_data)
+hook.apply()
+hook.reset()
+</code></pre>
+<p><code>HebbianHook</code> is a <code>LoopCallback</code> - pass it directly to <code>Optimizer</code> or <code>RLOptimizer</code> via <code>callbacks=</code> and it wires itself automatically (you don't need to call <code>record()</code>/<code>apply()</code>/<code>reset()</code> manually when using the loop).</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../brain-network/" class="btn btn-neutral float-left" title="BrainNetwork"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../neuromodulator/" class="btn btn-neutral float-right" title="NeuromodulatorSignal">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../brain-network/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../neuromodulator/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../../..";</script>
+    <script src="../../../js/theme_extra.js"></script>
+    <script src="../../../js/theme.js"></script>
+      <script src="../../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

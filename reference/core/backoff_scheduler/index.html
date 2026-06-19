@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>backoff_scheduler - tensor-optix</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "backoff_scheduler";
+        var mkdocs_page_input_path = "reference\\core\\backoff_scheduler.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" >core</a>
+    <ul class="current">
+                <li class="toctree-l2"><a class="reference internal" href="../types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">backoff_scheduler</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#backoffscheduler">BackoffScheduler</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#constructor">Constructor</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#trend-detection">Trend detection</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#state-machine">State machine</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#properties">Properties</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+          <li class="breadcrumb-item">core</li>
+      <li class="breadcrumb-item active">backoff_scheduler</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/core/backoff_scheduler.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="tensor_optixcorebackoff_scheduler">tensor_optix.core.backoff_scheduler</h1>
+<h2 id="backoffscheduler">BackoffScheduler</h2>
+<pre><code class="language-python">class BackoffScheduler:
+    &quot;&quot;&quot;
+    Controls adaptation interval and state transitions.
+
+    Improvement and degradation are detected via **linear trend** over the
+    recent score window, not point-to-point comparison.
+
+    Why trend instead of point:
+        Point comparison (smoothed &gt; best) fires on every local maximum and
+        misses the actual direction of learning. A single unlucky eval (390→10)
+        looks like a collapse even if the surrounding 8 evals are rising.
+        A linear fit over the last N scores is robust to single-episode spikes
+        and gives the loop a directional signal:
+
+            slope &gt; +floor_per_step  →  improving
+            |slope| &lt; floor_per_step →  stuck
+            slope &lt; -floor_per_step  →  degrading
+
+        where floor_per_step = adaptive_floor / trend_window.
+
+    Adaptive floor auto-scales to env reward range (noise_k × std of recent
+    scores), capped at 50% of |best_score| to prevent early-chaos poisoning.
+
+    State transitions:
+        ACTIVE  → COOLING  : after plateau_threshold consecutive non-improving evals
+        COOLING → DORMANT  : after dormant_threshold consecutive non-improving evals
+        any     → ACTIVE   : on genuine improvement trend or degradation
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="constructor">Constructor</h3>
+<pre><code class="language-python">def __init__(
+    self,
+    base_interval: int = 1,
+    backoff_factor: float = 2.0,
+    max_interval_episodes: int = 100,
+    plateau_threshold: int = 5,
+    dormant_threshold: int = 20,
+    degradation_threshold: float = 0.95,
+    min_degradation_drop: float = 1e-4,
+    min_episodes_before_dormant: int = 0,
+    min_episodes_before_degradation: int = 5,
+    noise_k: float = 2.0,
+    score_window: int = 20,
+    trend_window: int = 8,
+):
+    &quot;&quot;&quot;
+    Args:
+        noise_k:           Adaptive floor multiplier. floor = noise_k × std(scores).
+        score_window:      Rolling window size for std / trend computation.
+        trend_window:      Number of most-recent scores used for slope fit.
+                           Must be ≤ score_window. Default 8 - enough to be
+                           robust to single-episode spikes while responding
+                           quickly to genuine trend changes.
+        min_degradation_drop: Fallback floor before enough history exists.
+        min_episodes_before_dormant:    Guard against premature DORMANT.
+        min_episodes_before_degradation: Guard against early false positives.
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="trend-detection">Trend detection</h3>
+<pre><code class="language-python">def is_improving(self) -&gt; bool:
+    &quot;&quot;&quot;
+    True when the recent score trend is meaningfully upward.
+
+    Uses slope over the trend window. Falls back to checking whether the
+    latest score beat the best (point comparison) when window is too short.
+
+    Threshold: slope &gt; adaptive_floor / trend_window
+    &quot;&quot;&quot;
+
+def is_degrading(self) -&gt; bool:
+    &quot;&quot;&quot;
+    True when the recent score trend is meaningfully downward AND the
+    current level is well below the best known score.
+
+    Both conditions must hold simultaneously - a downward trend during
+    exploration or after a SPSA probe is not degradation unless the
+    absolute level has also dropped significantly.
+    &quot;&quot;&quot;
+
+def is_converged(self, cv_threshold: float = 0.05, gap_threshold: float = 0.20) -&gt; bool:
+    &quot;&quot;&quot;
+    True when the policy has genuinely converged:
+    flat trend AND low CV AND performing near its personal best.
+
+    Three conditions (all must hold):
+        |slope| &lt; floor_per_step              flat - not improving or degrading
+        cv &lt; cv_threshold                     tightly clustered - not noisy
+        |mean - best| / |best| &lt; gap_threshold  near personal best - not just stuck
+
+    The gap condition is what separates a stuck policy (flat + stable at a
+    low level, well below its best) from a genuinely converged one (flat +
+    stable near its peak). No external solve threshold is used - purely
+    relative to the agent's own history.
+    &quot;&quot;&quot;
+
+def check_degradation(self, score: float) -&gt; bool:
+    &quot;&quot;&quot;
+    Threshold-based degradation check called by loop_controller.
+
+    Returns True when `score` has dropped significantly below the best
+    known score (by more than (1 - degradation_threshold) × |best|).
+
+    Works correctly for both positive and negative score regimes:
+        positive best=100, threshold=0.95 → fires when score &lt; 95
+        negative best=-100, threshold=0.95 → fires when score &lt; -105
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="state-machine">State machine</h3>
+<pre><code class="language-python">def record_improvement(self, score: float) -&gt; None:
+    &quot;&quot;&quot;Called when a new best score is recorded. Resets backoff and state.&quot;&quot;&quot;
+
+def record_non_improvement(self) -&gt; None:
+    &quot;&quot;&quot;Called when episode did not produce a new best. Advances backoff.&quot;&quot;&quot;
+
+def record_degradation(self) -&gt; None:
+    &quot;&quot;&quot;
+    Called when degradation is detected.
+
+    Resets to ACTIVE without resetting the interval - resetting to
+    base_interval=1 would cause the optimizer to fire every episode,
+    cascading into repeated degradation and destabilising on-policy training.
+    &quot;&quot;&quot;
+
+def record_restart(self) -&gt; None:
+    &quot;&quot;&quot;
+    Called after DORMANT fires and PolicyManager has acted.
+    Gives the new policy variant a clean slate.
+    Does NOT reset best_score - the new variant must beat the existing best.
+    &quot;&quot;&quot;
+
+def record_score(self, score: float) -&gt; None:
+    &quot;&quot;&quot;Append score to window without triggering state change (off-policy path).&quot;&quot;&quot;
+
+def should_adapt(self, episode_count: int) -&gt; bool: ...
+</code></pre>
+<h3 id="properties">Properties</h3>
+<pre><code class="language-python">@property
+def current_state(self) -&gt; LoopState: ...
+@property
+def current_interval(self) -&gt; int: ...
+@property
+def consecutive_non_improvements(self) -&gt; int: ...
+@property
+def best_score(self) -&gt; float | None: ...
+@property
+def total_episodes(self) -&gt; int: ...
+</code></pre>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../loop_controller/" class="btn btn-neutral float-left" title="loop_controller"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../checkpoint_registry/" class="btn btn-neutral float-right" title="checkpoint_registry">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../loop_controller/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../checkpoint_registry/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../../..";</script>
+    <script src="../../../js/theme_extra.js"></script>
+    <script src="../../../js/theme.js"></script>
+      <script src="../../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>policy_manager - tensor-optix</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "policy_manager";
+        var mkdocs_page_input_path = "reference\\core\\policy_manager.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" >core</a>
+    <ul class="current">
+                <li class="toctree-l2"><a class="reference internal" href="../types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">policy_manager</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#policymanager">PolicyManager</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#ensemble-management">Ensemble management</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#adaptive-noise">Adaptive noise</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#evolution">Evolution</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#reporting">Reporting</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#properties">Properties</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#as_callback">as_callback</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#policymanagercallback">PolicyManagerCallback</a>
+    </li>
+    </ul>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+          <li class="breadcrumb-item">core</li>
+      <li class="breadcrumb-item active">policy_manager</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/core/policy_manager.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="tensor_optixcorepolicy_manager">tensor_optix.core.policy_manager</h1>
+<h2 id="policymanager">PolicyManager</h2>
+<pre><code class="language-python">class PolicyManager:
+    &quot;&quot;&quot;
+    Manages model evolution and ensemble logic.
+
+    Separation of concerns:
+        Optimizer  → tunes hyperparameters
+        PolicyManager → evolves models (swap, variant spawn)
+
+    Core responsibilities:
+    1. evolve(): On DORMANT, compare current score vs registry best.
+                 If current &lt; best: rollback agent to best checkpoint.
+                 If current &gt;= best: no-op (system is at its best known state).
+    2. spawn_variant(): Clone best checkpoint into a new agent shell and apply
+                        hyperparam mutation. Produces a candidate for the ensemble.
+    3. prune(): Remove the lowest-performing agents to keep the ensemble lean.
+    4. boost(): Multiply a specific agent's weight - use after regime detection.
+    5. ensemble_action(): Combine actions from multiple registered agents
+                          via weighted averaging.
+    6. update_weights() / auto_update_weights(): Adjust agent weights based on
+                          externally provided or internally recorded score history.
+    7. adaptive_noise_scale(): Compute a dynamic noise_scale for spawn_variant
+                          based on recent improvement - high noise on plateau,
+                          low noise when improving.
+    8. status(): Structured snapshot of all ensemble state for observability.
+
+    Minimal usage (evolution only):
+        pm = PolicyManager(registry)
+        cb = pm.as_callback(agent)
+        optimizer = RLOptimizer(..., callbacks=[cb])
+
+    Ensemble with spawning:
+        pm = PolicyManager(registry)
+        pm.add_agent(primary_agent, weight=1.0)
+        variant = pm.spawn_variant(SecondAgent(...), noise_scale=0.05)
+        pm.add_agent(variant, weight=1.0)
+        ensemble = EnsembleAgent(pm, primary_agent=primary_agent)
+    &quot;&quot;&quot;
+
+    def __init__(
+        self,
+        registry: CheckpointRegistry,
+        score_window: int = 10,
+        max_spawns: Optional[int] = None,
+        max_ensemble_size: Optional[int] = None,
+    ): ...
+</code></pre>
+<h3 id="ensemble-management">Ensemble management</h3>
+<pre><code class="language-python">def add_agent(self, agent: BaseAgent, weight: float = 1.0) -&gt; None:
+    &quot;&quot;&quot;Add an agent to the ensemble pool.&quot;&quot;&quot;
+
+def ensemble_action(self, obs) -&gt; any:
+    &quot;&quot;&quot;
+    Return a combined action from all registered agents.
+
+    Single agent: equivalent to agent.act(obs).
+
+    Multiple agents - two modes depending on whether agents expose action_probs():
+      Discrete (agents implement action_probs):
+        Weighted average is computed in probability space AFTER softmax,
+        not over sampled actions or logits. Averaging logits before softmax
+        is not equivalent to averaging policies and produces incorrect results.
+        Returns a probability array; caller argmaxes or samples from it.
+      Continuous (agents do not implement action_probs):
+        Falls back to weighted average of sampled actions. This is correct
+        for unimodal continuous policies but loses distributional information
+        for multimodal policies.
+    &quot;&quot;&quot;
+
+def update_weights(self, agent_scores: Dict[int, float]) -&gt; None:
+    &quot;&quot;&quot;
+    Update ensemble weights based on recent performance.
+
+    agent_scores: {index_in_ensemble: score}
+    Weights are set proportional to shifted scores (ensuring positivity).
+    Agents not in agent_scores keep their current weight.
+    &quot;&quot;&quot;
+
+def record_agent_score(self, agent_idx: int, score: float) -&gt; None:
+    &quot;&quot;&quot;
+    Record a performance score for a specific agent.
+    Scores are stored in a rolling window of size score_window.
+    Call auto_update_weights() to apply the recorded history to weights.
+    &quot;&quot;&quot;
+
+def auto_update_weights(self) -&gt; None:
+    &quot;&quot;&quot;
+    Recompute ensemble weights from internally recorded score history.
+    For each agent with recorded scores, weight = mean(recent_scores).
+    &quot;&quot;&quot;
+
+def prune(self, bottom_k: int = 1) -&gt; List[BaseAgent]:
+    &quot;&quot;&quot;
+    Remove the bottom_k agents by current weight from the ensemble.
+    Returns the list of removed agents (in ascending weight order).
+    Calls agent.teardown() on each removed agent.
+    &quot;&quot;&quot;
+
+def boost(self, agent: BaseAgent, factor: float = 2.0) -&gt; None:
+    &quot;&quot;&quot;
+    Multiply the weight of a specific agent by factor.
+
+    Use after regime detection to shift action weight toward the most
+    relevant policy without zeroing out the others.
+
+    Example:
+        regime = detector.detect(metrics_history)
+        if regime == &quot;volatile&quot;:
+            pm.boost(agent_volatile, factor=2.0)
+    &quot;&quot;&quot;
+
+def set_regime(self, regime: str) -&gt; None:
+    &quot;&quot;&quot;Record the current regime label for observability (see status()).&quot;&quot;&quot;
+</code></pre>
+<h3 id="adaptive-noise">Adaptive noise</h3>
+<pre><code class="language-python">def adaptive_noise_scale(
+    self,
+    metrics_history: List[EvalMetrics],
+    min_scale: float = 0.001,
+    max_scale: float = 0.1,
+    window: int = 10,
+) -&gt; float:
+    &quot;&quot;&quot;
+    Compute a dynamic noise_scale for spawn_variant().
+
+    Driven by three signals, not one:
+
+    1. val_score slope: improving val → less noise (don't disrupt)
+    2. generalization_gap: large train-val gap → more noise (overfitting,
+       need to explore different solutions)
+    3. train/val correlation: low correlation → more noise (train is lying -
+       val is not following the training signal)
+
+    Without val data (no val_pipeline), falls back to slope-only mode.
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="evolution">Evolution</h3>
+<pre><code class="language-python">def evolve(self, agent: BaseAgent, current_score: float) -&gt; bool:
+    &quot;&quot;&quot;
+    Called when the loop enters DORMANT state.
+
+    Compares current_score against the best checkpoint in the registry.
+    - If current &lt; best: loads best weights into agent. Returns True.
+    - If current &gt;= best: no-op. Returns False.
+    &quot;&quot;&quot;
+
+def spawn_variant(
+    self,
+    agent_shell: BaseAgent,
+    noise_scale: float = 0.01,
+    mutation_fn: Optional[Callable[[BaseAgent], None]] = None,
+) -&gt; BaseAgent:
+    &quot;&quot;&quot;
+    Clone best checkpoint into agent_shell and apply mutation.
+
+    Loads the best known weights into agent_shell, then perturbs its
+    hyperparameters with multiplicative Gaussian noise. If mutation_fn
+    is provided, it is called after weight loading for custom weight
+    perturbation.
+
+    noise_scale: std dev for multiplicative Gaussian noise on each
+                 numeric hyperparam. Default 0.01 (1% perturbation).
+
+    Returns agent_shell (mutated in place, also returned for chaining).
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="reporting">Reporting</h3>
+<pre><code class="language-python">def status(self) -&gt; dict:
+    &quot;&quot;&quot;
+    Structured snapshot of current ensemble state: ensemble_size, per-agent
+    weight/mean_score/recent_scores, regime, spawn_count, prune_count,
+    budget_exhausted, spawns_remaining.
+    &quot;&quot;&quot;
+
+def training_report(self) -&gt; dict:
+    &quot;&quot;&quot;
+    Structured training report for display after training completes.
+
+    Superset of status() enriched with best_score, best_val_score,
+    best_generalization_gap (all read from the best registry checkpoint),
+    and termination_reason.
+    &quot;&quot;&quot;
+</code></pre>
+<h3 id="properties">Properties</h3>
+<pre><code class="language-python">@property
+def ranked_snapshots(self) -&gt; List[dict]:
+    &quot;&quot;&quot;All registry snapshots ranked by primary_score (highest first).&quot;&quot;&quot;
+
+@property
+def ensemble_size(self) -&gt; int: ...
+
+@property
+def budget_exhausted(self) -&gt; bool:
+    &quot;&quot;&quot;True when max_spawns is set and the spawn budget has been fully used.&quot;&quot;&quot;
+
+@property
+def spawns_remaining(self) -&gt; Optional[int]:
+    &quot;&quot;&quot;Remaining spawns in budget. None if no budget was set.&quot;&quot;&quot;
+</code></pre>
+<h3 id="as_callback">as_callback</h3>
+<pre><code class="language-python">def as_callback(
+    self,
+    agent: BaseAgent,
+    agent_factory: Optional[Callable[[], BaseAgent]] = None,
+    meta_controller: Optional[Any] = None,
+) -&gt; &quot;PolicyManagerCallback&quot;:
+    &quot;&quot;&quot;
+    Returns a LoopCallback that wires PolicyManager into the loop.
+
+    agent_factory: callable that returns a fresh agent shell for spawning.
+        When provided, DORMANT triggers spawn-until-budget-exhausted.
+        When omitted, DORMANT stops immediately.
+
+    meta_controller: optional MetaController that overrides spawn/stop
+        decisions with custom logic.
+
+    Wiring:
+        pm = PolicyManager(registry, max_spawns=3)
+        cb = pm.as_callback(agent, agent_factory=lambda: MyAgent(...))
+        opt = RLOptimizer(..., callbacks=[cb])
+        cb.set_stop_fn(opt.stop)
+    &quot;&quot;&quot;
+</code></pre>
+<h2 id="policymanagercallback">PolicyManagerCallback</h2>
+<pre><code class="language-python">class PolicyManagerCallback(LoopCallback):
+    &quot;&quot;&quot;
+    Wires PolicyManager into the LoopController event system.
+
+    On every DORMANT event:
+    1. Auto-rebalance ensemble weights from score history
+    2. Rollback to best checkpoint if current score &lt; best
+    3. If agent_factory provided:
+       - If MetaController present: delegate SPAWN/PRUNE/STOP/NO_OP decision to it
+       - If no MetaController: spawn whenever budget allows (default behaviour)
+    4. If budget exhausted: call stop_fn → opt.run() returns cleanly
+    &quot;&quot;&quot;
+
+    def set_stop_fn(self, fn: Callable[[], None]) -&gt; None:
+        &quot;&quot;&quot;
+        Register a callable invoked when the spawn budget is exhausted.
+        Typically: cb.set_stop_fn(optimizer.stop)
+        &quot;&quot;&quot;
+</code></pre>
+<p><code>_do_spawn()</code> grows the weight-perturbation scale based on recent improvement: when at least two metrics are recorded, the scale is <code>clip(0.01 / (1 + improvement_ratio), 0.005, 0.1)</code>; otherwise it falls back to <code>min(0.1, 0.01 × 2^spawn_count)</code> (exponential growth with spawn count).</p>
+<p>See also: <a href="../../../guides/ensembles-evolution/">Ensembles and policy evolution</a>, <a href="../meta_controller/">MetaController</a>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../diagnostic_controller/" class="btn btn-neutral float-left" title="diagnostic_controller"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../meta_controller/" class="btn btn-neutral float-right" title="meta_controller">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../diagnostic_controller/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../meta_controller/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../../..";</script>
+    <script src="../../../js/theme_extra.js"></script>
+    <script src="../../../js/theme.js"></script>
+      <script src="../../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

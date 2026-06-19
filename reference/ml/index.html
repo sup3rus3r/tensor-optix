@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>ML mode - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "ML mode";
+        var mkdocs_page_input_path = "reference\\ml.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">ML mode</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#mlagent">MLAgent</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#datasetpipeline">DatasetPipeline</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#loss-registry">Loss registry</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+      <li class="breadcrumb-item active">ML mode</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/ml.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="tensor_optixml">tensor_optix.ml</h1>
+<p>Adapts the training loop to general (non-RL) ML tasks: supervised, autoencoder, VAE, and contrastive learning.</p>
+<h2 id="mlagent">MLAgent</h2>
+<pre><code class="language-python">class MLAgent(BaseAgent):
+    &quot;&quot;&quot;
+    BaseAgent adapter for any nn.Module training task.
+
+    Wraps any nn.Module and gives it the full tensor-optix feature set:
+      - SPSA online hyperparameter tuning
+      - Rollback on validation degradation
+      - Convergence / plateau detection
+      - Checkpointing (save / load weights)
+      - Weight averaging (SWA)
+
+    Works for: supervised classification/regression, unsupervised
+    autoencoders/VAE, self-supervised contrastive learning (SimCLR), or
+    anything with a loss.
+
+    Parameters
+    ----------
+    model:    Any nn.Module.
+    loss_fn:  Instantiated loss nn.Module (build via loss_registry.resolve_loss()).
+    learning_rate: Initial Adam learning rate. Tunable online via SPSA.
+    weight_decay:  Adam L2 regularisation. Tunable online via SPSA.
+    max_grad_norm: Gradient clipping norm. None disables.
+    device: &quot;auto&quot;, &quot;cpu&quot;, or &quot;cuda&quot;.
+    &quot;&quot;&quot;
+
+    is_on_policy = True  # safe for rollback - each batch is independent data
+    default_param_bounds = {&quot;learning_rate&quot;: (1e-5, 1e-2), &quot;weight_decay&quot;: (0.0, 1e-2)}
+    default_log_params = [&quot;learning_rate&quot;]
+
+    def act(self, observation):
+        &quot;&quot;&quot;Inference - returns raw model output as a numpy array.&quot;&quot;&quot;
+
+    def learn(self, episode_data: EpisodeData) -&gt; dict:
+        &quot;&quot;&quot;
+        One gradient update on the batch packed into episode_data.
+
+        Mapping from EpisodeData fields:
+          observations  → model input  (X)
+          actions       → target       (y, or X again for reconstruction/VAE)
+
+        For unsupervised tasks the pipeline sets actions = observations so
+        the loss receives the original input as the target automatically.
+        &quot;&quot;&quot;
+</code></pre>
+<h2 id="datasetpipeline">DatasetPipeline</h2>
+<pre><code class="language-python">class DatasetPipeline(BasePipeline):
+    &quot;&quot;&quot;
+    Adapts a PyTorch Dataset or DataLoader to BasePipeline.
+
+    Each &quot;episode&quot; is one mini-batch. Loops through the dataset indefinitely
+    - the loop controller decides when to stop, never the pipeline.
+
+    Mapping to EpisodeData:
+        observations  → input tensor X
+        actions       → target tensor y, OR X again for unsupervised tasks
+        rewards       → [-loss] placeholder filled by MLAgent.learn()
+        terminated    → [True] - one &quot;episode&quot; per batch.
+        truncated     → [False]
+
+    Parameters
+    ----------
+    dataset:    Dataset or DataLoader. A Dataset is wrapped in a DataLoader
+                automatically using batch_size and shuffle.
+    batch_size: Batch size when building a DataLoader from a Dataset.
+    shuffle:    Whether to shuffle each epoch. Default True.
+    loss_key:   When an unsupervised key (&quot;reconstruction&quot;, &quot;vae&quot;,
+                &quot;contrastive&quot;), sets actions = observations automatically.
+    num_workers, pin_memory: DataLoader passthrough.
+    &quot;&quot;&quot;
+</code></pre>
+<h2 id="loss-registry">Loss registry</h2>
+<pre><code class="language-python">def resolve_loss(loss, dataset=None, n_samples: int = 64) -&gt; nn.Module:
+    &quot;&quot;&quot;
+    Return an instantiated loss nn.Module.
+
+    loss: &quot;auto&quot;, a loss key string, or an nn.Module instance.
+    dataset: required when loss=&quot;auto&quot; - used to sample items for detection.
+    &quot;&quot;&quot;
+
+def available_losses() -&gt; str:
+    &quot;&quot;&quot;Human-readable list of all supported loss strings.&quot;&quot;&quot;
+</code></pre>
+<p>Auto-detection rules (<code>loss="auto"</code>), in order:</p>
+<ol>
+<li>Items are single tensors (no label) → <code>"reconstruction"</code></li>
+<li>Items are pairs <code>(x1, x2)</code> of same shape → <code>"contrastive"</code></li>
+<li>Targets are int/long → <code>"cross_entropy"</code></li>
+<li>Targets are float, values in <code>{0, 1}</code> → <code>"bce"</code></li>
+<li>Targets are float, any range → <code>"mse"</code></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>String</th>
+<th>Criterion</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"cross_entropy"</code></td>
+<td><code>nn.CrossEntropyLoss</code></td>
+<td>multi-class classification</td>
+</tr>
+<tr>
+<td><code>"bce"</code></td>
+<td><code>nn.BCEWithLogitsLoss</code></td>
+<td>binary classification</td>
+</tr>
+<tr>
+<td><code>"mse"</code></td>
+<td><code>nn.MSELoss</code></td>
+<td>regression</td>
+</tr>
+<tr>
+<td><code>"mae"</code></td>
+<td><code>nn.L1Loss</code></td>
+<td>regression, outlier-robust</td>
+</tr>
+<tr>
+<td><code>"huber"</code></td>
+<td><code>nn.HuberLoss</code></td>
+<td>regression, very outlier-robust</td>
+</tr>
+<tr>
+<td><code>"cosine"</code></td>
+<td><code>nn.CosineEmbeddingLoss</code></td>
+<td>embedding / similarity</td>
+</tr>
+<tr>
+<td><code>"reconstruction"</code></td>
+<td>MSE(output, input)</td>
+<td>autoencoders</td>
+</tr>
+<tr>
+<td><code>"vae"</code></td>
+<td>ELBO (reconstruction + KL)</td>
+<td>VAEs - model must return <code>(reconstruction, mu, logvar)</code></td>
+</tr>
+<tr>
+<td><code>"contrastive"</code></td>
+<td>NT-Xent</td>
+<td>SimCLR - dataset yields <code>(x1, x2)</code> pairs</td>
+</tr>
+</tbody>
+</table>
+<p>Any <code>nn.Module</code> or callable can be passed directly as <code>loss=</code> instead of a string.</p>
+<p>See <a href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a> for the simplified <code>Optimizer(model, dataset, ...)</code> entry point.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../config-cli/" class="btn btn-neutral float-left" title="Config / CLI"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../exploration/" class="btn btn-neutral float-right" title="Exploration (RND)">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../config-cli/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../exploration/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
