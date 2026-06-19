@@ -1,0 +1,126 @@
+# tensor_optix.core.types
+
+Shared dataclasses and the `LoopState` enum. None of these depend on any ML framework.
+
+## LoopState
+
+```python
+class LoopState(Enum):
+    ACTIVE = auto()
+    COOLING = auto()
+    DORMANT = auto()
+    WATCHDOG = auto()
+```
+
+## EpisodeData
+
+```python
+@dataclass
+class EpisodeData:
+    """Raw interaction data produced by one episode."""
+    observations: Any                    # np.ndarray or tf.Tensor, shape [T, obs_dim]
+    actions: Any                         # np.ndarray or tf.Tensor, shape [T, act_dim] or [T]
+    rewards: List[float]                 # per-step rewards
+    terminated: List[bool]               # Gymnasium terminated flags
+    truncated: List[bool]                # Gymnasium truncated flags
+    infos: List[Dict]                    # per-step info dicts from env
+    episode_id: int
+    values: Optional[List[float]] = None     # V(s_t) estimates from critic, shape [T]
+                                             # Required for A2C advantage baseline.
+                                             # When None, TFAgent falls back to REINFORCE.
+    log_probs: Optional[List[float]] = None  # log π(a_t|s_t) at collection time, shape [T]
+                                             # Required for PPO importance ratio computation.
+                                             # Populated by PPOAgent.act() during rollout.
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    episode_starts: Optional[List[int]] = None
+    # Indices into the window where a new episode begins (index 0 is always
+    # an episode start and is included). Populated by BatchPipeline.
+    final_obs: Optional[Any] = None
+    # The observation immediately after the last step in the window.
+    # None when the window ended at a terminal state (done[-1] is True).
+    # Set by BatchPipeline and used by on-policy agents to bootstrap V(s_T)
+    # correctly when the window ends mid-episode.
+    hidden_states: Optional[List] = None
+    # Per-step hidden state tuples stored by recurrent agents.
+    # Shape: List[T] of (h, c) for LSTM, or List[T] of h for GRU.
+    # None for non-recurrent agents.
+
+    @property
+    def dones(self) -> List[bool]:
+        """Convenience: True when episode ended for any reason."""
+
+    @property
+    def total_reward(self) -> float: ...
+
+    @property
+    def length(self) -> int: ...
+```
+
+## EvalMetrics
+
+```python
+@dataclass
+class EvalMetrics:
+    """
+    Scored output from BaseEvaluator.score().
+    primary_score is the single comparable scalar - higher is always better.
+    metrics holds the full breakdown for logging/debugging.
+    """
+    primary_score: float
+    metrics: Dict[str, float]
+    episode_id: int
+    timestamp: float = field(default_factory=time.time)
+
+    def beats(self, other: "EvalMetrics", margin: float = 0.0) -> bool:
+        """True if this score beats other by at least margin."""
+
+    @property
+    def generalization_gap(self) -> Optional[float]:
+        """
+        train_score - val_score if both are present in metrics, else None.
+        Positive gap = overfitting. Zero = perfect generalization.
+        Only available when a val_pipeline is configured.
+        """
+```
+
+## HyperparamSet
+
+```python
+@dataclass
+class HyperparamSet:
+    """
+    A snapshot of hyperparameters at a point in time.
+
+    params is a completely open dict. Core never reads, writes, or assumes
+    any specific key names. Keys and value types are defined entirely by
+    the agent implementation and the optimizer.
+
+    Examples:
+        PPO:   {"learning_rate": 3e-4, "clip_ratio": 0.2, "entropy_coeff": 0.01, "gamma": 0.99}
+        DQN:   {"learning_rate": 1e-3, "epsilon": 0.1, "gamma": 0.99, "target_update_freq": 100}
+        CMA-ES: {"sigma": 0.3, "population_size": 16}
+    """
+    params: Dict[str, Any]
+    episode_id: int
+    timestamp: float = field(default_factory=time.time)
+
+    def copy(self) -> "HyperparamSet": ...
+```
+
+## PolicySnapshot
+
+```python
+@dataclass
+class PolicySnapshot:
+    """
+    A complete checkpoint: weights + hyperparams + eval score.
+    Stored by CheckpointRegistry whenever a new best is achieved.
+    """
+    snapshot_id: str
+    eval_metrics: EvalMetrics
+    hyperparams: HyperparamSet
+    weights_path: str
+    episode_id: int
+    timestamp: float = field(default_factory=time.time)
+```

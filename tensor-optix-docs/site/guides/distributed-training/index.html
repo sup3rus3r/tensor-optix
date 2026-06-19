@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Distributed training (IMPALA) - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Distributed training (IMPALA)";
+        var mkdocs_page_input_path = "guides\\distributed-training.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Distributed training (IMPALA)</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#why-v-trace">Why V-trace</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#platform-notes">Platform notes</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#when-to-reach-for-this">When to reach for this</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#reference">Reference</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Guides</li>
+      <li class="breadcrumb-item active">Distributed training (IMPALA)</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/distributed-training.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="distributed-training-impala-v-trace">Distributed training (IMPALA + V-trace)</h1>
+<p><code>AsyncActorLearner</code> implements IMPALA-style asynchronous actor-learner training. N actor subprocesses read weights from shared memory (lock-free) and collect trajectories; the learner dequeues trajectories, applies V-trace importance-sampling correction, and writes updated weights back to shared memory - actors see the new weights immediately, with no explicit broadcast step.</p>
+<pre><code class="language-python">from tensor_optix.distributed import AsyncActorLearner
+
+learner = AsyncActorLearner(
+    actor=actor,
+    critic=critic,
+    optimizer=optimizer,
+    env_factory=lambda: gym.make(&quot;ALE/Pong-v5&quot;),
+    n_actors=8,
+    trajectory_len=64,
+)
+stats = learner.run(max_steps=10_000_000)
+# stats[&quot;steps_per_second&quot;] -&gt; ~4x single-process throughput on CPU
+</code></pre>
+<h2 id="why-v-trace">Why V-trace</h2>
+<p>Actors run a policy μ that may lag behind the learner's current policy θ (staleness from async collection). The importance ratio <code>ρ_t = π_θ(a_t|s_t) / π_μ(a_t|s_t)</code> corrects for this mismatch, with two clips to control variance:</p>
+<ul>
+<li><code>ρ̄_t = min(ρ̄, ρ_t)</code> - clips the IS weight applied to the TD error</li>
+<li><code>c̄_t = min(c̄, ρ_t)</code> - clips the IS weight applied to the trace (controls the bias/variance tradeoff)</li>
+</ul>
+<p>With <code>ρ̄ = c̄ = 1</code> and synchronous actors (<code>μ = θ</code>), V-trace reduces to standard on-policy GAE with <code>λ = c̄</code>. See Espeholt et al. 2018 ("IMPALA").</p>
+<h2 id="platform-notes">Platform notes</h2>
+<p><code>fork</code> is used automatically on Linux (no pickling required - subprocess objects are inherited via <code>os.fork()</code>); <code>spawn</code> is used on Windows/macOS, which requires <code>env_factory</code> to be picklable (a module-level function or <code>functools.partial</code>, not a lambda capturing a non-picklable closure).</p>
+<h2 id="when-to-reach-for-this">When to reach for this</h2>
+<p>This is for environments where single-process throughput is the bottleneck and your policy/critic are plain <code>nn.Module</code>s with a discrete action space - Atari-scale problems, not small classic-control envs where <code>VectorBatchPipeline</code> (synchronous, in <code>RLOptimizer</code>) is simpler and sufficient. <code>AsyncActorLearner</code> is a standalone training loop, not wired into <code>RLOptimizer</code>'s convergence/checkpoint/SPSA machinery - use it when you specifically need the throughput and are comfortable managing your own stopping condition via <code>max_steps</code>.</p>
+<h2 id="reference">Reference</h2>
+<p>Full constructor signature and <code>compute_vtrace_targets</code> math: <a href="../../reference/distributed/">Distributed reference</a>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../exploration-rnd/" class="btn btn-neutral float-left" title="Add exploration bonuses (RND)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../ml-mode/" class="btn btn-neutral float-right" title="Train any PyTorch model (ML mode)">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../exploration-rnd/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../ml-mode/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

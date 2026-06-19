@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Trial search (TrialOrchestrator) - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Trial search (TrialOrchestrator)";
+        var mkdocs_page_input_path = "reference\\orchestrator.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Trial search (TrialOrchestrator)</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#paramspace">ParamSpace</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#trialorchestrator">TrialOrchestrator</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+      <li class="breadcrumb-item active">Trial search (TrialOrchestrator)</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/orchestrator.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="tensor_optixorchestrator">tensor_optix.orchestrator</h1>
+<pre><code>TrialOrchestrator - Optuna-based trial-level hyperparameter optimization.
+
+This is a separate layer *above* RLOptimizer. It is NOT an online optimizer.
+
+Online optimizers (SPSA, BackoffOptimizer) adapt hyperparams *within* a single
+training run, episode by episode. Trial-level optimization (this module) runs
+N independent training trials, each with a different hyperparameter
+configuration drawn from a principled surrogate model (TPE). After all
+trials, the best configuration is identified and optionally used for a
+final full-budget training run.
+
+When to use each:
+  - Use TrialOrchestrator to find a good starting configuration before
+    committing to a long training run.
+  - Use RLOptimizer (with SPSA) for online adaptation during the actual run.
+  - They compose naturally: run TrialOrchestrator first, then pass the best
+    params to RLOptimizer for the final run.
+
+Algorithm - Optuna TPE (Tree-structured Parzen Estimator):
+  TPE models p(x | good) and p(x | bad) as kernel density estimates over
+  past trial results, selecting the next configuration by maximising the
+  expected improvement ratio. Mathematically equivalent to Bayesian
+  optimisation with a non-parametric surrogate, without the O(n³) cost of
+  GP inference. Used by Stable-Baselines3, CleanRL, and RLlib for RL HPO.
+
+  Pruner - MedianPruner: after a warmup phase, prunes any trial whose
+  intermediate score falls below the median of all trials at the same
+  step - successive halving without a fixed budget assumption.
+
+Requires: optuna (optional dependency). pip install optuna
+</code></pre>
+<h2 id="paramspace">ParamSpace</h2>
+<pre><code class="language-python">ParamSpace = Dict[str, Tuple]
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Spec</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>("float", lo, hi)</code></td>
+<td>uniform float in <code>[lo, hi]</code></td>
+</tr>
+<tr>
+<td><code>("log_float", lo, hi)</code></td>
+<td>log-uniform float (good for learning rate)</td>
+</tr>
+<tr>
+<td><code>("int", lo, hi)</code></td>
+<td>uniform int in <code>[lo, hi]</code></td>
+</tr>
+<tr>
+<td><code>("log_int", lo, hi)</code></td>
+<td>log-uniform int</td>
+</tr>
+<tr>
+<td><code>("categorical", v1, v2, ...)</code></td>
+<td>one of the listed values</td>
+</tr>
+</tbody>
+</table>
+<h2 id="trialorchestrator">TrialOrchestrator</h2>
+<pre><code class="language-python">class TrialOrchestrator:
+    &quot;&quot;&quot;
+    Optuna-based trial-level hyperparameter optimizer for RLOptimizer.
+
+    Each trial is a fully independent RLOptimizer run with a different
+    hyperparameter configuration. Optuna's TPE sampler uses results from
+    completed trials to choose better configurations for subsequent ones.
+
+    Parameters
+    ----------
+    agent_factory : Callable[[dict], BaseAgent]
+        Called once per trial with the sampled param dict. Must return a
+        freshly initialised agent (no shared state between trials).
+    pipeline_factory : Callable[[], BasePipeline]
+        Called once per trial. Must return a fresh pipeline instance.
+    param_space : dict
+        Maps param names to sampling specs (see ParamSpace).
+    n_trials : int
+        Number of independent trials to run.
+    trial_steps : int
+        Step budget per trial. Common heuristic: 10–20% of final training budget.
+    direction : str
+        &quot;maximize&quot; (default) or &quot;minimize&quot; for the primary score.
+    n_startup_trials : int
+        Random trials before TPE's surrogate model kicks in. Default 10.
+    pruner_warmup_steps : int
+        MedianPruner ignores scores before this many episodes. Default 5.
+    pruner_interval : int
+        MedianPruner checks every this many episodes. Default 1.
+    optuna_verbosity : int
+        Optuna log level. Default optuna.logging.WARNING.
+    rloptimizer_kwargs : dict
+        Extra kwargs forwarded to RLOptimizer for every trial. Do NOT pass
+        max_episodes here - use trial_steps instead.
+    val_pipeline_factory : Callable[[], BasePipeline], optional
+        If provided, called once per trial to create a validation pipeline.
+    checkpoint_score_fn : Callable[[BaseAgent], float], optional
+        Forwarded to each trial's RLOptimizer.
+    study_name, storage : str, optional
+        Optuna study persistence (e.g. storage=&quot;sqlite:///optuna.db&quot;).
+        Default: in-memory (no persistence).
+    &quot;&quot;&quot;
+
+    def run(self) -&gt; Tuple[Dict[str, Any], float]:
+        &quot;&quot;&quot;
+        Run all trials and return (best_params, best_score).
+
+        Each trial: TPE suggests a config → fresh agent/pipeline built via
+        factories → RLOptimizer runs for at most trial_steps env steps →
+        best smoothed score reported to Optuna → MedianPruner may stop the
+        trial early if the score is poor.
+
+        The best trial's weights are accessible via best_weights_path.
+        &quot;&quot;&quot;
+
+    @property
+    def best_weights_path(self) -&gt; Optional[str]:
+        &quot;&quot;&quot;
+        Path to the best trial's saved weights directory.
+        The caller is responsible for cleaning up run_ckpt_dir once weights
+        have been loaded.
+        &quot;&quot;&quot;
+
+    @property
+    def run_ckpt_dir(self) -&gt; Optional[str]:
+        &quot;&quot;&quot;Root directory holding all trial checkpoints from the last run().&quot;&quot;&quot;
+
+    @property
+    def study(self) -&gt; &quot;optuna.Study&quot;:
+        &quot;&quot;&quot;The underlying Optuna study. Inspect trial history, plot, etc.&quot;&quot;&quot;
+
+    @property
+    def best_params(self) -&gt; Optional[Dict[str, Any]]: ...
+    @property
+    def best_score(self) -&gt; Optional[float]: ...
+
+    def trials_dataframe(self):
+        &quot;&quot;&quot;Return a pandas DataFrame of all trial results (requires pandas).&quot;&quot;&quot;
+</code></pre>
+<p><code>_IntermediateReporter</code> (internal <code>LoopCallback</code>) bridges <code>RLOptimizer</code>'s <code>on_episode_end</code> into Optuna's intermediate reporting - when Optuna's pruner raises <code>TrialPruned</code>, it's translated into a <code>stop()</code> call on the trial's <code>RLOptimizer</code>.</p>
+<p>See <a href="../../guides/trial-search/">Run trial-level search</a> for usage, including composing with <code>RLOptimizer</code>'s <code>agent_factory</code>/<code>pipeline_factory</code>/<code>param_space</code> constructor path.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../distributed/" class="btn btn-neutral float-left" title="Distributed (IMPALA + V-trace)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../config-cli/" class="btn btn-neutral float-right" title="Config / CLI">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../distributed/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../config-cli/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,68 @@
+site_name: tensor-optix
+repo_url: https://github.com/sup3rus3r/tensor-optix
+theme: readthedocs
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+      - Concepts: getting-started/concepts.md
+  - Guides:
+      - Train an RL agent: guides/train-rl-agent.md
+      - Tune hyperparameters online: guides/hyperparameter-optimization.md
+      - Run trial-level search: guides/trial-search.md
+      - Configure via YAML / CLI: guides/cli-config.md
+      - Ensembles and policy evolution: guides/ensembles-evolution.md
+      - Add exploration bonuses (RND): guides/exploration-rnd.md
+      - Distributed training (IMPALA): guides/distributed-training.md
+      - Train any PyTorch model (ML mode): guides/ml-mode.md
+      - Build a neuroevo agent: guides/neuroevo.md
+      - Export to ONNX: guides/onnx-export.md
+      - Write a custom agent: guides/custom-agent.md
+      - Logging and dashboards: guides/logging-callbacks.md
+  - API Reference:
+      - Overview: reference/index.md
+      - core:
+          - types: reference/core/types.md
+          - base_agent: reference/core/base_agent.md
+          - base_evaluator: reference/core/base_evaluator.md
+          - base_optimizer: reference/core/base_optimizer.md
+          - base_pipeline: reference/core/base_pipeline.md
+          - loop_controller: reference/core/loop_controller.md
+          - backoff_scheduler: reference/core/backoff_scheduler.md
+          - checkpoint_registry: reference/core/checkpoint_registry.md
+          - diagnostic_controller: reference/core/diagnostic_controller.md
+          - policy_manager: reference/core/policy_manager.md
+          - meta_controller: reference/core/meta_controller.md
+          - ensemble_agent: reference/core/ensemble_agent.md
+          - regime_detector: reference/core/regime_detector.md
+          - normalizers: reference/core/normalizers.md
+          - replay_buffer: reference/core/replay_buffer.md
+          - her_buffer: reference/core/her_buffer.md
+          - trajectory_buffer: reference/core/trajectory_buffer.md
+          - noisy_linear: reference/core/noisy_linear.md
+          - device: reference/core/device.md
+      - Top-level API (RLOptimizer / Optimizer): reference/optimizer.md
+      - make_agent (factory): reference/factory.md
+      - Algorithms: reference/algorithms.md
+      - Pipelines: reference/pipelines.md
+      - Optimizers (hyperparameter tuning): reference/optimizers.md
+      - Callbacks: reference/callbacks.md
+      - Distributed (IMPALA + V-trace): reference/distributed.md
+      - Trial search (TrialOrchestrator): reference/orchestrator.md
+      - Config / CLI: reference/config-cli.md
+      - ML mode: reference/ml.md
+      - Exploration (RND): reference/exploration.md
+      - Neuroevo:
+          - Overview: reference/neuroevo/index.md
+          - NeuronGraph: reference/neuroevo/neuron-graph.md
+          - Neuron types: reference/neuroevo/neurons.md
+          - Topology operations: reference/neuroevo/topology-ops.md
+          - TopologyController: reference/neuroevo/topology-controller.md
+          - GraphAgent: reference/neuroevo/graph-agent.md
+          - BrainNetwork: reference/neuroevo/brain-network.md
+          - HebbianHook: reference/neuroevo/hebbian.md
+          - NeuromodulatorSignal: reference/neuroevo/neuromodulator.md
+          - TopologyAwareAdam: reference/neuroevo/topology-aware-adam.md
+  - Contributing: contributing.md
