@@ -115,6 +115,22 @@ class NeuronGraph(nn.Module):
         # Falls back to _raw_forward on PyTorch < 2.0.
         self._fwd = self._make_compiled_fwd()
 
+        # Bumped every time _rebuild_matrix_structure() replaces _ff_weight_vec
+        # with a new Parameter object. Callers that hold parameter references
+        # elsewhere (e.g. an optimizer) can compare this to detect that their
+        # captured parameters are now stale and must be re-fetched.
+        self._struct_version: int = 0
+
+    def ensure_built(self) -> None:
+        """Force a matrix-structure rebuild now if one is pending.
+
+        Call this before capturing self.parameters() externally (e.g. to
+        build an optimizer) so the captured objects are the live ones the
+        forward pass actually uses, not soon-to-be-orphaned per-edge Parameters.
+        """
+        if self._matrix_dirty and self._neurons:
+            self._rebuild_matrix_structure()
+
     def state_dict(self, *args, **kwargs):
         # Ensure packed layout before saving so ff weights appear as _ff_weight_vec,
         # not as individual _edge_weights.* keys that were added by add_edge().
@@ -683,6 +699,7 @@ class NeuronGraph(nn.Module):
         self._level_act_groups = self._compute_level_act_groups() if self._is_uniform else []
         self._fwd = self._fast_forward if self._is_uniform else self._raw_forward
         self._matrix_dirty = False
+        self._struct_version += 1
 
     def _assemble_W(self) -> torch.Tensor:
         """

@@ -84,6 +84,11 @@ class GraphAgent(BaseAgent):
         self.device = torch.device(device) if device is not None else get_device()
 
         self.graph.to(self.device)
+        # Force the packed-parameter rebuild now, before we capture
+        # graph.parameters() below — otherwise the optimizer would grab
+        # individual per-edge Parameters that the first forward pass then
+        # discards in favor of a combined _ff_weight_vec.
+        self.graph.ensure_built()
 
         if continuous:
             # Learnable log-std, one per action dimension
@@ -99,6 +104,7 @@ class GraphAgent(BaseAgent):
         self._hyperparams = HyperparamSet(params=_hp, episode_id=0)
 
         self.optimizer = torch.optim.Adam(params, lr=_hp["learning_rate"])
+        self._graph_struct_version = self.graph._struct_version
         self._episode_count = 0
 
     # ------------------------------------------------------------------
@@ -112,6 +118,7 @@ class GraphAgent(BaseAgent):
         """
         obs = self._to_tensor(observation)
         self._maybe_grow_inputs(obs)
+        self._sync_optimizer()
 
         self.graph.reset_state()
         with torch.no_grad():
@@ -122,6 +129,7 @@ class GraphAgent(BaseAgent):
         return action
 
     def learn(self, episode_data: EpisodeData) -> dict:
+        self._sync_optimizer()
         hp = self._hyperparams.params
         obs_t = torch.tensor(
             np.array(episode_data.observations), dtype=torch.float32, device=self.device
@@ -232,6 +240,10 @@ class GraphAgent(BaseAgent):
         self._episode_count = state.get("episode", 0)
         if self.continuous and "log_std" in state:
             self.log_std.data.copy_(state["log_std"])
+        # self.graph may now be a different object entirely (topology branch
+        # above), so force a resync regardless of version-number coincidence.
+        self._graph_struct_version = -1
+        self._sync_optimizer()
 
     @classmethod
     def from_checkpoint(cls, path: str, device: str = "auto") -> "GraphAgent":
@@ -309,12 +321,27 @@ class GraphAgent(BaseAgent):
             for _ in range(needed - current_inputs):
                 add_input_neuron(self.graph, activation="linear")
             self.obs_dim = needed
-            # Rebuild optimizer to include new parameters
-            params = list(self.graph.parameters())
-            if self.continuous:
-                params.append(self.log_std)
-            lr = self._hyperparams.params.get("learning_rate", 3e-4)
-            self.optimizer = torch.optim.Adam(params, lr=lr)
+            # Optimizer resync happens in _sync_optimizer(), called right
+            # after this in act()/learn() — rebuilding here would be premature
+            # since the graph is still dirty and hasn't repacked its weights yet.
+
+    def _sync_optimizer(self) -> None:
+        """
+        Re-fetch graph.parameters() into the optimizer whenever the graph's
+        packed weight structure has been rebuilt since the optimizer was last
+        (re)built — e.g. after TopologyController grow/prune/merge, after
+        add_input_neuron, or after any other structural mutation. Cheap no-op
+        when nothing has changed.
+        """
+        self.graph.ensure_built()
+        if self.graph._struct_version == self._graph_struct_version:
+            return
+        params = list(self.graph.parameters())
+        if self.continuous:
+            params.append(self.log_std)
+        lr = self.optimizer.param_groups[0]["lr"]
+        self.optimizer = torch.optim.Adam(params, lr=lr)
+        self._graph_struct_version = self.graph._struct_version
 
     def _batch_forward(self, obs_batch: torch.Tensor) -> torch.Tensor:
         """
@@ -497,6 +524,7 @@ class RecurrentGraphAgent(GraphAgent):
         return torch.stack([act[nid] for nid in graph.output_ids]).squeeze(-1)  # [n_outputs]
 
     def _recurrent_learn(self, episode_data: EpisodeData) -> dict:
+        self._sync_optimizer()
         hp = self._hyperparams.params
         chunk_len = int(hp.get("chunk_len", 64))
 

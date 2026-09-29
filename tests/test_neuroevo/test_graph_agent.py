@@ -174,3 +174,70 @@ class TestWeights:
 def test_is_on_policy():
     agent = make_agent()
     assert agent.is_on_policy is True
+
+
+# ---------------------------------------------------------------------------
+# Optimizer / graph structural-rebuild identity (regression coverage for the
+# "optimizer captures dead pre-rebuild Parameters" bug class)
+# ---------------------------------------------------------------------------
+
+class TestOptimizerResync:
+
+    def test_optimizer_tracks_live_ff_weight_vec_after_init(self):
+        agent = make_agent()
+        live_ids = {id(p) for p in agent.graph.parameters()}
+        opt_ids = {id(p) for group in agent.optimizer.param_groups for p in group["params"]}
+        assert opt_ids <= live_ids or opt_ids == live_ids
+        # The combined packed vector must be the one the optimizer holds.
+        assert id(agent.graph._ff_weight_vec) in opt_ids
+
+    def test_optimizer_resyncs_after_external_structural_rebuild(self):
+        # Simulates what TopologyController does after grow/prune/merge:
+        # it calls graph.invalidate_compile() with no knowledge of any
+        # optimizer, replacing _ff_weight_vec with a new object.
+        agent = make_agent()
+        old_ff_vec_id = id(agent.graph._ff_weight_vec)
+
+        agent.graph.invalidate_compile()
+        new_ff_vec_id = id(agent.graph._ff_weight_vec)
+        assert new_ff_vec_id != old_ff_vec_id  # sanity: rebuild actually replaced it
+
+        # Before the next act()/learn() call, the optimizer is stale.
+        opt_ids_before = {id(p) for g in agent.optimizer.param_groups for p in g["params"]}
+        assert old_ff_vec_id in opt_ids_before
+        assert new_ff_vec_id not in opt_ids_before
+
+        agent._sync_optimizer()
+
+        opt_ids_after = {id(p) for g in agent.optimizer.param_groups for p in g["params"]}
+        assert new_ff_vec_id in opt_ids_after
+        assert old_ff_vec_id not in opt_ids_after
+
+    def test_learn_actually_updates_live_weights_after_grow(self):
+        agent = make_agent(obs_dim=4, n_actions=2)
+        episode = fake_episode(obs_dim=4, n_actions=2, length=32)
+
+        # Trigger an input-growth mutation mid-episode, mimicking act()
+        # observing a larger obs than the graph currently has inputs for.
+        agent.act(np.random.randn(6).astype(np.float32))
+        assert agent.obs_dim == 6
+
+        episode6 = fake_episode(obs_dim=6, n_actions=2, length=32)
+        before = agent.graph._ff_weight_vec.data.clone()
+        agent.learn(episode6)
+        after = agent.graph._ff_weight_vec.data.clone()
+
+        # The live packed weight vector must actually have moved — proving
+        # the optimizer stepped the parameters the forward pass reads from,
+        # not a stale, orphaned copy.
+        assert not torch.equal(before, after)
+
+    def test_learn_updates_weights_after_manual_topology_rebuild(self):
+        agent = make_agent()
+        episode = fake_episode()
+
+        agent.graph.invalidate_compile()  # stand-in for a controller-driven rebuild
+        before = agent.graph._ff_weight_vec.data.clone()
+        agent.learn(episode)
+        after = agent.graph._ff_weight_vec.data.clone()
+        assert not torch.equal(before, after)
