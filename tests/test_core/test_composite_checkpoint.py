@@ -125,6 +125,39 @@ class TestCompareOverrideRespected:
         assert controller.best_snapshot.eval_metrics.episode_id == 0
 
 
+class TestSkipMessageDistinguishesReasons:
+    """
+    Regression coverage: the verbose skip message must not claim a magnitude
+    comparison ("ckpt_score < best") when the actual rejection reason was
+    "unconfirmed" (candidate exceeded best but hasn't been corroborated yet).
+    That would state something false about why the candidate was rejected.
+    """
+
+    def test_unconfirmed_skip_message_does_not_claim_below_best(self, tmp_path, capsys):
+        controller = make_controller(
+            criteria_mode="auto",
+            tmp_path=tmp_path,
+            checkpoint_confirm_window=5,  # deliberately hard to satisfy quickly
+            verbose=True,
+        )
+        controller.run()
+        out = capsys.readouterr().out
+        unconfirmed_lines = [l for l in out.splitlines() if "unconfirmed" in l]
+        for line in unconfirmed_lines:
+            assert "<" not in line  # must not claim a magnitude comparison
+            assert ">=" in line
+
+    def test_below_best_skip_message_unchanged_for_legacy_mode(self, tmp_path, capsys):
+        controller = make_controller(criteria_mode="none", tmp_path=tmp_path, verbose=True)
+        controller.run()
+        out = capsys.readouterr().out
+        skip_lines = [l for l in out.splitlines() if "CKPT" in l and "skipped" in l]
+        assert skip_lines  # sanity: some episodes were skipped
+        for line in skip_lines:
+            assert "skipped (below best)" in line
+            assert "<" in line
+
+
 class TestCheckpointScoreFnInteraction:
 
     def test_checkpoint_score_fn_skips_composite_but_keeps_confirmation(self, tmp_path):

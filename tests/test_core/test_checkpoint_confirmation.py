@@ -22,7 +22,7 @@ class TestCheckpointConfirmationTracker:
         tracker.observe(112.0)  # jump of 12, below the ~17.9 floor
         accepted, reason = tracker.evaluate_candidate(112.0, best_score=best)
         assert not accepted
-        assert reason == "rejected"
+        assert reason == "unconfirmed"
 
     def test_spike_that_immediately_regresses_is_not_confirmed_by_streak(self):
         tracker = CheckpointConfirmationTracker(confirm_window=3, min_samples_for_floor=5)
@@ -38,7 +38,7 @@ class TestCheckpointConfirmationTracker:
         tracker.observe(100.0)
         accepted2, reason2 = tracker.evaluate_candidate(100.0, best_score=best)
         assert not accepted2
-        assert reason2 == "rejected"
+        assert reason2 == "below_best"
 
         # Even a later spike at the same unconfirmed level starts from streak=1.
         tracker.observe(112.0)
@@ -85,7 +85,13 @@ class TestCheckpointConfirmationTracker:
         tracker.observe(5.0)
         accepted, reason = tracker.evaluate_candidate(5.0, best_score=10.0)
         assert not accepted
-        assert reason == "rejected"
+        assert reason == "below_best"
+
+    def test_last_reason_mirrors_returned_reason(self):
+        tracker = CheckpointConfirmationTracker()
+        tracker.observe(10.0)
+        _, reason = tracker.evaluate_candidate(5.0, best_score=10.0)
+        assert tracker.last_reason == reason == "below_best"
 
     def test_oscillating_noise_never_builds_a_false_streak(self):
         # Regression guard for the original streak-logic bug: noisy

@@ -54,6 +54,7 @@ class CheckpointConfirmationTracker:
         self._min_degradation_drop = min_degradation_drop
         self._window: Deque[float] = deque(maxlen=max(score_window, self._confirm_window))
         self._above_best_streak: int = 0
+        self.last_reason: Optional[str] = None
 
     def _adaptive_floor(self, best_score: Optional[float]) -> float:
         if len(self._window) < self._min_samples_for_floor:
@@ -85,25 +86,40 @@ class CheckpointConfirmationTracker:
                                   sample above best is already strong evidence
           "confirmed_by_streak" — confirm_window consecutive candidates have
                                   each individually exceeded best
-          "rejected"            — not yet corroborated
+          "below_best"          — candidate did not exceed best at all —
+                                  this is a genuine magnitude rejection, not
+                                  a confirmation-pending one
+          "unconfirmed"         — candidate exceeds best but hasn't yet been
+                                  corroborated — NOT a magnitude rejection;
+                                  callers must not log this as "< best"
+
+        `self.last_reason` mirrors the returned reason, for callers (e.g.
+        LoopController's verbose/log output) that need to distinguish a
+        genuine "below best" rejection from a merely "not yet confirmed"
+        one after calling this indirectly through BaseEvaluator.compare().
         """
         if best_score is None:
             self._above_best_streak = 0
-            return True, "first_checkpoint"
+            self.last_reason = "first_checkpoint"
+            return True, self.last_reason
 
         if candidate_score <= best_score + self._min_degradation_drop:
             self._above_best_streak = 0
-            return False, "rejected"
+            self.last_reason = "below_best"
+            return False, self.last_reason
 
         floor = self._adaptive_floor(best_score)
         if candidate_score > best_score + floor and len(self._window) >= self._min_samples_for_floor:
             self._above_best_streak = 0
-            return True, "confirmed_by_floor"
+            self.last_reason = "confirmed_by_floor"
+            return True, self.last_reason
 
         # Above best, but within this run's own noise floor — corroborate
         # over consecutive evals before trusting it.
         self._above_best_streak += 1
         if self._above_best_streak >= self._confirm_window:
             self._above_best_streak = 0
-            return True, "confirmed_by_streak"
-        return False, "rejected"
+            self.last_reason = "confirmed_by_streak"
+            return True, self.last_reason
+        self.last_reason = "unconfirmed"
+        return False, self.last_reason

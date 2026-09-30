@@ -380,7 +380,15 @@ class LoopController:
                         self._scheduler.current_interval,
                     )
                 elif self._verbose:
-                    self._vprint(f"  CKPT     skipped  ckpt_score={ckpt_score:.2f} < best={self._best_raw:.2f}")
+                    if self._checkpoint_confirmation_enabled and self._confirmation.last_reason == "unconfirmed":
+                        self._vprint(
+                            f"  CKPT     skipped (unconfirmed)  ckpt_score={ckpt_score:.2f} "
+                            f">= best={self._best_raw:.2f} — awaiting corroboration"
+                        )
+                    else:
+                        self._vprint(
+                            f"  CKPT     skipped (below best)  ckpt_score={ckpt_score:.2f} < best={self._best_raw:.2f}"
+                        )
 
                 # ── Convergence / degradation: trend-based detection ──────────
                 # Use linear regression slope over the recent score window to
