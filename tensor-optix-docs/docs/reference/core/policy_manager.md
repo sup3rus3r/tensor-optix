@@ -178,6 +178,15 @@ def spawn_variant(
     """
 ```
 
+`evolve()`'s rollback target is `self._registry.best`, which `CheckpointRegistry`
+only ever updates via the caller's own accept decision - see
+[CheckpointRegistry](checkpoint_registry.md). When `LoopController` is
+configured with `criteria_mode`/`checkpoint_confirmation`
+(see [LoopController](loop_controller.md#avoiding-unicorn-checkpoints)),
+that means `evolve()` can only ever roll back to a confirmed,
+composite-scored checkpoint - never a single lucky ("unicorn") episode - with
+no change needed here.
+
 ### Reporting
 
 ```python

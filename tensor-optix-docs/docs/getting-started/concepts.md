@@ -34,6 +34,15 @@ When a `val_pipeline` is configured, `primary_score` is the **validation** score
 
 `run()` always restores the best known checkpoint before returning, regardless of how the loop ended (convergence, `stop()`, or `max_episodes`). Pass `checkpoint_score_fn` to drive checkpoint *selection* from an independent, deterministic external evaluation instead of the noisy training-window mean.
 
+By default, "best" is the single episode with the highest `primary_score` -
+a raw point comparison. That's fine most of the time, but a lucky episode
+(reward concentrated on one favorable step, not earned consistently) can
+score higher than anything a genuinely better policy produces later, and
+become a permanent, unbeatable "best." `criteria_mode` and
+`checkpoint_confirmation` (both opt-in, off by default) widen the
+measurement and require corroboration before trusting an improvement - see
+[Avoiding unicorn checkpoints](../guides/train-rl-agent.md#avoiding-unicorn-checkpoints).
+
 ## On-policy vs. off-policy rollback
 
 `BaseAgent.is_on_policy` (default `True`) tells the loop whether rollback is safe:

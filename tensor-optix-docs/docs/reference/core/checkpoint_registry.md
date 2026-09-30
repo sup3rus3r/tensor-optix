@@ -66,3 +66,15 @@ def best(self) -> Optional[PolicySnapshot]: ...
 ```
 
 `load_ensemble` is how Stochastic Weight Averaging (SWA) is exposed at the registry level - it requires the agent to implement `average_weights()` (see [BaseAgent](base_agent.md)).
+
+`CheckpointRegistry.save()` itself does no comparison - it trusts the caller
+and unconditionally overwrites `self._best` with whatever it's given. That
+responsibility belongs to the caller by design (`LoopController`, via
+`BaseEvaluator.compare()`) so that `save()` stays framework-agnostic about
+what "better" means. When `LoopController` is configured with
+`criteria_mode` and/or `checkpoint_confirmation` (see
+[LoopController](loop_controller.md#avoiding-unicorn-checkpoints)), `best`
+is only ever updated by an already composite-scored, confirmed candidate -
+so every consumer of `best` (`load_best()`, `load_ensemble()`,
+`PolicyManager.evolve()`'s rollback target) benefits automatically, with no
+change needed on their end.

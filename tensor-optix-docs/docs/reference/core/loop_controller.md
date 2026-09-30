@@ -78,14 +78,52 @@ def __init__(
     cv_threshold: float = 0.05,
     gap_threshold: float = 0.20,
     target_score: Optional[float] = None,
+    criteria_mode: str = "none",
+    criteria_k: float = 2.0,
+    checkpoint_confirmation: bool = False,
+    checkpoint_confirm_window: int = 3,
+    checkpoint_noise_k: float = 2.0,
 )
 ```
 
 Three separate concerns are kept deliberately independent inside the controller:
 
-1. **Checkpoint saving** - driven by `checkpoint_score` (the output of `checkpoint_score_fn(agent)` when provided, otherwise raw `primary_score`). The best checkpoint is the one with the highest true policy quality; an external deterministic eval is more accurate than the noisy training-window mean.
+1. **Checkpoint saving** - driven by `checkpoint_score` (the output of `checkpoint_score_fn(agent)` when provided, otherwise raw `primary_score`, then run through composite scoring and confirmation - see below). The best checkpoint is the one with the highest true policy quality; an external deterministic eval is more accurate than the noisy training-window mean.
 2. **Convergence / degradation detection** - driven by the *smoothed* `primary_score` (rolling mean of the last `score_smoothing` evals), so a single lucky window can't set an unreachable "best" that permanently blocks `DORMANT`.
 3. **`checkpoint_score_fn`** - optional `Callable[[BaseAgent], float]` called after every eval episode to measure true policy quality independently of the training signal.
+
+### Avoiding "unicorn" checkpoints
+
+By default (`criteria_mode="none"`), checkpoint acceptance is a raw point
+comparison: `checkpoint_score > best + improvement_margin`. This is exactly
+what earlier versions did, kept as the default so upgrading never silently
+changes what gets checkpointed. The problem with it: a single lucky episode
+during early high-entropy exploration - reward concentrated on one step
+rather than earned consistently - can produce a raw score that no later,
+genuinely better policy ever beats, because that lucky episode becomes a
+permanent, unbeatable "best."
+
+Two opt-in parameters address this, both documented in full on
+[BaseEvaluator](base_evaluator.md#measuring-good-as-more-than-one-number):
+
+- `criteria_mode`: `"none"` (default) | `"manual"` | `"auto"` | `"both"`.
+  Widens the measurement itself - `"auto"` needs no domain code at all (it
+  reads the shape of the reward stream that already exists on every
+  episode); `"manual"` uses a `BaseEvaluator.criteria()` rubric you define.
+  `criteria_k` (default 2.0) controls how sharply an unsatisfied fraction is
+  penalized.
+- `checkpoint_confirmation` (default `False`, implicitly `True` whenever
+  `criteria_mode != "none"`): gates acceptance through a
+  `CheckpointConfirmationTracker` requiring either low enough measured noise
+  or `checkpoint_confirm_window` (default 3) consecutive corroborating evals
+  before trusting an improvement - the same trend-over-point philosophy
+  `BackoffScheduler` already uses for improvement/degradation state, applied
+  here to checkpoint acceptance instead. `checkpoint_noise_k` (default 2.0,
+  same semantics as `BackoffScheduler.noise_k`) scales the adaptive floor.
+
+When `checkpoint_score_fn` is provided, composite scoring is skipped (the
+external eval is already presumed trustworthy) but confirmation still
+applies, guarding against a fluke in the external eval itself.
 
 ### Methods
 

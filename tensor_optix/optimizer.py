@@ -92,6 +92,11 @@ class RLOptimizer:
         cv_threshold: float = 0.05,
         gap_threshold: float = 0.20,
         target_score: Optional[float] = None,
+        criteria_mode: str = "none",
+        criteria_k: float = 2.0,
+        checkpoint_confirmation: bool = False,
+        checkpoint_confirm_window: int = 3,
+        checkpoint_noise_k: float = 2.0,
         # ── Trial-level search (TrialOrchestrator) ────────────────────────
         agent_factory: Optional[Callable[[Dict[str, Any]], BaseAgent]] = None,
         pipeline_factory: Optional[Callable[[], BasePipeline]] = None,
@@ -141,6 +146,11 @@ class RLOptimizer:
             cv_threshold=cv_threshold,
             gap_threshold=gap_threshold,
             target_score=target_score,
+            criteria_mode=criteria_mode,
+            criteria_k=criteria_k,
+            checkpoint_confirmation=checkpoint_confirmation,
+            checkpoint_confirm_window=checkpoint_confirm_window,
+            checkpoint_noise_k=checkpoint_noise_k,
             checkpoint_dir=checkpoint_dir,
             max_snapshots=max_snapshots,
             rollback_on_degradation=rollback_on_degradation,
@@ -264,6 +274,11 @@ class RLOptimizer:
             cv_threshold=kw["cv_threshold"],
             gap_threshold=kw["gap_threshold"],
             target_score=kw["target_score"],
+            criteria_mode=kw["criteria_mode"],
+            criteria_k=kw["criteria_k"],
+            checkpoint_confirmation=kw["checkpoint_confirmation"],
+            checkpoint_confirm_window=kw["checkpoint_confirm_window"],
+            checkpoint_noise_k=kw["checkpoint_noise_k"],
         )
         return controller
 

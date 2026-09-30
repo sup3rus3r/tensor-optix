@@ -8,6 +8,8 @@ from .base_optimizer import BaseOptimizer
 from .base_pipeline import BasePipeline
 from .checkpoint_registry import CheckpointRegistry
 from .backoff_scheduler import BackoffScheduler
+from .checkpoint_confirmation import CheckpointConfirmationTracker
+from .reward_shape import episode_breadth
 from .types import LoopState, EvalMetrics, PolicySnapshot
 from .diagnostic_controller import DiagnosticController
 
@@ -80,6 +82,11 @@ class LoopController:
         cv_threshold: float = 0.05,
         gap_threshold: float = 0.20,
         target_score: Optional[float] = None,
+        criteria_mode: str = "none",
+        criteria_k: float = 2.0,
+        checkpoint_confirmation: bool = False,
+        checkpoint_confirm_window: int = 3,
+        checkpoint_noise_k: float = 2.0,
     ):
         self._agent = agent
         self._evaluator = evaluator
@@ -131,6 +138,20 @@ class LoopController:
         self._best_raw: Optional[float] = None
         self._min_consecutive_degradations = min_consecutive_degradations
         self._consecutive_degradation_count: int = 0
+
+        # Checkpoint measurement/acceptance — off by default (bit-identical
+        # to legacy raw-point comparison unless explicitly opted into).
+        # See docs/reference/core/base_evaluator.md and loop_controller.md
+        # for why a single raw scalar can crown a lucky ("unicorn") episode
+        # as a permanent, unbeatable "best".
+        self._criteria_mode = criteria_mode
+        self._criteria_k = criteria_k
+        self._checkpoint_confirmation_enabled = checkpoint_confirmation or criteria_mode != "none"
+        self._breadth_history: deque = deque(maxlen=20)
+        self._confirmation = CheckpointConfirmationTracker(
+            noise_k=checkpoint_noise_k,
+            confirm_window=checkpoint_confirm_window,
+        )
 
     def run(self) -> None:
         """
@@ -188,11 +209,23 @@ class LoopController:
         eval_metrics = self._evaluator.score(episode_data, train_diagnostics)
         eval_metrics.episode_id = 0
 
-        ckpt_score = (
-            self._checkpoint_score_fn(self._agent)
-            if self._checkpoint_score_fn is not None
-            else eval_metrics.primary_score
-        )
+        breadths = episode_breadth(episode_data.rewards, episode_data.dones)
+        if breadths:
+            self._breadth_history.append(breadths[-1])
+
+        if self._checkpoint_score_fn is not None:
+            ckpt_score = self._checkpoint_score_fn(self._agent)
+        elif self._checkpoint_confirmation_enabled:
+            ckpt_score = self._evaluator.composite_score(
+                eval_metrics, episode_data, train_diagnostics,
+                self._breadth_history,
+                criteria_mode=self._criteria_mode,
+                criteria_k=self._criteria_k,
+            )
+        else:
+            ckpt_score = eval_metrics.primary_score
+        if self._checkpoint_confirmation_enabled:
+            self._confirmation.observe(ckpt_score)
         hyperparams = self._agent.get_hyperparams()
         snapshot = self._registry.save(self._agent, eval_metrics, hyperparams)
         self._best_snapshot = snapshot
@@ -280,11 +313,58 @@ class LoopController:
                     if self._checkpoint_score_fn is not None
                     else raw
                 )
-                is_raw_best = (
-                    self._best_raw is None
-                    or ckpt_score > self._best_raw + self._improvement_margin
-                )
-                if is_raw_best:
+
+                # Track this episode's reward-magnitude-concentration shape
+                # regardless of mode, so breadth_typicality() always has a
+                # warmed-up history by the time criteria_mode="auto" needs it.
+                breadths = episode_breadth(episode_data.rewards, episode_data.dones)
+                if breadths:
+                    self._breadth_history.append(breadths[-1])
+
+                if not self._checkpoint_confirmation_enabled:
+                    # Legacy path — bit-identical to pre-composite-scoring behavior.
+                    is_new_best = (
+                        self._best_raw is None
+                        or ckpt_score > self._best_raw + self._improvement_margin
+                    )
+                else:
+                    # checkpoint_score_fn is already presumed trustworthy (its own
+                    # docstring: "more accurate than the noisy training window") —
+                    # skip the composite criteria adjustment, still require
+                    # confirmation as a backstop against a fluke in the external
+                    # eval itself.
+                    composite = (
+                        ckpt_score
+                        if self._checkpoint_score_fn is not None
+                        else self._evaluator.composite_score(
+                            eval_metrics, episode_data, train_diagnostics,
+                            self._breadth_history,
+                            criteria_mode=self._criteria_mode,
+                            criteria_k=self._criteria_k,
+                        )
+                    )
+                    self._confirmation.observe(composite)
+                    candidate_metrics = EvalMetrics(
+                        primary_score=composite, metrics=eval_metrics.metrics,
+                        episode_id=episode_id,
+                    )
+                    # Compare against the composite score that won last time
+                    # (self._best_raw), not eval_metrics.primary_score on the
+                    # saved snapshot — those are different scales once
+                    # composite scoring is active, and comparing composite
+                    # against raw would be apples-to-oranges.
+                    if self._best_raw is None:
+                        is_new_best = True
+                    else:
+                        baseline_metrics = EvalMetrics(
+                            primary_score=self._best_raw, metrics={}, episode_id=0,
+                        )
+                        is_new_best = self._evaluator.compare(
+                            candidate_metrics, baseline_metrics, confirmation=self._confirmation
+                        )
+                    ckpt_score = composite
+
+                if is_new_best:
                     hyperparams = self._agent.get_hyperparams()
                     self._best_snapshot = self._registry.save(
                         self._agent, eval_metrics, hyperparams
