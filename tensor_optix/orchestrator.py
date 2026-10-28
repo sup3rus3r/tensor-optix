@@ -222,6 +222,13 @@ class TrialOrchestrator:
     storage : str, optional
         Optuna storage URL (e.g. "sqlite:///optuna.db") for distributed
         or persistent studies. Default: in-memory (no persistence).
+    sampler : optuna.samplers.BaseSampler, optional
+        Overrides the default TPESampler. Pass
+        sampler=optuna.samplers.RandomSampler() to run a baseline random
+        search instead of TPE — useful for comparing TPE against random
+        search under a matched trial budget. When not provided, the
+        default TPESampler(n_startup_trials=n_startup_trials) is used,
+        preserving existing behavior exactly.
     """
 
     def __init__(
@@ -241,6 +248,7 @@ class TrialOrchestrator:
         checkpoint_score_fn: Optional[Callable[[BaseAgent], float]] = None,
         study_name: Optional[str] = None,
         storage: Optional[str] = None,
+        sampler: Optional["optuna.samplers.BaseSampler"] = None,
     ):
         if not _OPTUNA_AVAILABLE:
             raise ImportError(
@@ -285,12 +293,18 @@ class TrialOrchestrator:
         self._trial_weights: Dict[int, Optional[str]] = {}
         self._best_weights_path: Optional[str] = None
 
-        # Build study once so results persist across run() calls
+        # Build study once so results persist across run() calls.
+        # A caller-supplied sampler is used as-is (e.g. RandomSampler() for
+        # a baseline comparator) — n_startup_trials is only consumed when
+        # constructing the default TPESampler, never forwarded to a
+        # caller-supplied sampler, since samplers like RandomSampler take
+        # no such argument and would raise if passed one.
+        self._sampler = sampler or TPESampler(n_startup_trials=self._n_startup_trials)
         self._study = optuna.create_study(
             study_name=self._study_name,
             direction=self._direction,
             storage=self._storage,
-            sampler=TPESampler(n_startup_trials=self._n_startup_trials),
+            sampler=self._sampler,
             pruner=MedianPruner(
                 n_startup_trials=self._n_startup_trials,
                 n_warmup_steps=self._pruner_warmup_steps,
@@ -363,6 +377,12 @@ class TrialOrchestrator:
     def study(self) -> "optuna.Study":
         """The underlying Optuna study. Inspect trial history, plot, etc."""
         return self._study
+
+    @property
+    def sampler(self) -> "optuna.samplers.BaseSampler":
+        """The Optuna sampler actually in use (TPESampler by default, or
+        whatever was passed to __init__)."""
+        return self._sampler
 
     @property
     def best_params(self) -> Optional[Dict[str, Any]]:

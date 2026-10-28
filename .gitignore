@@ -40,3 +40,6 @@ checkpoints/
 # OS
 .DS_Store
 Thumbs.db
+
+# DB
+experiment_ledger*

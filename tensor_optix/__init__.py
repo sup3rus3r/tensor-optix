@@ -54,11 +54,17 @@ from .simple import Optimizer
 from .utils import optimal_window_size
 from .core.her_buffer import HERReplayBuffer
 from .config import TrainConfig, load_config, apply_overrides, config_to_dict, build_agent_from_config
+from .ledger import (
+    ExperimentStore, ExperimentLedgerCallback, ExperimentRecord, EventRecord,
+    ArtifactRef, ExperimentState, EvaluationStatus,
+)
 __all__ += [
     "TrialOrchestrator", "RNDPipeline", "PrioritizedReplayBuffer", "DiagnosticController",
     "WandbCallback", "TensorBoardCallback", "RichDashboardCallback",
     "make_agent", "Optimizer", "optimal_window_size", "HERReplayBuffer",
     "TrainConfig", "load_config", "apply_overrides", "config_to_dict", "build_agent_from_config",
+    "ExperimentStore", "ExperimentLedgerCallback", "ExperimentRecord", "EventRecord",
+    "ArtifactRef", "ExperimentState", "EvaluationStatus",
 ]
 
 try:

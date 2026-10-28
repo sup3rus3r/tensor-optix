@@ -77,6 +77,7 @@ from tensor_optix.optimizers.adaptive_optimizer import AdaptiveOptimizer
 from tensor_optix.core.checkpoint_registry import CheckpointRegistry
 from tensor_optix.optimizer import RLOptimizer
 from tensor_optix.adapters.pytorch.torch_evaluator import TorchEvaluator
+from tensor_optix.ledger import ExperimentStore, ExperimentLedgerCallback, ExperimentState, EvaluationStatus
 
 # Algorithm imports (for baselines only — optix side uses make_agent)
 from tensor_optix.algorithms.torch_dqn import TorchDQNAgent
@@ -354,12 +355,43 @@ def _run_vanilla(cfg, seed, agent, eval_fn):
 def train_vanilla(cfg: dict, seed: int) -> dict:
     torch.manual_seed(seed); np.random.seed(seed)
     t0 = time.perf_counter()
-    agent = cfg["baseline_agent_factory"](seed)
-    tracker = _run_vanilla(cfg, seed, agent, lambda seed: cfg["eval_fn"](agent, cfg["env_id"], seed=seed))
-    final = cfg["eval_fn"](agent, cfg["env_id"], seed=seed + 10_000)
-    tracker.history.append((tracker.total_steps, final))
-    if tracker.steps_to_solve is None and final >= cfg["solve_threshold"]:
-        tracker.steps_to_solve = tracker.total_steps
+
+    ledger_store = cfg.get("ledger_store")
+    experiment_id = None
+    if ledger_store is not None:
+        checkpoint_dir = f"./benchmarks/.ckpts/{cfg['key']}_baseline_{seed}"
+        record = ledger_store.create_experiment(
+            task_env=cfg["env_id"], algorithm=f"Baseline-{cfg['algo']}", framework="torch",
+            seed=seed, checkpoint_dir=checkpoint_dir,
+            config={"max_steps": cfg["max_steps"], "window_size": cfg["window_size"]},
+        )
+        experiment_id = record.experiment_id
+        ledger_store.start_experiment(experiment_id)
+
+    try:
+        agent = cfg["baseline_agent_factory"](seed)
+        tracker = _run_vanilla(cfg, seed, agent, lambda seed: cfg["eval_fn"](agent, cfg["env_id"], seed=seed))
+        final = cfg["eval_fn"](agent, cfg["env_id"], seed=seed + 10_000)
+        tracker.history.append((tracker.total_steps, final))
+        if tracker.steps_to_solve is None and final >= cfg["solve_threshold"]:
+            tracker.steps_to_solve = tracker.total_steps
+    except Exception as e:
+        if ledger_store is not None:
+            ledger_store.finalize_experiment(
+                experiment_id, state=ExperimentState.FAILED,
+                evaluation_status=EvaluationStatus.INCONCLUSIVE, error_message=str(e),
+            )
+        raise
+
+    if ledger_store is not None:
+        solved = tracker.steps_to_solve is not None
+        ledger_store.record_progress(experiment_id, best_primary_score=final)
+        ledger_store.finalize_experiment(
+            experiment_id, state=ExperimentState.COMPLETED,
+            evaluation_status=EvaluationStatus.VALIDATED if solved else EvaluationStatus.PRELIMINARY,
+            final_metrics={"final_score": final, "total_steps": tracker.total_steps},
+        )
+
     return {
         "method": "Baseline", "seed": seed,
         "total_steps": tracker.total_steps, "steps_to_solve": tracker.steps_to_solve,
@@ -458,13 +490,34 @@ def train_optix(cfg: dict, seed: int) -> dict:
         seed=seed,
     )
 
+    # ── 3b. Experiment ledger (optional) ──────────────────────────────────────
+    ledger_store = cfg.get("ledger_store")
+    ledger_cb = None
+    callbacks = [tracker, pm_cb]
+    if ledger_store is not None:
+        ledger_cb = ExperimentLedgerCallback(
+            ledger_store,
+            task_env=cfg["env_id"],
+            algorithm=cfg["algo"],
+            framework="torch",
+            seed=seed,
+            checkpoint_dir=ckpt_dir,
+            config={
+                "spsa_kwargs": cfg.get("spsa_kwargs", {}),
+                "window_size": cfg["window_size"],
+                "max_steps": cfg["max_steps"],
+            },
+            checkpoint_registry=registry,
+        )
+        callbacks.append(ledger_cb)
+
     # ── 4. Optimizer — one line ───────────────────────────────────────────────
     opt = Optimizer(
         agent=agent,
         env=gym.make(cfg["env_id"]),
         window_size=cfg["window_size"],
         optimizer=SPSAOptimizer(**cfg["spsa_kwargs"]) if cfg.get("spsa_kwargs") else None,
-        callbacks=[tracker, pm_cb],
+        callbacks=callbacks,
         rollback_on_degradation=True,
         checkpoint_dir=ckpt_dir,
         max_episodes=cfg["max_steps"] // cfg["window_size"],
@@ -480,12 +533,27 @@ def train_optix(cfg: dict, seed: int) -> dict:
     pm_cb.set_stop_fn(opt._rl_optimizer.stop)
 
     # ── 5. Train ──────────────────────────────────────────────────────────────
-    opt.run()
+    try:
+        opt.run()
+    except Exception as e:
+        if ledger_cb is not None:
+            ledger_cb.mark_failed(e)
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+        raise
 
     final = cfg["eval_fn"](agent_holder["agent"], cfg["env_id"], seed=seed + 10_000)
     tracker.history.append((tracker.total_steps, final))
     if tracker.steps_to_solve is None and final >= cfg["solve_threshold"]:
         tracker.steps_to_solve = tracker.total_steps
+
+    # Note: ledger_cb.on_loop_stop() already finalized this experiment as
+    # COMPLETED/PRELIMINARY (finalize_experiment is idempotent — a later
+    # call here cannot upgrade it to VALIDATED even on solve). Recording
+    # the final post-loop eval score as an extra progress update keeps it
+    # queryable without fighting the idempotency guard.
+    if ledger_store is not None:
+        ledger_store.record_progress(ledger_cb.experiment_id, best_primary_score=final)
+
     print(
         f"  [tensor-optix| {cfg['label']:20s}| seed={seed}]"
         f"  steps={tracker.total_steps:>7,d}  score={final:>8.1f}  [final]", flush=True,
@@ -1060,6 +1128,10 @@ def main():
                         help="Skip matplotlib chart generation")
     parser.add_argument("--out", default="benchmarks/benchmark_results.json",
                         help="JSON results output path")
+    parser.add_argument("--ledger-db", default="./benchmarks/experiment_ledger.sqlite3",
+                        help="Path to the experiment ledger SQLite database")
+    parser.add_argument("--no-ledger", action="store_true",
+                        help="Disable experiment ledger recording")
     args = parser.parse_args()
 
     print("\n" + "━" * 72)
@@ -1067,12 +1139,16 @@ def main():
     print(f"  Envs:  {args.envs}")
     print(f"  Seeds: {args.seeds}")
     print(f"  Baseline: {'disabled' if args.no_baseline else 'enabled'}")
+    print(f"  Ledger: {'disabled' if args.no_ledger else args.ledger_db}")
     print("━" * 72 + "\n")
+
+    ledger_store = None if args.no_ledger else ExperimentStore(args.ledger_db)
 
     all_results = {}
 
     for key in args.envs:
-        cfg = ENV_CONFIGS[key]
+        cfg = dict(ENV_CONFIGS[key])
+        cfg["ledger_store"] = ledger_store
         print(f"\n{'━'*72}")
         print(f"  {cfg['label']}  —  {cfg['algo']}")
         print("━" * 72)
@@ -1148,6 +1224,32 @@ def main():
             print(f"  {cfg['label']:<28}  score: {np.mean([r['final_score'] for r in o]):>7.1f}  "
                   f"solved: {o_solved}/{len(o)}")
     print("━" * 72 + "\n")
+
+    if ledger_store is not None:
+        all_experiments = ledger_store.query_experiments(limit=1000)
+        by_state: dict[str, int] = {}
+        by_eval_status: dict[str, int] = {}
+        for r in all_experiments:
+            by_state[r.state.value] = by_state.get(r.state.value, 0) + 1
+            by_eval_status[r.evaluation_status.value] = by_eval_status.get(r.evaluation_status.value, 0) + 1
+
+        print("━" * 72)
+        print("  EXPERIMENT LEDGER")
+        print("━" * 72)
+        print(f"  Total experiments recorded: {len(all_experiments)}")
+        print(f"  By state:             {by_state}")
+        print(f"  By evaluation status: {by_eval_status}")
+        top3 = ledger_store.query_experiments(limit=1000)
+        top3 = sorted(
+            [r for r in top3 if r.best_primary_score is not None],
+            key=lambda r: r.best_primary_score, reverse=True,
+        )[:3]
+        print("  Top 3 by best_primary_score:")
+        for r in top3:
+            print(f"    {r.experiment_id}  {r.task_env:<24}  {r.algorithm:<24}  "
+                  f"score={r.best_primary_score:>8.2f}  state={r.state.value}")
+        print("━" * 72 + "\n")
+        ledger_store.close()
 
 
 if __name__ == "__main__":
