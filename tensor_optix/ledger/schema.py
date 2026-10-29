@@ -21,12 +21,13 @@ CREATE TABLE IF NOT EXISTS experiments (
     framework               TEXT NOT NULL,
     seed                    INTEGER NOT NULL,
     checkpoint_dir          TEXT NOT NULL,
+    solve_threshold         REAL,
     config_json             TEXT NOT NULL DEFAULT '{}',
     tensor_optix_version    TEXT,
     source_revision         TEXT,
     library_versions_json   TEXT NOT NULL DEFAULT '{}',
     hostname                TEXT,
-    schema_version          INTEGER NOT NULL DEFAULT 1,
+    schema_version          INTEGER NOT NULL DEFAULT 2,
     state                   TEXT NOT NULL DEFAULT 'created',
     evaluation_status       TEXT NOT NULL DEFAULT 'pending',
     created_at              REAL NOT NULL,
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS events (
     step           INTEGER,
     payload_json   TEXT NOT NULL DEFAULT '{}',
     timestamp      REAL NOT NULL,
-    schema_version INTEGER NOT NULL DEFAULT 1,
+    schema_version INTEGER NOT NULL DEFAULT 2,
     PRIMARY KEY (event_id),
     UNIQUE (experiment_id, sequence),
     FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id)
@@ -110,3 +111,25 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             f"code's SCHEMA_VERSION={SCHEMA_VERSION}. Refusing to open it to avoid "
             f"silently corrupting data written by a newer version of tensor_optix."
         )
+
+    if existing_version < SCHEMA_VERSION:
+        _migrate(conn, from_version=existing_version, to_version=SCHEMA_VERSION)
+
+
+def _migrate(conn: sqlite3.Connection, *, from_version: int, to_version: int) -> None:
+    """Apply in-place schema upgrades.
+
+    Each 'if' below is one real, shipped migration step. Add a new
+    'if from_version == N:' block here when the next real migration is
+    needed -- do not pre-build a generic chain for hops that don't exist
+    yet; there is exactly one hop today (1 -> 2).
+    """
+    if from_version == 1:
+        conn.execute("ALTER TABLE experiments ADD COLUMN solve_threshold REAL")
+        from_version = 2
+
+    conn.execute(
+        "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+        (str(to_version),),
+    )
+    conn.commit()

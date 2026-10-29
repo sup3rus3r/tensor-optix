@@ -15,7 +15,10 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from .provenance import capture_environment
-from .records import ArtifactRef, EventRecord, ExperimentRecord, ExperimentState, EvaluationStatus
+from .records import (
+    ArtifactRef, EventRecord, ExperimentRecord, ExperimentState, EvaluationStatus,
+    SCHEMA_VERSION,
+)
 from .schema import ensure_schema
 
 
@@ -29,6 +32,7 @@ def _row_to_experiment(row: sqlite3.Row) -> ExperimentRecord:
         framework=row["framework"],
         seed=row["seed"],
         checkpoint_dir=row["checkpoint_dir"],
+        solve_threshold=row["solve_threshold"],
         config=json.loads(row["config_json"]),
         tensor_optix_version=row["tensor_optix_version"],
         source_revision=row["source_revision"],
@@ -97,6 +101,7 @@ class ExperimentStore:
         framework: str,
         seed: int,
         checkpoint_dir: str,
+        solve_threshold: Optional[float] = None,
         config: Optional[Dict[str, Any]] = None,
         parent_experiment_id: Optional[str] = None,
         study_id: Optional[str] = None,
@@ -120,10 +125,11 @@ class ExperimentStore:
                 """
                 INSERT OR IGNORE INTO experiments (
                     experiment_id, parent_experiment_id, study_id, task_env,
-                    algorithm, framework, seed, checkpoint_dir, config_json,
-                    tensor_optix_version, source_revision, library_versions_json,
-                    hostname, schema_version, state, evaluation_status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    algorithm, framework, seed, checkpoint_dir, solve_threshold,
+                    config_json, tensor_optix_version, source_revision,
+                    library_versions_json, hostname, schema_version, state,
+                    evaluation_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     eid,
@@ -134,12 +140,13 @@ class ExperimentStore:
                     framework,
                     seed,
                     checkpoint_dir,
+                    solve_threshold,
                     json.dumps(config or {}),
                     provenance["tensor_optix_version"],
                     provenance["source_revision"],
                     json.dumps(provenance["library_versions"]),
                     provenance["hostname"],
-                    1,
+                    SCHEMA_VERSION,
                     ExperimentState.CREATED.value,
                     EvaluationStatus.PENDING.value,
                     now,

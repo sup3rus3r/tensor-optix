@@ -126,3 +126,31 @@ def test_observe_delegates_to_backfill(tmp_path, dummy_evaluator):
     assert len(records) == 2
     assert len(store.query_experiments(task_env="DummyEnv", limit=100)) == 2
     store.close()
+
+
+def test_observe_passes_solve_threshold_through(tmp_path, dummy_evaluator):
+    def agent_factory(params):
+        from conftest import DummyAgent
+        return DummyAgent(hyperparams=HyperparamSet(params=params, episode_id=0))
+
+    def pipeline_factory():
+        from conftest import DummyPipeline
+        return DummyPipeline(rewards_sequence=[[1.0, 1.0, 1.0]])
+
+    orch = TrialOrchestrator(
+        agent_factory=agent_factory,
+        pipeline_factory=pipeline_factory,
+        param_space={"learning_rate": ("float", 1e-4, 1e-3)},
+        n_trials=2,
+        trial_steps=2,
+        rloptimizer_kwargs={"evaluator": dummy_evaluator},
+        optuna_verbosity=optuna.logging.ERROR,
+    )
+    orch.run()
+
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    records = StrategySelector(store).observe(
+        orchestrator=orch, task_env="DummyEnv", algorithm="Dummy", solve_threshold=-100.0,
+    )
+    assert all(r.solve_threshold == -100.0 for r in records)
+    store.close()

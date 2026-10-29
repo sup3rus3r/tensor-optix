@@ -1,9 +1,45 @@
-from tensor_optix.ledger.records import ExperimentState, EvaluationStatus
+from tensor_optix.ledger.records import ExperimentState, EvaluationStatus, SCHEMA_VERSION
 from tensor_optix.ledger.store import ExperimentStore
 
 
 def _make_store(tmp_path):
     return ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+
+
+def test_create_experiment_persists_solve_threshold(tmp_path):
+    store = _make_store(tmp_path)
+    record = store.create_experiment(
+        task_env="CartPole-v1", algorithm="DQN", framework="torch", seed=0,
+        checkpoint_dir=str(tmp_path / "ckpt"), solve_threshold=475.0,
+    )
+    round_tripped = store.get_experiment(record.experiment_id)
+    assert round_tripped.solve_threshold == 475.0
+    store.close()
+
+
+def test_create_experiment_solve_threshold_defaults_to_none(tmp_path):
+    store = _make_store(tmp_path)
+    record = store.create_experiment(
+        task_env="CartPole-v1", algorithm="DQN", framework="torch", seed=0,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+    )
+    round_tripped = store.get_experiment(record.experiment_id)
+    assert round_tripped.solve_threshold is None
+    store.close()
+
+
+def test_create_experiment_schema_version_matches_constant(tmp_path):
+    """Regression test for a pre-existing bug: the INSERT used to hardcode
+    schema_version to the literal 1 regardless of SCHEMA_VERSION's real
+    value -- this would have silently stayed wrong once SCHEMA_VERSION
+    became 2."""
+    store = _make_store(tmp_path)
+    record = store.create_experiment(
+        task_env="CartPole-v1", algorithm="DQN", framework="torch", seed=0,
+        checkpoint_dir=str(tmp_path / "ckpt"),
+    )
+    assert record.schema_version == SCHEMA_VERSION
+    store.close()
 
 
 def test_create_experiment_populates_provenance(tmp_path):

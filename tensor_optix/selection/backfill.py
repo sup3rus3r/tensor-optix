@@ -35,6 +35,7 @@ def backfill_study_to_ledger(
     algorithm: str,
     framework: str = "torch",
     seed: int = 0,
+    solve_threshold: Optional[float] = None,
     sampler_label: Optional[str] = None,
 ) -> List[ExperimentRecord]:
     """Write one ExperimentRecord per trial in `orchestrator.study`.
@@ -69,6 +70,7 @@ def backfill_study_to_ledger(
             framework=framework,
             seed=seed,
             checkpoint_dir=checkpoint_dir,
+            solve_threshold=solve_threshold,
             config=config,
             study_id=study_id,
         )

@@ -88,6 +88,18 @@ def test_backfill_labels_sampler_in_config(tmp_path, dummy_evaluator):
     store.close()
 
 
+def test_backfill_persists_solve_threshold(tmp_path, dummy_evaluator):
+    orch = _make_orchestrator(dummy_evaluator, [[1.0, 1.0, 1.0]], n_trials=2)
+    orch.run()
+
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    records = backfill_study_to_ledger(
+        orch, store, task_env="DummyEnv", algorithm="Dummy", solve_threshold=475.0,
+    )
+    assert all(r.solve_threshold == 475.0 for r in records)
+    store.close()
+
+
 def test_backfill_maps_pruned_state(tmp_path, dummy_evaluator):
     def agent_factory(params):
         from conftest import DummyAgent

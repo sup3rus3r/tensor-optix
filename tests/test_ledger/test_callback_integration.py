@@ -25,6 +25,20 @@ def make_controller(agent, evaluator, pipeline, tmp_path, max_episodes=5, callba
     )
 
 
+def test_ledger_callback_persists_solve_threshold(dummy_agent, dummy_evaluator, dummy_pipeline, tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    ledger_cb = ExperimentLedgerCallback(
+        store, task_env="CartPole-v1", algorithm="DummyAgent", framework="torch",
+        seed=0, checkpoint_dir=str(tmp_path / "checkpoints"), solve_threshold=475.0,
+    )
+    controller = make_controller(dummy_agent, dummy_evaluator, dummy_pipeline, tmp_path, max_episodes=2, callbacks=[ledger_cb])
+    controller.run()
+
+    record = store.get_experiment(ledger_cb.experiment_id)
+    assert record.solve_threshold == 475.0
+    store.close()
+
+
 def test_ledger_callback_records_full_run(dummy_agent, dummy_evaluator, tmp_path):
     from conftest import DummyPipeline
     # Strictly increasing rewards guarantee on_improvement fires in the main

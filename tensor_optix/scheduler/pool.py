@@ -92,6 +92,7 @@ class ConcurrentTrialScheduler:
         task_env: Optional[str] = None,
         algorithm: Optional[str] = None,
         framework: str = "torch",
+        solve_threshold: Optional[float] = None,
         base_seed: int = 0,
         poll_interval_s: float = 0.5,
         device_placement_fn: Optional[Callable[[int], str]] = None,
@@ -125,6 +126,7 @@ class ConcurrentTrialScheduler:
         self._task_env = task_env or ""
         self._algorithm = algorithm or ""
         self._framework = framework
+        self._solve_threshold = solve_threshold
         self._base_seed = base_seed
         self._poll_interval_s = poll_interval_s
         self._device_placement_fn = device_placement_fn or (lambda worker_id: "cpu")
@@ -225,6 +227,7 @@ class ConcurrentTrialScheduler:
                 task_env=self._task_env,
                 algorithm=self._algorithm,
                 framework=self._framework,
+                solve_threshold=self._solve_threshold,
                 seed=seed,
                 checkpoint_dir=ckpt_dir,
                 config={"params": params, "trial_number": trial_number},

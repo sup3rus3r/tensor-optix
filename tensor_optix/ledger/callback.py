@@ -55,6 +55,7 @@ class ExperimentLedgerCallback(LoopCallback):
         framework: str = "torch",
         seed: int = 0,
         checkpoint_dir: str,
+        solve_threshold: Optional[float] = None,
         config: Optional[Dict[str, Any]] = None,
         parent_experiment_id: Optional[str] = None,
         study_id: Optional[str] = None,
@@ -67,6 +68,7 @@ class ExperimentLedgerCallback(LoopCallback):
         self._framework = framework
         self._seed = seed
         self._checkpoint_dir = checkpoint_dir
+        self._solve_threshold = solve_threshold
         self._config = config
         self._parent_experiment_id = parent_experiment_id
         self._study_id = study_id
@@ -109,6 +111,7 @@ class ExperimentLedgerCallback(LoopCallback):
             framework=self._framework,
             seed=self._seed,
             checkpoint_dir=self._checkpoint_dir,
+            solve_threshold=self._solve_threshold,
             config=self._config,
             parent_experiment_id=self._parent_experiment_id,
             study_id=self._study_id,

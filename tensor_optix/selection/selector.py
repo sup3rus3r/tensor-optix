@@ -155,6 +155,7 @@ class StrategySelector:
         algorithm: str,
         framework: str = "torch",
         seed: int = 0,
+        solve_threshold: Optional[float] = None,
     ) -> List[Any]:
         """Ingest one completed TrialOrchestrator run into the ledger.
 
@@ -169,4 +170,5 @@ class StrategySelector:
             algorithm=algorithm,
             framework=framework,
             seed=seed,
+            solve_threshold=solve_threshold,
         )

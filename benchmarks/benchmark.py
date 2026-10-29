@@ -363,6 +363,7 @@ def train_vanilla(cfg: dict, seed: int) -> dict:
         record = ledger_store.create_experiment(
             task_env=cfg["env_id"], algorithm=f"Baseline-{cfg['algo']}", framework="torch",
             seed=seed, checkpoint_dir=checkpoint_dir,
+            solve_threshold=cfg["solve_threshold"],
             config={"max_steps": cfg["max_steps"], "window_size": cfg["window_size"]},
         )
         experiment_id = record.experiment_id
@@ -502,6 +503,7 @@ def train_optix(cfg: dict, seed: int) -> dict:
             framework="torch",
             seed=seed,
             checkpoint_dir=ckpt_dir,
+            solve_threshold=cfg["solve_threshold"],
             config={
                 "spsa_kwargs": cfg.get("spsa_kwargs", {}),
                 "window_size": cfg["window_size"],

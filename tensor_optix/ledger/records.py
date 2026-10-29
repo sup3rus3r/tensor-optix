@@ -34,7 +34,7 @@ class EvaluationStatus(Enum):
     INCONCLUSIVE = "inconclusive"
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -52,6 +52,7 @@ class ExperimentRecord:
     framework: str
     seed: int
     checkpoint_dir: str
+    solve_threshold: Optional[float] = None
     config: Dict[str, Any] = field(default_factory=dict)
     parent_experiment_id: Optional[str] = None
     study_id: Optional[str] = None
