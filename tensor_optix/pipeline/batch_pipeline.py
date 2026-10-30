@@ -59,6 +59,13 @@ class BatchPipeline(BasePipeline):
     def set_agent(self, agent) -> None:
         self._agent = agent
 
+    @property
+    def steps_per_episode(self) -> int:
+        """Steps per yielded window — lets callers like TrialOrchestrator
+        convert a trial_steps budget into the correct number of windows
+        instead of silently treating trial_steps as a window count."""
+        return self._window_size
+
     def setup(self) -> None:
         self._needs_reset = True
 

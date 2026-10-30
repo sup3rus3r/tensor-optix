@@ -21,7 +21,7 @@ build/
 .coverage
 htmlcov/
 *.log
-
+.ckpts
 # Type checking
 .mypy_cache/
 

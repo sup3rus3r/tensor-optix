@@ -2,38 +2,58 @@
 """
 Phase 4 validation — real leave-one-task-out (LOTO) test for Nanonets v1.
 
-Scoped to a 2-task LOTO pair: CartPole-v1 <-> Acrobot-v1, both via PPO
-(the same algorithm family — the existing benchmarks/benchmark.py
-_ppo_factory handles both unmodified, since both are discrete-action
-classic-control envs). Pendulum-v1/TD3 is the plan's documented 3rd fold
-but is NOT run in this pass — it needs a continuous-action agent factory
-wired separately, and scoping to the cleanest, fastest, most directly
-comparable pair first is the honest choice given real wall-clock cost
-(PPO trials took 60-350s each in Phase 3's validation run). Extending to
-the full 3-task LOTO is a documented, straightforward follow-up, not a
-redesign.
+3-task LOTO: CartPole-v1 (PPO), Acrobot-v1 (PPO), Pendulum-v1 (TD3).
+Pendulum/TD3 is a continuous-action, off-policy algorithm family — the
+only fold pairing that actually exercises Nanonets' algo_factor
+cross-algorithm similarity penalty (tensor_optix/nanonets/abstention.py),
+since the original CartPole<->Acrobot pair was same-algorithm throughout.
 
-N_TRIALS/TRIAL_STEPS are deliberately small (2 trials, 1500 steps) to keep
-this run's wall-clock cost low for a first real pass; this exercises the
-gate/pooling/fallback logic for real but with less training signal than a
-larger budget would give. Scale up once the mechanism itself is confirmed
-working end to end.
+Pendulum-v1's real action space is [-2, 2]; TorchTD3Agent's actor is a
+raw tanh output in (-1, 1) by design (see torch_td3.py's own docstring:
+scaling to the env's action range is the caller's responsibility, not an
+agent-internal feature). The environment is wrapped with
+gymnasium.wrappers.RescaleAction(..., min_action=-1.0, max_action=1.0) at
+the pipeline-factory boundary so the agent-facing action space stays
+[-1, 1] — matching what torch_td3.py's _update_step() target-policy-
+smoothing clamp assumes — while Gymnasium handles the real [-2, 2]
+conversion internally. TorchTD3Agent itself is untouched.
 
-For each of the 2 folds (train on one task, test/held-out on the other):
-  1. Run a real TrialOrchestrator study (TPE sampler) on each task.
-  2. Backfill both studies into one shared ledger via StrategySelector.observe().
-  3. Construct NanonetsSelector with source_task_envs=[the OTHER task only]
+trial_steps is 60_000 for the two PPO tasks and 150_000 for Pendulum/TD3 —
+the "real/longer run" budget (step 2 of the approved roadmap), scaled up
+from the earlier 1_500/20_000 mechanism-smoke-test budget once GPU
+training and the TrialOrchestrator trial_steps-as-episode-count bug (see
+tensor_optix/pipeline/batch_pipeline.py's steps_per_episode property)
+were both fixed.
+
+N_TRIALS stays at 2 (the MIN_TARGET_N floor for NanonetsSelector's
+percentile gate to run at all). At N=2, Optuna/TPE search provides no
+real search value — it was only being used as plumbing to get 2 trained
+runs into the ledger. This script therefore trains directly via
+RLOptimizer (bypassing TrialOrchestrator/Optuna entirely) and writes
+ledger rows itself, mirroring benchmarks/benchmark.py's train_vanilla()
+direct-to-ledger pattern. TrialOrchestrator itself is untouched and
+stays available elsewhere for whenever real hyperparameter search is
+wanted (e.g. Phase 5).
+
+For each of the 3 folds (train on the other tasks, test/held-out on one):
+  1. Train each task directly (2 independent attempts, fixed params —
+     not a search) via run_task_direct(), writing ledger rows directly.
+     Each task's real algorithm (PPO or TD3) is recorded — load-bearing
+     for Nanonets' algo_factor similarity weighting, not cosmetic.
+  2. Construct NanonetsSelector with source_task_envs=[the OTHER tasks only]
      — the held-out task's data is never passed in, enforcing the
      leakage-discipline boundary at the call site (proposal Sec 9.2).
-  4. Compare NanonetsSelector.propose() against StrategySelector.propose()
+  3. Compare NanonetsSelector.propose() against StrategySelector.propose()
      (the non-learned baseline) on the held-out task.
-  5. Run the fallback ablation: force fallback_triggered and confirm the
+  4. Run the fallback ablation: force fallback_triggered and confirm the
      non-ablated path genuinely differs.
 
 The final summary states explicitly whether this is a positive directional
 result or a documented negative result — per the proposal's own accepted
-Phase 4 exit criteria, not forced toward either framing. With only 2 folds,
-this is real but low-power evidence; the script says so.
+Phase 4 exit criteria, not forced toward either framing. A PPO<->TD3 fold
+triggering fallback (due to the algo_factor=0.5 penalty plus genuinely
+different reward scales) is a plausible, legitimate outcome, reported
+honestly either way.
 
 Usage:
     python benchmarks/validate_nanonets_loto.py
@@ -48,7 +68,6 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 
 import gymnasium as gym
 import torch
@@ -58,20 +77,27 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tensor_optix.adapters.pytorch.torch_evaluator import TorchEvaluator
 from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
+from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
 from tensor_optix.core.types import HyperparamSet
-from tensor_optix.ledger import ExperimentStore
+from tensor_optix.ledger import EvaluationStatus, ExperimentState, ExperimentStore
 from tensor_optix.nanonets import NanonetsSelector
-from tensor_optix.orchestrator import TrialOrchestrator
+from tensor_optix.optimizer import RLOptimizer
 from tensor_optix.pipeline.batch_pipeline import BatchPipeline
 from tensor_optix.selection import StrategySelector
 
 N_TRIALS = 2
-TRIAL_STEPS = 1_500
+TRIAL_STEPS = 60_000
 
-PARAM_SPACE = {
+PARAM_SPACE_PPO = {
     "learning_rate": ("log_float", 1e-4, 3e-3),
     "clip_ratio": ("float", 0.1, 0.3),
     "entropy_coef": ("float", 0.0, 0.05),
+}
+
+PARAM_SPACE_TD3 = {
+    "learning_rate": ("log_float", 1e-4, 1e-3),
+    "gamma": ("float", 0.97, 0.999),
+    "tau": ("log_float", 1e-3, 1e-1),
 }
 
 PPO_HP_DEFAULTS = {
@@ -79,9 +105,10 @@ PPO_HP_DEFAULTS = {
     "n_epochs": 10, "minibatch_size": 64, "max_grad_norm": 0.5,
 }
 
-TASKS = {
-    "CartPole-v1": {"solve_threshold": 475.0},
-    "Acrobot-v1": {"solve_threshold": -100.0},
+TD3_HP = {
+    "learning_rate": 3e-4, "gamma": 0.99, "tau": 0.005, "batch_size": 256,
+    "updates_per_step": 1, "replay_capacity": 200_000, "policy_delay": 2,
+    "target_noise": 0.2, "target_noise_clip": 0.5, "per_alpha": 0.0, "per_beta": 0.4,
 }
 
 
@@ -95,7 +122,24 @@ def build_ppo_nets(obs_dim, n_actions, hidden=64):
     return mlp(obs_dim, hidden, n_actions), mlp(obs_dim, hidden, 1)
 
 
-def make_agent_factory(env_id: str):
+def build_td3_nets(obs_dim, action_dim, hidden=256):
+    actor = nn.Sequential(
+        nn.Linear(obs_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(),
+        nn.Linear(hidden, action_dim), nn.Tanh(),
+    )
+    c1 = nn.Sequential(
+        nn.Linear(obs_dim + action_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1),
+    )
+    c2 = nn.Sequential(
+        nn.Linear(obs_dim + action_dim, hidden), nn.ReLU(),
+        nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, 1),
+    )
+    return actor, c1, c2
+
+
+def make_ppo_agent_factory(env_id: str):
     def agent_factory(params: dict) -> TorchPPOAgent:
         env = gym.make(env_id)
         obs_dim, n_actions = env.observation_space.shape[0], env.action_space.n
@@ -111,49 +155,150 @@ def make_agent_factory(env_id: str):
     return agent_factory
 
 
+def make_td3_agent_factory(env_id: str):
+    def agent_factory(params: dict) -> TorchTD3Agent:
+        env = gym.make(env_id)
+        obs_dim, action_dim = env.observation_space.shape[0], env.action_space.shape[0]
+        env.close()
+        a, c1, c2 = build_td3_nets(obs_dim, action_dim)
+        hp = {**TD3_HP, "learning_rate": params["learning_rate"],
+              "gamma": params["gamma"], "tau": params["tau"]}
+        return TorchTD3Agent(
+            actor=a, critic1=c1, critic2=c2, action_dim=action_dim,
+            actor_optimizer=torch.optim.Adam(a.parameters(), lr=params["learning_rate"]),
+            critic_optimizer=torch.optim.Adam(
+                list(c1.parameters()) + list(c2.parameters()), lr=params["learning_rate"]
+            ),
+            hyperparams=HyperparamSet(params=hp, episode_id=0), device="auto",
+        )
+    return agent_factory
+
+
 def make_pipeline_factory(env_id: str):
     def pipeline_factory() -> BatchPipeline:
         return BatchPipeline(env=gym.make(env_id), window_size=512)
     return pipeline_factory
 
 
-def run_study(env_id: str, study_name: str) -> TrialOrchestrator:
-    orch = TrialOrchestrator(
-        agent_factory=make_agent_factory(env_id),
-        pipeline_factory=make_pipeline_factory(env_id),
-        param_space=PARAM_SPACE,
-        n_trials=N_TRIALS,
-        trial_steps=TRIAL_STEPS,
-        rloptimizer_kwargs={"evaluator": TorchEvaluator()},
-        study_name=study_name,
+def make_pendulum_pipeline_factory(env_id: str = "Pendulum-v1"):
+    def pipeline_factory() -> BatchPipeline:
+        env = gym.wrappers.RescaleAction(gym.make(env_id), min_action=-1.0, max_action=1.0)
+        return BatchPipeline(env=env, window_size=1_000)
+    return pipeline_factory
+
+
+# Fixed (params, attempt) pairs per task -- NOT a hyperparameter search.
+# N_TRIALS=2 is below any sampler's useful search size, so each task gets
+# 2 manually-chosen, non-identical points from its own PARAM_SPACE_* so the
+# ledger has 2 genuinely independent trained runs to work with.
+FIXED_PARAMS = {
+    "CartPole-v1": [
+        {"learning_rate": 5e-4, "clip_ratio": 0.2, "entropy_coef": 0.01},
+        {"learning_rate": 1.2e-3, "clip_ratio": 0.15, "entropy_coef": 0.02},
+    ],
+    "Acrobot-v1": [
+        {"learning_rate": 5e-4, "clip_ratio": 0.2, "entropy_coef": 0.01},
+        {"learning_rate": 1.2e-3, "clip_ratio": 0.15, "entropy_coef": 0.02},
+    ],
+    "Pendulum-v1": [
+        {"learning_rate": 3e-4, "gamma": 0.99, "tau": 0.005},
+        {"learning_rate": 5e-4, "gamma": 0.985, "tau": 0.01},
+    ],
+}
+
+TASKS = {
+    "CartPole-v1": {
+        "algorithm": "PPO", "solve_threshold": 475.0,
+        "agent_factory_builder": make_ppo_agent_factory,
+    },
+    "Acrobot-v1": {
+        "algorithm": "PPO", "solve_threshold": -100.0,
+        "agent_factory_builder": make_ppo_agent_factory,
+    },
+    "Pendulum-v1": {
+        "algorithm": "TD3", "solve_threshold": -150.0,
+        "agent_factory_builder": make_td3_agent_factory,
+        "pipeline_factory_builder": make_pendulum_pipeline_factory, "trial_steps": 150_000,
+    },
+}
+
+
+def run_task_direct(env_id: str, store: ExperimentStore, attempt_idx: int):
+    """Train one task once, directly via RLOptimizer (no Optuna/
+    TrialOrchestrator), and write the result straight to the ledger --
+    mirrors benchmarks/benchmark.py's train_vanilla() pattern.
+
+    Returns (params, score).
+    """
+    task_cfg = TASKS[env_id]
+    params = FIXED_PARAMS[env_id][attempt_idx]
+
+    agent = task_cfg["agent_factory_builder"](env_id)(params)
+    pipeline_builder = task_cfg.get("pipeline_factory_builder", make_pipeline_factory)
+    pipeline = pipeline_builder(env_id)()
+
+    experiment_id = f"direct_{env_id}_{attempt_idx}"
+    checkpoint_dir = f"./benchmarks/.ckpts/{env_id}_{attempt_idx}"
+    record = store.create_experiment(
+        experiment_id=experiment_id, task_env=env_id, algorithm=task_cfg["algorithm"],
+        framework="torch", seed=attempt_idx, checkpoint_dir=checkpoint_dir,
+        solve_threshold=task_cfg["solve_threshold"],
+        # "sampler": "TPESampler" is a compatibility shim for
+        # StrategySelector/NanonetsSelector's existing config["sampler"]
+        # filter -- no real Optuna TPESampler is involved here, this is a
+        # fixed-param direct training run, not a search.
+        config={"params": params, "sampler": "TPESampler", "trial_number": attempt_idx},
     )
-    best_params, best_score = orch.run()
-    print(f"  [{study_name}] best_score={best_score:.2f}  best_params={best_params}")
-    return orch
+    experiment_id = record.experiment_id
+    store.start_experiment(experiment_id)
+
+    step_budget = task_cfg.get("trial_steps", TRIAL_STEPS)
+    max_episodes = max(1, step_budget // pipeline.steps_per_episode)
+
+    rl = RLOptimizer(
+        agent=agent, pipeline=pipeline, max_episodes=max_episodes,
+        checkpoint_dir=checkpoint_dir, evaluator=TorchEvaluator(),
+    )
+    try:
+        rl.run()
+    except Exception as e:
+        store.finalize_experiment(
+            experiment_id, state=ExperimentState.FAILED,
+            evaluation_status=EvaluationStatus.INCONCLUSIVE, error_message=str(e),
+        )
+        raise
+
+    best = rl.best_snapshot
+    score = best.eval_metrics.primary_score if best is not None else float("-inf")
+
+    store.record_progress(experiment_id, best_primary_score=score)
+    solved = score >= task_cfg["solve_threshold"]
+    store.finalize_experiment(
+        experiment_id, state=ExperimentState.COMPLETED,
+        evaluation_status=EvaluationStatus.VALIDATED if solved else EvaluationStatus.PRELIMINARY,
+        final_metrics={"attempt": float(attempt_idx)},
+    )
+
+    print(f"  [{env_id} attempt={attempt_idx}] score={score:.2f}  params={params}")
+    return params, score
 
 
 def main() -> int:
+    algo_map = {env_id: cfg["algorithm"] for env_id, cfg in TASKS.items()}
     print("=" * 72)
-    print("  Phase 4 validation: Nanonets v1 leave-one-task-out (2 folds)")
-    print(f"  n_trials={N_TRIALS}  trial_steps={TRIAL_STEPS}  algorithm=PPO")
-    print("  CAVEAT: 2 folds is low statistical power; this is a directional")
+    print("  Phase 4 validation: Nanonets v1 leave-one-task-out (3 folds)")
+    print(f"  attempts_per_task={N_TRIALS} (fixed params, no search)  trial_steps(default)={TRIAL_STEPS}  algorithms={algo_map}")
+    print("  CAVEAT: 3 folds is low statistical power; this is a directional")
     print("  signal, not a significance claim.")
     print("=" * 72)
 
     store = ExperimentStore("./benchmarks/experiment_ledger.sqlite3")
     baseline = StrategySelector(store)
 
-    print("\n[Running real TrialOrchestrator studies]")
-    orchestrators = {}
+    print("\n[Training directly and writing to the ledger]")
     for env_id in TASKS:
-        orchestrators[env_id] = run_study(env_id, study_name=f"nanonets_loto_{env_id.replace('-', '_')}")
-
-    print("\n[Backfilling into shared ledger]")
-    for env_id, orch in orchestrators.items():
-        baseline.observe(
-            orchestrator=orch, task_env=env_id, algorithm="PPO", framework="torch",
-            solve_threshold=TASKS[env_id]["solve_threshold"],
-        )
+        for attempt_idx in range(len(FIXED_PARAMS[env_id])):
+            run_task_direct(env_id, store, attempt_idx)
 
     print("\n" + "=" * 72)
     print("  LOTO FOLDS")
@@ -204,7 +349,7 @@ def main() -> int:
         print("  RESULT: At least one fold used real cross-task pooling (gate passed).")
         print("  This is a POSITIVE DIRECTIONAL SIGNAL that the abstention gate and")
         print("  pooling mechanism function end-to-end on real data — NOT a claim of")
-        print("  statistically significant improvement at n=2 folds.")
+        print("  statistically significant improvement at n=3 folds.")
     else:
         print("  RESULT: Every fold triggered the fallback — no source task passed")
         print("  the percentile gate in this run. This is a DOCUMENTED NEGATIVE RESULT")

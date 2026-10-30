@@ -42,6 +42,13 @@ class PooledEstimate:
     fallback_triggered: bool
 
 
+def _denormalize(value: float, threshold: float) -> float:
+    """Inverse of abstention.normalize_score -- maps a normalized
+    'fraction of solve_threshold magnitude above/below solved' value
+    back to the target task's own raw score units."""
+    return value * abs(threshold) + threshold
+
+
 class NanonetsSelector:
     def __init__(self, store: ExperimentStore, *, source_task_envs: List[str]):
         self._store = store
@@ -99,7 +106,7 @@ class NanonetsSelector:
 
         sources_used: List[str] = []
         sources_gated_out: List[str] = []
-        gated_scores: Dict[str, List[float]] = {}
+        gated_scores: Dict[str, List[float]] = {}  # normalized units, not raw
         sim_weights: Dict[str, float] = {}
 
         target_threshold = self._solve_threshold_for(task_env)
@@ -122,7 +129,7 @@ class NanonetsSelector:
 
             if passes_percentile_gate(normalized_source, normalized_target):
                 sources_used.append(source_env)
-                gated_scores[source_env] = source_scores
+                gated_scores[source_env] = normalized_source
                 source_features = self.task_features(source_env)
                 sim_weights[source_env] = similarity_weight(
                     source_algorithm=source_features.algorithm,
@@ -135,11 +142,36 @@ class NanonetsSelector:
 
         fallback_triggered = len(sources_used) == 0
 
+        if normalized_target is None:
+            # Target's own threshold is unknown -- no normalized space to
+            # pool in at all. gated_scores is always empty in this case
+            # (the loop above gates out every source when normalized_target
+            # is None), so this is equivalent to target-only pooling on the
+            # raw scores, same as the pre-existing no-sources-passed path.
+            result = pool_estimates(target_scores=target_scores, source_scores_by_task={}, similarity_weights={})
+            return PooledEstimate(
+                method=method, pooled_mean=result.pooled_mean, pooled_interval=result.pooled_interval,
+                sources_used=sources_used, sources_gated_out=sources_gated_out, fallback_triggered=fallback_triggered,
+            )
+
+        # Pool in normalized space -- mixing raw scores across tasks of
+        # different scale/sign here was the same bug class already fixed
+        # for the gate itself (see normalize_scores above); pooling needs
+        # the same treatment since inverse-variance weighting on raw
+        # scores is meaningless across incompatible units.
         result = pool_estimates(
-            target_scores=target_scores, source_scores_by_task=gated_scores, similarity_weights=sim_weights,
+            target_scores=normalized_target, source_scores_by_task=gated_scores, similarity_weights=sim_weights,
+        )
+        raw_pooled_mean = _denormalize(result.pooled_mean, target_threshold)
+        raw_pooled_interval = SmallNInterval(
+            mean=_denormalize(result.pooled_interval.mean, target_threshold),
+            std=result.pooled_interval.std * abs(target_threshold),
+            n=result.pooled_interval.n,
+            lo95=_denormalize(result.pooled_interval.lo95, target_threshold),
+            hi95=_denormalize(result.pooled_interval.hi95, target_threshold),
         )
         return PooledEstimate(
-            method=method, pooled_mean=result.pooled_mean, pooled_interval=result.pooled_interval,
+            method=method, pooled_mean=raw_pooled_mean, pooled_interval=raw_pooled_interval,
             sources_used=sources_used, sources_gated_out=sources_gated_out, fallback_triggered=fallback_triggered,
         )
 

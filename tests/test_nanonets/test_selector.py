@@ -117,3 +117,29 @@ def test_pooled_stats_handles_no_target_data(tmp_path):
     assert estimate.fallback_triggered is True
     assert estimate.sources_used == []
     store.close()
+
+
+def test_pooled_stats_does_not_mix_raw_scales_across_tasks(tmp_path):
+    """Direct regression test for the real bug found in the live 3-task
+    LOTO run: pool_estimates() was doing inverse-variance weighting on
+    RAW scores, so a gate-passing source task on a different raw scale
+    (Acrobot, negative) could dominate a target's (CartPole, positive)
+    pooled estimate purely via a scale artifact -- producing a pooled
+    mean of -63.21 for a CartPole target whose real scores are 240-411.
+    Pooling must happen in normalized space and be de-normalized back to
+    the target's own raw units before being returned."""
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    _seed_method(store, "CartPole-v1", "TPESampler", [240.50, 411.00], solve_threshold=475.0)
+    _seed_method(store, "Acrobot-v1", "TPESampler", [-61.57, -76.00], solve_threshold=-100.0)
+
+    nanonets = NanonetsSelector(store, source_task_envs=["Acrobot-v1"])
+    estimate = nanonets.pooled_stats(task_env="CartPole-v1", method="TPESampler")
+
+    assert estimate.sources_used == ["Acrobot-v1"]
+    assert estimate.fallback_triggered is False
+    # The old bug produced a negative pooled_mean for a positive-scoring
+    # task -- any positive value here proves the raw-scale-mixing symptom
+    # is gone; the looser bound matches the real, verified de-normalized
+    # result (~550-580) without pinning an exact float.
+    assert estimate.pooled_mean > 100.0
+    store.close()
