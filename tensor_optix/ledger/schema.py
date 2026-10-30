@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     source_revision         TEXT,
     library_versions_json   TEXT NOT NULL DEFAULT '{}',
     hostname                TEXT,
-    schema_version          INTEGER NOT NULL DEFAULT 2,
+    schema_version          INTEGER NOT NULL DEFAULT 3,
     state                   TEXT NOT NULL DEFAULT 'created',
     evaluation_status       TEXT NOT NULL DEFAULT 'pending',
     created_at              REAL NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS events (
     step           INTEGER,
     payload_json   TEXT NOT NULL DEFAULT '{}',
     timestamp      REAL NOT NULL,
-    schema_version INTEGER NOT NULL DEFAULT 2,
+    schema_version INTEGER NOT NULL DEFAULT 3,
     PRIMARY KEY (event_id),
     UNIQUE (experiment_id, sequence),
     FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id)
@@ -82,6 +82,46 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_artifacts_experiment_id ON artifacts(experiment_id);
+
+CREATE TABLE IF NOT EXISTS strategy_candidates (
+    candidate_id           TEXT PRIMARY KEY,
+    op_name                TEXT NOT NULL,
+    op_version             INTEGER NOT NULL,
+    grammar_schema_version INTEGER NOT NULL,
+    params_json            TEXT NOT NULL DEFAULT '{}',
+    created_at             REAL NOT NULL,
+    created_by             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_evaluations (
+    evaluation_id          TEXT PRIMARY KEY,
+    candidate_id           TEXT NOT NULL,
+    experiment_id          TEXT NOT NULL,
+    baseline_experiment_id TEXT,
+    task_env               TEXT NOT NULL,
+    algorithm               TEXT NOT NULL,
+    framework               TEXT NOT NULL,
+    seed                    INTEGER NOT NULL,
+    outcome_delta           REAL,
+    created_at              REAL NOT NULL,
+    FOREIGN KEY (candidate_id) REFERENCES strategy_candidates(candidate_id),
+    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id),
+    FOREIGN KEY (baseline_experiment_id) REFERENCES experiments(experiment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_evaluations_candidate ON strategy_evaluations(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_evaluations_task_env  ON strategy_evaluations(task_env);
+
+CREATE TABLE IF NOT EXISTS strategy_registry (
+    candidate_id     TEXT PRIMARY KEY,
+    status           TEXT NOT NULL DEFAULT 'proposed',
+    approved_at      REAL,
+    demoted_at       REAL,
+    demotion_reason  TEXT,
+    scope_json       TEXT NOT NULL DEFAULT '{}',
+    reviewer         TEXT,
+    FOREIGN KEY (candidate_id) REFERENCES strategy_candidates(candidate_id)
+);
 """
 
 
@@ -122,11 +162,19 @@ def _migrate(conn: sqlite3.Connection, *, from_version: int, to_version: int) ->
     Each 'if' below is one real, shipped migration step. Add a new
     'if from_version == N:' block here when the next real migration is
     needed -- do not pre-build a generic chain for hops that don't exist
-    yet; there is exactly one hop today (1 -> 2).
+    yet; there are exactly two hops today (1 -> 2, 2 -> 3).
     """
     if from_version == 1:
         conn.execute("ALTER TABLE experiments ADD COLUMN solve_threshold REAL")
         from_version = 2
+
+    if from_version == 2:
+        # The strategy_candidates/strategy_evaluations/strategy_registry
+        # tables are new (not altering an existing table), so
+        # CREATE TABLE IF NOT EXISTS in DDL (already executed
+        # unconditionally above) is sufficient -- this branch only
+        # needs to advance the recorded version.
+        from_version = 3
 
     conn.execute(
         "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",

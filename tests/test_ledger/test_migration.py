@@ -95,7 +95,7 @@ def test_migration_adds_solve_threshold_column_and_bumps_version(tmp_path):
     version_row = store._conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version_row[0] == "2"
+    assert version_row[0] == "3"  # v1 DB chains through the v2->v3 hop too
 
     pre_migration_record = store.get_experiment("pre-migration-exp")
     assert pre_migration_record is not None
@@ -125,5 +125,123 @@ def test_migration_is_idempotent_on_reopen(tmp_path):
     version_row = store2._conn.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()
-    assert version_row[0] == "2"
+    assert version_row[0] == "3"
     store2.close()
+
+
+def _create_v2_db(db_path: str) -> None:
+    """Hand-construct a v2-schema database (post-solve_threshold,
+    pre-strategy-tables) -- a frozen snapshot of the v2 DDL, so this test
+    exercises a real v2->v3 upgrade rather than a no-op against code
+    already at v3."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE schema_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE experiments (
+            experiment_id          TEXT PRIMARY KEY,
+            parent_experiment_id   TEXT,
+            study_id               TEXT,
+            task_env               TEXT NOT NULL,
+            algorithm               TEXT NOT NULL,
+            framework               TEXT NOT NULL,
+            seed                    INTEGER NOT NULL,
+            checkpoint_dir          TEXT NOT NULL,
+            solve_threshold         REAL,
+            config_json             TEXT NOT NULL DEFAULT '{}',
+            tensor_optix_version    TEXT,
+            source_revision         TEXT,
+            library_versions_json   TEXT NOT NULL DEFAULT '{}',
+            hostname                TEXT,
+            schema_version          INTEGER NOT NULL DEFAULT 2,
+            state                   TEXT NOT NULL DEFAULT 'created',
+            evaluation_status       TEXT NOT NULL DEFAULT 'pending',
+            created_at              REAL NOT NULL,
+            started_at              REAL,
+            finished_at              REAL,
+            best_primary_score      REAL,
+            best_train_score        REAL,
+            best_val_score          REAL,
+            generalization_gap      REAL,
+            final_metrics_json      TEXT NOT NULL DEFAULT '{}',
+            error_message           TEXT
+        );
+
+        CREATE TABLE events (
+            event_id       TEXT NOT NULL PRIMARY KEY,
+            experiment_id  TEXT NOT NULL,
+            sequence       INTEGER NOT NULL,
+            event_type     TEXT NOT NULL,
+            source         TEXT NOT NULL DEFAULT 'loop_controller',
+            step           INTEGER,
+            payload_json   TEXT NOT NULL DEFAULT '{}',
+            timestamp      REAL NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 2,
+            UNIQUE (experiment_id, sequence)
+        );
+
+        CREATE TABLE artifacts (
+            experiment_id  TEXT NOT NULL,
+            snapshot_id    TEXT NOT NULL,
+            checkpoint_dir TEXT NOT NULL,
+            snapshot_dir   TEXT NOT NULL,
+            weights_path   TEXT NOT NULL,
+            primary_score  REAL NOT NULL,
+            episode_id     INTEGER NOT NULL,
+            checksum       TEXT,
+            created_at     REAL NOT NULL,
+            PRIMARY KEY (experiment_id, snapshot_id)
+        );
+
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '2');
+
+        INSERT INTO experiments (
+            experiment_id, task_env, algorithm, framework, seed, checkpoint_dir,
+            solve_threshold, schema_version, created_at
+        ) VALUES ('pre-v3-exp', 'CartPole-v1', 'PPO', 'torch', 0, '/tmp/ckpt', 475.0, 2, 1000.0);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_migration_v2_to_v3_adds_strategy_tables_and_bumps_version(tmp_path):
+    db_path = str(tmp_path / "v2_ledger.sqlite3")
+    _create_v2_db(db_path)
+
+    store = ExperimentStore(db_path)
+
+    table_names = {
+        row[0]
+        for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "strategy_candidates" in table_names
+    assert "strategy_evaluations" in table_names
+    assert "strategy_registry" in table_names
+
+    version_row = store._conn.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()
+    assert version_row[0] == "3"
+
+    # Pre-existing v2 data is untouched.
+    pre_migration_record = store.get_experiment("pre-v3-exp")
+    assert pre_migration_record is not None
+    assert pre_migration_record.solve_threshold == 475.0
+
+    # The new tables are genuinely usable, not just present.
+    candidate = store.create_strategy_candidate(
+        candidate_id="abc123", op_name="lr_trend", op_version=1,
+        grammar_schema_version=1, params={"window": 5},
+    )
+    assert candidate.candidate_id == "abc123"
+    round_tripped = store.get_strategy_candidate("abc123")
+    assert round_tripped.params == {"window": 5}
+
+    store.close()

@@ -195,6 +195,14 @@ class LoopController:
         """Signal the loop to stop cleanly after the current episode."""
         self._stop_requested = True
 
+    def set_optimizer(self, optimizer: BaseOptimizer) -> None:
+        """Swap the active tuning BaseOptimizer mid-run. Additive hook
+        for tensor_optix/strategy/grammar.py's OptimizationMethodChoiceOp;
+        no other caller needs this today. The replaced optimizer's own
+        state (e.g. a backoff/probe counter) is simply discarded -- the
+        new optimizer starts fresh from the next suggest() call."""
+        self._optimizer = optimizer
+
     def _cold_start(self) -> PolicySnapshot:
         """
         Run episode 0 to establish the baseline.

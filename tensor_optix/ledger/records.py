@@ -34,7 +34,17 @@ class EvaluationStatus(Enum):
     INCONCLUSIVE = "inconclusive"
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+class StrategyStatus(Enum):
+    """Approval lifecycle state of a strategy candidate, separate from
+    any single experiment's execution/evaluation state."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DEMOTED = "demoted"
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -105,3 +115,51 @@ class ArtifactRef:
     primary_score: float
     episode_id: int
     checksum: Optional[str] = None
+
+
+@dataclass
+class StrategyCandidateRecord:
+    """In-memory mirror of one `strategy_candidates` table row -- the
+    serialized, versioned identity of one grammar operation instance.
+    See tensor_optix/strategy/candidate.py for the hashing/round-trip
+    logic that produces/consumes this record's fields."""
+
+    candidate_id: str
+    op_name: str
+    op_version: int
+    grammar_schema_version: int
+    params: Dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    created_by: Optional[str] = None
+
+
+@dataclass
+class StrategyEvaluationRecord:
+    """One row in `strategy_evaluations` -- a single (candidate, task,
+    seed) paired candidate-vs-baseline evaluation outcome."""
+
+    evaluation_id: str
+    candidate_id: str
+    experiment_id: str
+    task_env: str
+    algorithm: str
+    framework: str
+    seed: int
+    baseline_experiment_id: Optional[str] = None
+    outcome_delta: Optional[float] = None
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class StrategyRegistryRecord:
+    """In-memory mirror of one `strategy_registry` table row -- the
+    approval/rollback state and validated scope of one strategy
+    candidate."""
+
+    candidate_id: str
+    status: StrategyStatus = StrategyStatus.PROPOSED
+    approved_at: Optional[float] = None
+    demoted_at: Optional[float] = None
+    demotion_reason: Optional[str] = None
+    scope: Dict[str, Any] = field(default_factory=dict)
+    reviewer: Optional[str] = None

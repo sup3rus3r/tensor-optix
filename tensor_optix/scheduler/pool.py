@@ -13,9 +13,6 @@ when genuine process-level concurrency is wanted.
 """
 
 import logging
-import multiprocessing as mp
-import os
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -31,6 +28,7 @@ from tensor_optix.orchestrator import ParamSpace, _sample_params
 from tensor_optix.ledger.records import EvaluationStatus, ExperimentState
 from tensor_optix.ledger.store import ExperimentStore
 
+from ._mp_common import mp_context, shutdown_worker
 from .budget import BudgetTracker
 from .dedup import fingerprint
 from .isolation import trial_checkpoint_dir, trial_seed
@@ -50,10 +48,6 @@ class _ActiveTrial:
     params: Dict[str, Any]
     experiment_id: Optional[str]
     attempt: int = 0
-
-
-def _mp_context():
-    return mp.get_context("fork") if sys.platform.startswith("linux") else mp.get_context("spawn")
 
 
 class ConcurrentTrialScheduler:
@@ -159,7 +153,7 @@ class ConcurrentTrialScheduler:
     # ------------------------------------------------------------------
 
     def run(self) -> Tuple[Dict[str, Any], float]:
-        ctx = _mp_context()
+        ctx = mp_context()
         self._run_ckpt_dir = tempfile.mkdtemp(prefix="to_concurrent_")
 
         try:
@@ -381,18 +375,7 @@ class ConcurrentTrialScheduler:
             )
 
     def _shutdown_worker(self, proc) -> Tuple[Optional[int], bool]:
-        proc.join(timeout=5.0)
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=2.0)
-            if proc.is_alive():
-                proc.kill()
-                proc.join(timeout=2.0)
-        exitcode = proc.exitcode
-        reaped = not proc.is_alive()
-        if proc in self._active_procs:
-            self._active_procs.remove(proc)
-        return exitcode, reaped
+        return shutdown_worker(proc, self._active_procs)
 
     def _shutdown_all(self, ctx) -> None:
         for trial_number, active in list(self._active.items()):

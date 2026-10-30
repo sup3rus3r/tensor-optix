@@ -17,7 +17,8 @@ from typing import Any, Dict, List, Optional
 from .provenance import capture_environment
 from .records import (
     ArtifactRef, EventRecord, ExperimentRecord, ExperimentState, EvaluationStatus,
-    SCHEMA_VERSION,
+    SCHEMA_VERSION, StrategyCandidateRecord, StrategyEvaluationRecord,
+    StrategyRegistryRecord, StrategyStatus,
 )
 from .schema import ensure_schema
 
@@ -77,6 +78,45 @@ def _row_to_artifact(row: sqlite3.Row) -> ArtifactRef:
         primary_score=row["primary_score"],
         episode_id=row["episode_id"],
         checksum=row["checksum"],
+    )
+
+
+def _row_to_strategy_candidate(row: sqlite3.Row) -> StrategyCandidateRecord:
+    return StrategyCandidateRecord(
+        candidate_id=row["candidate_id"],
+        op_name=row["op_name"],
+        op_version=row["op_version"],
+        grammar_schema_version=row["grammar_schema_version"],
+        params=json.loads(row["params_json"]),
+        created_at=row["created_at"],
+        created_by=row["created_by"],
+    )
+
+
+def _row_to_strategy_evaluation(row: sqlite3.Row) -> StrategyEvaluationRecord:
+    return StrategyEvaluationRecord(
+        evaluation_id=row["evaluation_id"],
+        candidate_id=row["candidate_id"],
+        experiment_id=row["experiment_id"],
+        baseline_experiment_id=row["baseline_experiment_id"],
+        task_env=row["task_env"],
+        algorithm=row["algorithm"],
+        framework=row["framework"],
+        seed=row["seed"],
+        outcome_delta=row["outcome_delta"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_strategy_registry(row: sqlite3.Row) -> StrategyRegistryRecord:
+    return StrategyRegistryRecord(
+        candidate_id=row["candidate_id"],
+        status=StrategyStatus(row["status"]),
+        approved_at=row["approved_at"],
+        demoted_at=row["demoted_at"],
+        demotion_reason=row["demotion_reason"],
+        scope=json.loads(row["scope_json"]),
+        reviewer=row["reviewer"],
     )
 
 
@@ -364,3 +404,176 @@ class ExperimentStore:
             (experiment_id,),
         ).fetchall()
         return [_row_to_artifact(row) for row in rows]
+
+    # ------------------------------------------------------------------ #
+    # Strategy candidates / evaluations / registry (Phase 5)
+    # ------------------------------------------------------------------ #
+
+    def create_strategy_candidate(
+        self,
+        *,
+        candidate_id: str,
+        op_name: str,
+        op_version: int,
+        grammar_schema_version: int,
+        params: Optional[Dict[str, Any]] = None,
+        created_by: Optional[str] = None,
+    ) -> StrategyCandidateRecord:
+        """Insert a new strategy candidate row. Idempotent on candidate_id
+        (content-addressed -- see tensor_optix/strategy/candidate.py)."""
+        existing = self.get_strategy_candidate(candidate_id)
+        if existing is not None:
+            return existing
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO strategy_candidates (
+                    candidate_id, op_name, op_version, grammar_schema_version,
+                    params_json, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id, op_name, op_version, grammar_schema_version,
+                    json.dumps(params or {}), time.time(), created_by,
+                ),
+            )
+
+        record = self.get_strategy_candidate(candidate_id)
+        assert record is not None
+        return record
+
+    def get_strategy_candidate(self, candidate_id: str) -> Optional[StrategyCandidateRecord]:
+        row = self._conn.execute(
+            "SELECT * FROM strategy_candidates WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        return _row_to_strategy_candidate(row) if row is not None else None
+
+    def record_strategy_evaluation(
+        self,
+        *,
+        candidate_id: str,
+        experiment_id: str,
+        task_env: str,
+        algorithm: str,
+        framework: str,
+        seed: int,
+        baseline_experiment_id: Optional[str] = None,
+        outcome_delta: Optional[float] = None,
+        evaluation_id: Optional[str] = None,
+    ) -> StrategyEvaluationRecord:
+        eid = evaluation_id or str(uuid.uuid4())[:8]
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO strategy_evaluations (
+                    evaluation_id, candidate_id, experiment_id, baseline_experiment_id,
+                    task_env, algorithm, framework, seed, outcome_delta, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    eid, candidate_id, experiment_id, baseline_experiment_id,
+                    task_env, algorithm, framework, seed, outcome_delta, time.time(),
+                ),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM strategy_evaluations WHERE evaluation_id = ?", (eid,)
+        ).fetchone()
+        assert row is not None
+        return _row_to_strategy_evaluation(row)
+
+    def query_strategy_evaluations(
+        self,
+        *,
+        candidate_id: Optional[str] = None,
+        task_env: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[StrategyEvaluationRecord]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if candidate_id is not None:
+            clauses.append("candidate_id = ?")
+            params.append(candidate_id)
+        if task_env is not None:
+            clauses.append("task_env = ?")
+            params.append(task_env)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM strategy_evaluations {where} ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_strategy_evaluation(row) for row in rows]
+
+    def get_strategy_registry_entry(self, candidate_id: str) -> Optional[StrategyRegistryRecord]:
+        row = self._conn.execute(
+            "SELECT * FROM strategy_registry WHERE candidate_id = ?", (candidate_id,)
+        ).fetchone()
+        return _row_to_strategy_registry(row) if row is not None else None
+
+    def approve_strategy(
+        self, candidate_id: str, *, reviewer: str, scope: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Human-only promotion write path. PromotionPolicy.evaluate() never
+        calls this itself -- a human calls it after inspecting the
+        automatable criteria (margin, repeat, generalization, compute,
+        reproducibility)."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO strategy_registry (candidate_id, status, approved_at, scope_json, reviewer)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET
+                    status = excluded.status, approved_at = excluded.approved_at,
+                    scope_json = excluded.scope_json, reviewer = excluded.reviewer,
+                    demoted_at = NULL, demotion_reason = NULL
+                """,
+                (candidate_id, StrategyStatus.APPROVED.value, time.time(),
+                 json.dumps(scope or {}), reviewer),
+            )
+
+    def demote_strategy(self, candidate_id: str, reason: str) -> None:
+        """Rollback mechanism: any consumer reading the registry must
+        filter status='approved' live on every read, never cache -- a
+        demotion takes effect immediately for all future callers."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO strategy_registry (candidate_id, status, demoted_at, demotion_reason)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET
+                    status = excluded.status, demoted_at = excluded.demoted_at,
+                    demotion_reason = excluded.demotion_reason
+                """,
+                (candidate_id, StrategyStatus.DEMOTED.value, time.time(), reason),
+            )
+
+    def query_approved_strategies(self, *, limit: int = 100) -> List[StrategyRegistryRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM strategy_registry WHERE status = ? ORDER BY approved_at DESC LIMIT ?",
+            (StrategyStatus.APPROVED.value, limit),
+        ).fetchall()
+        return [_row_to_strategy_registry(row) for row in rows]
+
+    def record_strategy_scope(self, candidate_id: str, scope: Dict[str, Any]) -> None:
+        """Stage a candidate's validated scope ahead of any approval
+        decision -- creates a 'proposed' registry row if none exists
+        yet, or updates scope_json in place without disturbing an
+        existing approved/demoted status."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO strategy_registry (candidate_id, status, scope_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET scope_json = excluded.scope_json
+                """,
+                (candidate_id, StrategyStatus.PROPOSED.value, json.dumps(scope)),
+            )
+
+    def get_strategy_scope(self, candidate_id: str) -> Optional[Dict[str, Any]]:
+        """Raw scope dict for a candidate, as recorded in
+        strategy_registry.scope_json -- callers reconstruct a
+        StrategyScope via StrategyScope.from_dict(...) if a typed view
+        is needed. Returns None if no registry row exists yet."""
+        entry = self.get_strategy_registry_entry(candidate_id)
+        return entry.scope if entry is not None else None
