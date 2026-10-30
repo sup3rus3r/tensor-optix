@@ -31,3 +31,7 @@ Most RL training scripts hard-code a step budget, a learning rate, and a hope th
 | JAX / Flax | PPO |
 
 Bring your own algorithm by implementing `BaseAgent` - see [Write a custom agent](guides/custom-agent.md).
+
+## Learning-to-Learn Engine
+
+An optional layer on top that learns *across* training runs rather than within one: a structured experiment ledger, concurrent trial scheduling, cross-task transfer with a conservative abstention gate, a closed grammar for discovering better training procedures, and a recommend-only live adaptive runtime that never auto-promotes a change. See the [Learning-to-Learn Engine guide](guides/learning-to-learn.md).

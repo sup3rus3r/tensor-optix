@@ -125,3 +125,94 @@ def test_promotion_fails_when_a_task_has_zero_evaluations(tmp_path):
     assert verdict.criteria["beats_baseline_margin"] is False  # Pendulum-v1 has no evaluations
     assert verdict.approved is False
     store.close()
+
+
+def test_promotion_policy_rejects_invalid_approval_mode(tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    try:
+        PromotionPolicy(store, approval_mode="bogus")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    store.close()
+
+
+def test_promotion_human_mode_never_self_approves_even_with_everything_else_passing(tmp_path):
+    """Default/explicit human mode must never set human_reviewed=True on
+    its own, confirming the default is still the safe one."""
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    store.create_strategy_candidate(candidate_id="c1", op_name="lr_trend", op_version=1, grammar_schema_version=1)
+    for seed in range(3):
+        _seed_full_evaluation(store, "c1", "CartPole-v1", delta=20.0, seed=seed)
+        _seed_full_evaluation(store, "c1", "Acrobot-v1", delta=20.0, seed=seed)
+
+    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1,
+                              max_compute_ratio=10.0, approval_mode="human")
+    verdict = policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
+
+    assert verdict.criteria["human_reviewed"] is False
+    assert verdict.approved is False
+    entry = store.get_strategy_registry_entry("c1")
+    assert entry is None  # no registry row was created at all
+    store.close()
+
+
+def test_promotion_auto_mode_self_approves_when_all_automatable_criteria_pass(tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    store.create_strategy_candidate(candidate_id="c1", op_name="lr_trend", op_version=1, grammar_schema_version=1)
+    for seed in range(3):
+        _seed_full_evaluation(store, "c1", "CartPole-v1", delta=20.0, seed=seed)
+        _seed_full_evaluation(store, "c1", "Acrobot-v1", delta=20.0, seed=seed)
+
+    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1,
+                              max_compute_ratio=10.0, approval_mode="auto")
+    verdict = policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
+
+    assert verdict.criteria["human_reviewed"] is True
+    assert verdict.approved is True
+
+    entry = store.get_strategy_registry_entry("c1")
+    assert entry is not None
+    assert entry.status.value == "approved"
+    assert entry.reviewer == "auto:PromotionPolicy"  # traceable -- never pretends a human looked at it
+    store.close()
+
+
+def test_promotion_auto_mode_does_not_self_approve_when_a_criterion_fails(tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    store.create_strategy_candidate(candidate_id="c1", op_name="lr_trend", op_version=1, grammar_schema_version=1)
+    for seed in range(3):
+        _seed_full_evaluation(store, "c1", "CartPole-v1", delta=20.0, seed=seed)
+    # No Acrobot-v1 evaluations at all -- generalizes_held_out must fail.
+
+    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1, approval_mode="auto")
+    verdict = policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
+
+    assert verdict.approved is False
+    entry = store.get_strategy_registry_entry("c1")
+    assert entry is None  # never self-approved since a real criterion failed
+    store.close()
+
+
+def test_promotion_auto_mode_preserves_recorded_scope_when_self_approving(tmp_path):
+    from tensor_optix.strategy.promotion import record_candidate_scope
+    from tensor_optix.strategy.candidate import StrategyCandidate
+
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    candidate = StrategyCandidate(candidate_id="c1", op_name="lr_trend", op_version=1, params={})
+    store.create_strategy_candidate(candidate_id="c1", op_name="lr_trend", op_version=1, grammar_schema_version=1)
+    record_candidate_scope(
+        store, candidate, train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"],
+        algorithms=["PPO"], frameworks=["torch"], budget_range_episodes=(10, 10), n_seeds_per_task=3,
+    )
+    for seed in range(3):
+        _seed_full_evaluation(store, "c1", "CartPole-v1", delta=20.0, seed=seed)
+        _seed_full_evaluation(store, "c1", "Acrobot-v1", delta=20.0, seed=seed)
+
+    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1,
+                              max_compute_ratio=10.0, approval_mode="auto")
+    policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
+
+    entry = store.get_strategy_registry_entry("c1")
+    assert entry.scope["task_envs"] == ["CartPole-v1"]  # scope recorded before approval survives it
+    store.close()

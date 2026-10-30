@@ -649,6 +649,94 @@ regime = detector.detect(metrics_history)   # "trending" | "ranging" | "volatile
 
 ---
 
+## Learning-to-Learn Engine
+
+tensor-optix also includes an optional Learning-to-Learn Engine: a layer that makes experiment history actionable — recording every trial with enough structure to compare reliably, running experiments concurrently under explicit budgets, learning which training strategies help on which tasks, and (recommend-only, never automatic) proposing interventions for a human to review before anything is promoted to a deployed configuration.
+
+### Experiment ledger
+
+Every experiment — a trial, a strategy candidate, a re-evaluation of a deployed agent — is recorded to a SQLite-backed ledger with full provenance (code revision, library versions, hostname) and a typed lifecycle.
+
+```python
+from tensor_optix.ledger import ExperimentStore, ExperimentState
+
+store = ExperimentStore("./experiments.sqlite3")
+record = store.create_experiment(
+    task_env="CartPole-v1", algorithm="PPO", framework="torch",
+    seed=0, checkpoint_dir="./ckpt", solve_threshold=475.0,
+)
+store.start_experiment(record.experiment_id)
+store.record_progress(record.experiment_id, best_primary_score=480.0)
+store.finalize_experiment(record.experiment_id, state=ExperimentState.COMPLETED)
+```
+
+Writes are idempotent on `experiment_id`, and every method opens a short, single-statement transaction — nothing here ever holds a lock for the duration of training.
+
+### Concurrent trial scheduler
+
+`ConcurrentTrialScheduler` runs multiple Optuna trials as real OS processes, with the parent process as sole owner of the Optuna study and the ledger.
+
+```python
+from tensor_optix.scheduler import ConcurrentTrialScheduler
+
+scheduler = ConcurrentTrialScheduler(
+    agent_factory=make_agent, pipeline_factory=make_pipeline,
+    param_space={"learning_rate": ("log_float", 1e-4, 3e-3)},
+    n_trials=20, n_workers=4, ledger_store=store,
+    task_env="CartPole-v1", algorithm="PPO", solve_threshold=475.0,
+)
+best_params, best_score = scheduler.run()
+```
+
+### Cross-task transfer (Nanonets)
+
+`NanonetsSelector` pools evidence from other tasks' ledger history when deciding how to allocate a new task's trial budget — but only when a conservative abstention gate confirms a source task's data is actually comparable (median performance at or above the target's own 95th percentile, both normalized against each task's own solve threshold so differently-scaled/signed scores are never compared on raw terms). When nothing passes the gate, it falls back to the non-learned baseline rather than guess.
+
+```python
+from tensor_optix.nanonets import NanonetsSelector
+
+selector = NanonetsSelector(store, source_task_envs=["Acrobot-v1"])
+decision = selector.propose(task_env="CartPole-v1", methods=["TPESampler"], budget=10)
+print(decision.rationale)  # states explicitly whether it pooled or fell back
+```
+
+### Strategy discovery
+
+A small, closed set of typed training-procedure operations (learning-rate trend adjustment, checkpoint rollback, exploration bounds, optimizer-method choice, budget allocation, schedule changes, policy-variant selection) — never arbitrary generated code. Each candidate is run paired against a no-strategy baseline, compared via a conservative confidence-interval gate, and checked against a 6-criterion promotion policy.
+
+```python
+from tensor_optix.strategy import LearningRateTrendOp, StrategyCandidate, StrategyTrialRunner, PromotionPolicy
+
+candidate = StrategyCandidate.from_op(LearningRateTrendOp(window=5, increase_factor=1.2))
+runner = StrategyTrialRunner(
+    agent_factory=make_agent, pipeline_factory=make_pipeline,
+    trial_steps=50_000, ledger_store=store, task_env="CartPole-v1",
+    algorithm="PPO", solve_threshold=475.0,
+)
+results = runner.run_candidate(candidate, seeds=[0, 1, 2])
+
+policy = PromotionPolicy(store, margin=5.0, min_seeds=3, approval_mode="human")
+verdict = policy.evaluate(candidate_id=candidate.candidate_id, train_task_envs=["CartPole-v1"], held_out_task_envs=[])
+```
+
+`approval_mode="human"` (the default) means `verdict.criteria["human_reviewed"]` can only ever become `True` via a separate, explicit `store.approve_strategy(...)` call — `PromotionPolicy.evaluate()` never sets it itself.
+
+### Live adaptive runtime
+
+`LiveAdaptiveRuntime` runs the full observe → detect → propose → experiment → evaluate → recommend loop against a long-running deployed agent, standing in for live inference feedback. It is **recommend-only**: it issues durable, auditable recommendation records to the ledger, but the loop itself never calls `approve_strategy` and never changes which agent is deployed. Promoting a candidate requires two separate, explicit human actions outside the loop (`store.approve_strategy(...)`, then `promote_candidate_to_baseline(...)`).
+
+```python
+from tensor_optix.runtime import LiveAdaptiveRuntime, RuntimeConfig
+
+config = RuntimeConfig(task_env="CartPole-v1", algorithm="PPO", max_cycles=20)
+runtime = LiveAdaptiveRuntime(store, config, agent_factory=make_agent, pipeline_factory=make_pipeline)
+observations, recommendations = runtime.run()
+```
+
+Full guide: [Learning-to-Learn Engine](https://sup3rus3r.github.io/tensor-optix/guides/learning-to-learn/).
+
+---
+
 ## Requirements
 
 - Python >= 3.11

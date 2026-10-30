@@ -79,6 +79,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
@@ -389,6 +396,14 @@ def spawn_variant(
     Returns agent_shell (mutated in place, also returned for chaining).
     &quot;&quot;&quot;
 </code></pre>
+<p><code>evolve()</code>'s rollback target is <code>self._registry.best</code>, which <code>CheckpointRegistry</code>
+only ever updates via the caller's own accept decision - see
+<a href="../checkpoint_registry/">CheckpointRegistry</a>. When <code>LoopController</code> is
+configured with <code>criteria_mode</code>/<code>checkpoint_confirmation</code>
+(see <a href="../loop_controller/#avoiding-unicorn-checkpoints">LoopController</a>),
+that means <code>evolve()</code> can only ever roll back to a confirmed,
+composite-scored checkpoint - never a single lucky ("unicorn") episode - with
+no change needed here.</p>
 <h3 id="reporting">Reporting</h3>
 <pre><code class="language-python">def status(self) -&gt; dict:
     &quot;&quot;&quot;

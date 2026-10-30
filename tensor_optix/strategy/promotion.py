@@ -1,10 +1,16 @@
 """PromotionPolicy -- the proposal's 6-point promotion checklist
 (section 10) as real, independently-checkable booleans, not a vibe.
 
-criterion 6 (human_reviewed) is never set by evaluate() itself -- only
-ExperimentStore.approve_strategy(), called by a human after inspecting
-criteria 1-5, can set it. This is the literal implementation of "passes
-any required human review."
+Two approval modes:
+- "human" (default): criterion 6 (human_reviewed) is never set by
+  evaluate() itself -- only ExperimentStore.approve_strategy(), called
+  by a human after inspecting criteria 1-5, can set it. This is the
+  literal implementation of "passes any required human review."
+- "auto": if criteria 1-5 all pass, evaluate() calls approve_strategy()
+  itself with reviewer="auto:PromotionPolicy" -- a real, traceable
+  self-approval (never silent) for contexts that explicitly want fully
+  automatic promotion. Still never bypasses criteria 1-5 -- it only
+  removes the requirement for a separate human action on top of them.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -88,12 +94,16 @@ class PromotionPolicy:
         min_seeds: int = 3,
         min_held_out_tasks: int = 1,
         max_compute_ratio: float = 1.5,
+        approval_mode: str = "human",
     ):
+        if approval_mode not in ("human", "auto"):
+            raise ValueError(f"PromotionPolicy.approval_mode must be 'human' or 'auto', got {approval_mode!r}")
         self._store = store
         self._margin = margin
         self._min_seeds = min_seeds
         self._min_held_out_tasks = min_held_out_tasks
         self._max_compute_ratio = max_compute_ratio
+        self._approval_mode = approval_mode
 
     def evaluate(
         self,
@@ -126,6 +136,13 @@ class PromotionPolicy:
 
         criteria["meets_compute_constraints"] = self._check_compute_ratio(candidate_id, train_task_envs)
         criteria["reproducible"] = self._check_reproducibility(candidate_id, train_task_envs)
+
+        automatable_passed = all(criteria.values())
+        if self._approval_mode == "auto" and automatable_passed:
+            existing_scope = self._store.get_strategy_scope(candidate_id) or {}
+            self._store.approve_strategy(
+                candidate_id, reviewer="auto:PromotionPolicy", scope=existing_scope,
+            )
 
         existing = self._store.get_strategy_registry_entry(candidate_id)
         criteria["human_reviewed"] = existing is not None and existing.status == StrategyStatus.APPROVED

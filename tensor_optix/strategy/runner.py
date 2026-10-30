@@ -184,6 +184,7 @@ class StrategyTrialRunner:
 
         score = result.get("score")
         status = result.get("status", "failed")
+        weights_path = result.get("weights_path")
 
         if self._ledger_store is not None and experiment_id is not None:
             state_map = {
@@ -196,10 +197,21 @@ class StrategyTrialRunner:
             eval_status = EvaluationStatus.PRELIMINARY if status == "completed" else EvaluationStatus.INCONCLUSIVE
             if score is not None:
                 self._ledger_store.record_progress(experiment_id, best_primary_score=score)
+            # weights_path is only known after training completes, so it
+            # cannot go in config (write-once at create_experiment time,
+            # before training runs) -- final_metrics is written here,
+            # after training, and is the correct place for it. Stored
+            # under a float-valued key convention elsewhere in
+            # final_metrics, so it is kept as a string value here
+            # deliberately -- callers (e.g. runtime/promote.py) read it
+            # back via final_metrics.get("weights_path").
+            final_metrics: Dict[str, Any] = {"trial_index": float(seed)}
+            if weights_path is not None:
+                final_metrics["weights_path"] = weights_path
             self._ledger_store.finalize_experiment(
                 experiment_id, state=state_map.get(status, ExperimentState.FAILED),
                 evaluation_status=eval_status,
-                final_metrics={"trial_index": float(seed)},
+                final_metrics=final_metrics,
                 error_message=result.get("error") or result.get("reason"),
             )
 

@@ -21,6 +21,9 @@ nav:
       - Export to ONNX: guides/onnx-export.md
       - Write a custom agent: guides/custom-agent.md
       - Logging and dashboards: guides/logging-callbacks.md
+  - Learning-to-Learn Engine:
+      - Guide: guides/learning-to-learn.md
+      - Reference: reference/learning-to-learn.md
   - API Reference:
       - Overview: reference/index.md
       - core:

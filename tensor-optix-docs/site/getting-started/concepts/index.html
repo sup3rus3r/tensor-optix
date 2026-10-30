@@ -95,6 +95,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
@@ -265,6 +272,14 @@
 <h2 id="checkpointing-is-validation-only">Checkpointing is validation-only</h2>
 <p>When a <code>val_pipeline</code> is configured, <code>primary_score</code> is the <strong>validation</strong> score, not the training score. The training score can keep climbing while validation degrades - that's overfitting, and the loop is built to act on it rather than reward it.</p>
 <p><code>run()</code> always restores the best known checkpoint before returning, regardless of how the loop ended (convergence, <code>stop()</code>, or <code>max_episodes</code>). Pass <code>checkpoint_score_fn</code> to drive checkpoint <em>selection</em> from an independent, deterministic external evaluation instead of the noisy training-window mean.</p>
+<p>By default, "best" is the single episode with the highest <code>primary_score</code> -
+a raw point comparison. That's fine most of the time, but a lucky episode
+(reward concentrated on one favorable step, not earned consistently) can
+score higher than anything a genuinely better policy produces later, and
+become a permanent, unbeatable "best." <code>criteria_mode</code> and
+<code>checkpoint_confirmation</code> (both opt-in, off by default) widen the
+measurement and require corroboration before trusting an improvement - see
+<a href="../../guides/train-rl-agent/#avoiding-unicorn-checkpoints">Avoiding unicorn checkpoints</a>.</p>
 <h2 id="on-policy-vs-off-policy-rollback">On-policy vs. off-policy rollback</h2>
 <p><code>BaseAgent.is_on_policy</code> (default <code>True</code>) tells the loop whether rollback is safe:</p>
 <ul>

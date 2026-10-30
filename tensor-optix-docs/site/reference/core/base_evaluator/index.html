@@ -79,6 +79,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
@@ -92,6 +99,8 @@
                 <li class="toctree-l2 current"><a class="reference internal current" href="#">base_evaluator</a>
     <ul class="current">
     <li class="toctree-l3"><a class="reference internal" href="#baseevaluator">BaseEvaluator</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#measuring-good-as-more-than-one-number">Measuring "good" as more than one number</a>
     </li>
     </ul>
                 </li>
@@ -273,16 +282,113 @@
             - val - λ * gap: explicit overfitting penalty
         &quot;&quot;&quot;
 
-    def compare(self, candidate: EvalMetrics, baseline: EvalMetrics) -&gt; bool:
+    def criteria(self, episode_data: EpisodeData, train_diagnostics: dict) -&gt; Dict[str, float]:
         &quot;&quot;&quot;
-        Returns True if candidate is better than baseline.
-        Default uses EvalMetrics.beats() with zero margin.
-        Override for custom comparison logic (multi-objective, margin threshold, etc.).
+        Optional. Return named criteria in [0, 1] (or bool) describing
+        distinct ways this episode could be &quot;good&quot; - e.g.
+        {&quot;reached_goal&quot;: 1.0, &quot;avoided_collision&quot;: 1.0, &quot;energy_budget&quot;: 0.3}.
+
+        Used by composite_score() when criteria_mode is &quot;manual&quot; or &quot;both&quot;
+        (see LoopController). Default: {} - no manual criteria; a policy
+        that satisfies only one of several things that matter for a task
+        should not out-rank one that satisfies all of them just because a
+        single-axis reward spike happened to be larger.
         &quot;&quot;&quot;
-        return candidate.beats(baseline)
+        return {}
+
+    def composite_score(
+        self,
+        metrics: EvalMetrics,
+        episode_data: EpisodeData,
+        train_diagnostics: dict,
+        breadth_history: Deque[float],
+        criteria_mode: str = &quot;none&quot;,
+        criteria_k: float = 2.0,
+    ) -&gt; float:
+        &quot;&quot;&quot;
+        Adjusts primary_score by how narrowly or broadly it was earned.
+
+        A single scalar score can't distinguish a policy that got lucky on
+        one axis from one that is robustly good across many - this widens
+        the measurement rather than just smoothing it.
+
+        satisfied_fraction, depending on criteria_mode:
+          &quot;none&quot;   (default): 1.0 always - composite_score == primary_score,
+                   i.e. no behavior change unless a mode is opted into.
+          &quot;manual&quot;: mean of criteria() - {} (default, unoverridden) → 1.0.
+          &quot;auto&quot;:   breadth_typicality() of this episode's reward-magnitude
+                    concentration relative to this run's OWN history (never
+                    an absolute threshold - see reward_shape.py for why
+                    that matters for sparse/terminal-reward domains).
+          &quot;both&quot;:   geometric mean of the two - both must hold.
+
+        composite = primary_score - (1 - satisfied_fraction**k) * |primary_score|
+        Subtractive rather than multiplicative on purpose: primary_score's
+        sign is entirely domain-defined (higher is always better, but that
+        says nothing about sign - cost-style domains have negative-is-good
+        conventions). A plain multiplicative penalty makes a negative score
+        LESS negative under penalty, which is backwards. This penalizes by a
+        magnitude-relative amount instead, so composite &lt;= primary_score
+        always, regardless of sign, with equality iff fully satisfied.
+        &quot;&quot;&quot;
+
+    def compare(
+        self,
+        candidate: EvalMetrics,
+        baseline: EvalMetrics,
+        confirmation: Optional[&quot;CheckpointConfirmationTracker&quot;] = None,
+    ) -&gt; bool:
+        &quot;&quot;&quot;
+        Returns True if candidate should replace baseline as the best
+        checkpoint.
+
+        Default: when `confirmation` is supplied (LoopController always
+        supplies one), gates the comparison through
+        CheckpointConfirmationTracker.evaluate_candidate() - requiring the
+        improvement to be corroborated rather than trusting a single sample.
+        Falls back to plain candidate.beats(baseline) when called without a
+        tracker (e.g. direct/standalone use) - unchanged from before.
+
+        Override for custom comparison logic (multi-objective, margin
+        threshold, etc.) - the loop only requires a bool return.
+        &quot;&quot;&quot;
 </code></pre>
 <p><code>combine()</code>'s default implementation sets <code>primary_score = val.primary_score</code> and stores both raw scores plus <code>generalization_gap = train.primary_score - val.primary_score</code> in <code>metrics</code>.</p>
 <p>See also: <code>TFEvaluator</code> and <code>TorchEvaluator</code> in <a href="../../algorithms/">Algorithms</a> for the shipped default (mean episode return, with a per-step-reward fallback when no episode completes within the window).</p>
+<h2 id="measuring-good-as-more-than-one-number">Measuring "good" as more than one number</h2>
+<p><code>primary_score</code> is a single scalar, and a single scalar can't distinguish a
+policy that got lucky on one narrow axis from one that is robustly good
+across many. Left unaddressed, a lucky early-exploration episode (a reward
+spike concentrated on one step) can become a permanent, unbeatable "best"
+checkpoint even once training produces a genuinely, durably better policy
+whose raw score is lower.</p>
+<p><code>LoopController</code> fixes this in two complementary layers, both <strong>off by
+default</strong> (<code>criteria_mode="none"</code> reproduces the exact legacy behavior):</p>
+<ol>
+<li><strong>Composite scoring</strong> (<code>composite_score()</code> above) widens the
+   measurement itself. Two ways to feed it, controlled by
+   <code>LoopController(criteria_mode=...)</code>:</li>
+<li><code>"manual"</code> - override <code>criteria()</code> with a domain-specific rubric
+     (e.g. <code>{"reached_goal": 1.0, "avoided_hazard": 1.0}</code>).</li>
+<li><code>"auto"</code> - zero code required. tensor-optix measures how concentrated
+     vs. distributed each episode's reward was (via the Gini coefficient of
+     per-step <code>|reward|</code>, sign-agnostic so it works for both bonus-style and
+     cost-style reward conventions), and compares that shape against <em>this
+     run's own historical distribution</em> - never a fixed threshold, so it
+     never penalizes domains where every legitimate win is naturally
+     concentrated (e.g. a sparse terminal bonus).</li>
+<li><code>"both"</code> - geometric mean of the two.</li>
+<li><strong>Confirmation</strong> (<code>compare()</code> above, via <code>CheckpointConfirmationTracker</code>)
+   is a statistical evidence gate, not a magnitude gate: it doesn't care how
+   <em>big</em> an improvement is, only whether there's been enough evidence -
+   either the run's own measured noise is small enough that one sample is
+   already convincing, or the improvement has been corroborated across
+   <code>checkpoint_confirm_window</code> consecutive evals - before trusting it.</li>
+</ol>
+<p>See <a href="../loop_controller/">LoopController</a> for the full config surface
+(<code>criteria_mode</code>, <code>criteria_k</code>, <code>checkpoint_confirm_window</code>,
+<code>checkpoint_noise_k</code>) and the <a href="../../../guides/train-rl-agent/#avoiding-unicorn-checkpoints">training guide</a>
+for a worked example.</p>
               
             </div>
           </div><footer>

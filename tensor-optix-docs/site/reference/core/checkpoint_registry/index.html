@@ -79,6 +79,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
@@ -271,6 +278,17 @@ def load_ensemble(self, agent, top_k: int = 3, score_band: float = 0.1) -&gt; Op
 def best(self) -&gt; Optional[PolicySnapshot]: ...
 </code></pre>
 <p><code>load_ensemble</code> is how Stochastic Weight Averaging (SWA) is exposed at the registry level - it requires the agent to implement <code>average_weights()</code> (see <a href="../base_agent/">BaseAgent</a>).</p>
+<p><code>CheckpointRegistry.save()</code> itself does no comparison - it trusts the caller
+and unconditionally overwrites <code>self._best</code> with whatever it's given. That
+responsibility belongs to the caller by design (<code>LoopController</code>, via
+<code>BaseEvaluator.compare()</code>) so that <code>save()</code> stays framework-agnostic about
+what "better" means. When <code>LoopController</code> is configured with
+<code>criteria_mode</code> and/or <code>checkpoint_confirmation</code> (see
+<a href="../loop_controller/#avoiding-unicorn-checkpoints">LoopController</a>), <code>best</code>
+is only ever updated by an already composite-scored, confirmed candidate -
+so every consumer of <code>best</code> (<code>load_best()</code>, <code>load_ensemble()</code>,
+<code>PolicyManager.evolve()</code>'s rollback target) benefits automatically, with no
+change needed on their end.</p>
               
             </div>
           </div><footer>
