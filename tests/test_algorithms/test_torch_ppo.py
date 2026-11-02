@@ -114,3 +114,70 @@ def test_save_load_roundtrip(agent, episode, tmp_path):
     restored = list(agent._actor.parameters())
     for o, r in zip(original, restored):
         assert torch.allclose(o, r.detach())
+
+
+def test_resumable_components_declared(agent):
+    assert agent.resumable_components == frozenset({"model", "optimizer", "rng"})
+
+
+def test_save_full_state_restores_optimizer_momentum(agent, episode, tmp_path):
+    # Adam's momentum (exp_avg) only exists after at least one step().
+    agent.learn(episode)
+    assert agent._optimizer.state  # sanity: optimizer actually has state now
+
+    path = str(tmp_path / "torch_ppo_full")
+    agent.save_full_state(path)
+
+    original_state = {
+        id(p): {k: v.clone() if torch.is_tensor(v) else v for k, v in s.items()}
+        for p, s in agent._optimizer.state.items()
+    }
+
+    # Corrupt the live optimizer state to prove load_full_state restores it,
+    # not just weights.
+    for s in agent._optimizer.state.values():
+        for k, v in s.items():
+            if torch.is_tensor(v):
+                v.zero_()
+
+    agent.load_full_state(path)
+
+    for p, s in agent._optimizer.state.items():
+        orig = original_state[id(p)]
+        for k, v in s.items():
+            if torch.is_tensor(v):
+                assert torch.allclose(v, orig[k]), f"optimizer state {k!r} was not restored"
+
+
+def test_load_full_state_restores_rng_state(agent, episode, tmp_path):
+    agent.learn(episode)
+    path = str(tmp_path / "torch_ppo_rng")
+    agent.save_full_state(path)
+
+    torch.manual_seed(999)  # perturb global RNG state
+    _ = torch.randn(5)
+
+    agent.load_full_state(path)
+    after_load = torch.get_rng_state()
+
+    # A fresh save right after load should reproduce the identical RNG
+    # state blob -- proving load actually set it, not left it perturbed.
+    path2 = str(tmp_path / "torch_ppo_rng2")
+    agent.save_full_state(path2)
+    import torch as _torch
+    blob1 = _torch.load(str(tmp_path / "torch_ppo_rng" / "resume_state.pt"), weights_only=False)
+    blob2 = _torch.load(str(tmp_path / "torch_ppo_rng2" / "resume_state.pt"), weights_only=False)
+    assert torch.equal(blob1["torch_rng_state"], blob2["torch_rng_state"])
+
+
+def test_get_weights_matches_state_dict_without_disk_round_trip(agent, episode):
+    agent.learn(episode)
+    weights = agent.get_weights()
+    assert set(weights["actor"].keys()) == set(agent._actor.state_dict().keys())
+    for k, v in agent._actor.state_dict().items():
+        assert torch.equal(weights["actor"][k], v)
+    # Must be a detached clone, not the live tensor -- mutating it must not
+    # affect the model.
+    first_key = next(iter(weights["actor"]))
+    weights["actor"][first_key].zero_()
+    assert not torch.equal(weights["actor"][first_key], agent._actor.state_dict()[first_key])

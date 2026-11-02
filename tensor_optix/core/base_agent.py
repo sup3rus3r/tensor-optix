@@ -57,6 +57,57 @@ class BaseAgent(ABC):
         """Restore model weights from the given path."""
 
     @property
+    def resumable_components(self) -> frozenset:
+        """
+        Which pieces of full training state save_full_state() actually
+        captures, beyond weights — e.g. frozenset({"optimizer", "rng"}).
+
+        Default (empty frozenset): save_full_state()/load_full_state()
+        are equivalent to save_weights()/load_weights() — weights only,
+        no optimizer/scheduler/RNG continuity. CheckpointRegistry records
+        this at save time so a checkpoint can be honestly labeled exact,
+        partial, or weights-only rather than assuming every checkpoint
+        supports exact training continuation — weights alone do not
+        guarantee that.
+
+        Override together with save_full_state()/load_full_state() in a
+        framework-specific subclass. See TorchAgent for a reference
+        implementation built on core.resume_state.
+        """
+        return frozenset()
+
+    def save_full_state(self, path: str) -> None:
+        """
+        Persist everything needed to resume training, not just weights.
+
+        Default: identical to save_weights() — a safe no-op for any agent
+        that hasn't opted into full resumability. Override alongside
+        resumable_components and load_full_state().
+        """
+        self.save_weights(path)
+
+    def load_full_state(self, path: str) -> None:
+        """
+        Restore everything save_full_state() persisted.
+        Default: identical to load_weights().
+        """
+        self.load_weights(path)
+
+    def get_weights(self) -> dict:
+        """
+        Return an in-memory snapshot of the model's learnable parameters,
+        without a disk round-trip through save_weights()/load_weights().
+
+        Default: raises NotImplementedError. Override in framework-specific
+        subclasses that can read parameters directly (currently TorchAgent
+        and its subclasses that reuse TorchAgent's model attribute).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support get_weights(). "
+            f"Use save_weights()/load_weights() for disk-based access."
+        )
+
+    @property
     def is_on_policy(self) -> bool:
         """
         True  → on-policy (PPO, A2C, REINFORCE).

@@ -95,9 +95,23 @@ class PromotionPolicy:
         min_held_out_tasks: int = 1,
         max_compute_ratio: float = 1.5,
         approval_mode: str = "human",
+        acknowledge_auto_approve_bypasses_human_review: bool = False,
     ):
         if approval_mode not in ("human", "auto"):
             raise ValueError(f"PromotionPolicy.approval_mode must be 'human' or 'auto', got {approval_mode!r}")
+        if approval_mode == "auto" and not acknowledge_auto_approve_bypasses_human_review:
+            # A bare string flag is too easy to pass by accident (typo,
+            # copy-pasted config, a caller skimming kwargs). approval_mode
+            # "auto" makes evaluate() self-approve candidates with no
+            # separate human action -- require a second, harder-to-pass
+            # confirmation before that's allowed, so self-approval can
+            # never happen from this flag alone.
+            raise ValueError(
+                "PromotionPolicy(approval_mode='auto') makes evaluate() self-approve "
+                "candidates with reviewer='auto:PromotionPolicy', bypassing human "
+                "review. Pass acknowledge_auto_approve_bypasses_human_review=True "
+                "to confirm this is intentional."
+            )
         self._store = store
         self._margin = margin
         self._min_seeds = min_seeds

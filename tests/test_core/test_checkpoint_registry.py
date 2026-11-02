@@ -76,3 +76,110 @@ def test_manifest_persists_across_instances(tmp_path):
     result = r2.load_best(agent)
     assert result is not None
     assert result.eval_metrics.primary_score == 42.0
+
+
+# ---------------------------------------------------------------------------
+# resumable_components (weights-only vs. full-state checkpoints)
+# ---------------------------------------------------------------------------
+
+class ResumableAgent:
+    """Duck-typed agent (not a BaseAgent subclass) that opts into full
+    resumability, to prove CheckpointRegistry doesn't assume BaseAgent."""
+
+    def __init__(self):
+        self._weights = {"w": 1.0}
+        self.full_state_saved_to = None
+        self.full_state_loaded_from = None
+
+    def save_weights(self, path):
+        import json, os
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "weights.json"), "w") as f:
+            json.dump(self._weights, f)
+
+    def load_weights(self, path):
+        pass
+
+    @property
+    def resumable_components(self):
+        return frozenset({"optimizer", "rng"})
+
+    def save_full_state(self, path):
+        self.save_weights(path)
+        self.full_state_saved_to = path
+
+    def load_full_state(self, path):
+        self.full_state_loaded_from = path
+
+
+def test_weights_only_agent_records_empty_resumable_components(tmp_registry, dummy_agent_for_registry):
+    # DummyAgent subclasses BaseAgent and never overrides resumable_components
+    # -> must default to empty (weights-only), never silently claim more.
+    metrics = EvalMetrics(primary_score=1.0, metrics={}, episode_id=0)
+    hp = HyperparamSet(params={}, episode_id=0)
+    snapshot = tmp_registry.save(dummy_agent_for_registry, metrics, hp)
+    assert snapshot.resumable_components == frozenset()
+
+
+def test_full_state_agent_records_resumable_components(tmp_path):
+    registry = CheckpointRegistry(str(tmp_path / "ckpt"), max_snapshots=5)
+    agent = ResumableAgent()
+    metrics = EvalMetrics(primary_score=1.0, metrics={}, episode_id=0)
+    hp = HyperparamSet(params={}, episode_id=0)
+
+    snapshot = registry.save(agent, metrics, hp)
+
+    assert snapshot.resumable_components == frozenset({"optimizer", "rng"})
+    assert agent.full_state_saved_to == snapshot.weights_path
+
+    with open(os.path.join(snapshot.weights_path.rsplit("weights", 1)[0], "metadata.json")) as f:
+        import json
+        meta = json.load(f)
+    assert sorted(meta["resumable_components"]) == ["optimizer", "rng"]
+
+
+def test_load_best_calls_load_full_state_when_available(tmp_path):
+    registry = CheckpointRegistry(str(tmp_path / "ckpt"), max_snapshots=5)
+    agent = ResumableAgent()
+    metrics = EvalMetrics(primary_score=1.0, metrics={}, episode_id=0)
+    hp = HyperparamSet(params={}, episode_id=0)
+    registry.save(agent, metrics, hp)
+
+    registry.load_best(agent)
+    assert agent.full_state_loaded_from == registry.best.weights_path
+
+
+def test_resumable_components_survive_manifest_reload(tmp_path):
+    checkpoint_dir = str(tmp_path / "persist_resumable")
+    agent = ResumableAgent()
+    r1 = CheckpointRegistry(checkpoint_dir, max_snapshots=5)
+    metrics = EvalMetrics(primary_score=1.0, metrics={}, episode_id=0)
+    hp = HyperparamSet(params={}, episode_id=0)
+    r1.save(agent, metrics, hp)
+
+    r2 = CheckpointRegistry(checkpoint_dir, max_snapshots=5)
+    snapshot = r2.load_best(agent)
+    assert snapshot.resumable_components == frozenset({"optimizer", "rng"})
+
+
+def test_old_metadata_without_resumable_components_defaults_to_empty(tmp_path):
+    # Simulates a checkpoint saved before this field existed -- must load
+    # as weights-only (empty), not crash on the missing key.
+    checkpoint_dir = str(tmp_path / "legacy")
+    agent = ResumableAgent()
+    registry = CheckpointRegistry(checkpoint_dir, max_snapshots=5)
+    metrics = EvalMetrics(primary_score=1.0, metrics={}, episode_id=0)
+    hp = HyperparamSet(params={}, episode_id=0)
+    snapshot = registry.save(agent, metrics, hp)
+
+    import json
+    meta_path = os.path.join(checkpoint_dir, f"snapshot_{snapshot.snapshot_id}", "metadata.json")
+    with open(meta_path) as f:
+        meta = json.load(f)
+    del meta["resumable_components"]
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    r2 = CheckpointRegistry(checkpoint_dir, max_snapshots=5)
+    reloaded = r2.load_best(agent)
+    assert reloaded.resumable_components == frozenset()

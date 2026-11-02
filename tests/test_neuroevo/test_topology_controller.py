@@ -7,6 +7,7 @@ import torch
 from tensor_optix.neuroevo.graph.neuron_graph import NeuronGraph
 from tensor_optix.neuroevo.graph.topology_ops import add_free_edge
 from tensor_optix.neuroevo.controller.topology_controller import TopologyController
+from tensor_optix.neuroevo.controller.topology_callback import TopologyCallback
 from tensor_optix.core.types import EvalMetrics, LoopState, PolicySnapshot, HyperparamSet
 
 
@@ -224,3 +225,131 @@ def test_improvement_resets_plateau_count():
     assert ctrl._plateau_count == 2
     ctrl.on_improvement(fake_snapshot())
     assert ctrl._plateau_count == 0
+
+
+# ---------------------------------------------------------------------------
+# TopologyCallback hooks
+# ---------------------------------------------------------------------------
+
+class RecordingTopologyCallback(TopologyCallback):
+    def __init__(self):
+        self.events = []
+
+    def on_grow(self, region_name, episode_id, op, new_neuron_id, n_neurons, n_edges):
+        self.events.append(("grow", region_name, episode_id, op, new_neuron_id, n_neurons, n_edges))
+
+    def on_prune_edge(self, region_name, episode_id, edge_id, n_neurons, n_edges):
+        self.events.append(("prune_edge", region_name, episode_id, edge_id, n_neurons, n_edges))
+
+    def on_prune_neuron(self, region_name, episode_id, neuron_id, n_neurons, n_edges):
+        self.events.append(("prune_neuron", region_name, episode_id, neuron_id, n_neurons, n_edges))
+
+    def on_merge(self, region_name, episode_id, kept_neuron_id, removed_neuron_id, n_neurons, n_edges):
+        self.events.append(("merge", region_name, episode_id, kept_neuron_id, removed_neuron_id, n_neurons, n_edges))
+
+
+class BrokenTopologyCallback(TopologyCallback):
+    def on_grow(self, *a, **kw):
+        raise RuntimeError("boom")
+
+
+class TestTopologyCallback:
+
+    def test_on_grow_fires_with_new_neuron_id(self):
+        g, *_ = make_graph_with_hidden()
+        cb = RecordingTopologyCallback()
+        ctrl = TopologyController(
+            g, grow_op="insert_edge", grow_cooldown=0, min_score_buffer=0,
+            topology_callbacks=[cb],
+        )
+        ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
+        grow_events = [e for e in cb.events if e[0] == "grow"]
+        assert len(grow_events) == 1
+        _, region_name, episode_id, op, new_nid, n_neurons, n_edges = grow_events[0]
+        assert region_name == "default"
+        assert episode_id == 10
+        assert op == "insert_edge"
+        assert new_nid is not None
+        assert new_nid in g.all_neuron_ids()
+        assert n_neurons == g.n_neurons()
+
+    def test_on_prune_edge_fires(self):
+        g, i0, h0, o0, e0, e1 = make_graph_with_hidden()
+        cb = RecordingTopologyCallback()
+        ctrl = TopologyController(
+            g, prune_edge_threshold=10.0, prune_edge_patience=1,
+            grow_cooldown=999, topology_callbacks=[cb],
+        )
+        ctrl.on_episode_end(0, None)
+        prune_events = [e for e in cb.events if e[0] == "prune_edge"]
+        assert len(prune_events) >= 1
+        assert prune_events[0][1] == "default"
+
+    def test_on_prune_neuron_fires(self):
+        g, i0, h0, o0, e0, e1 = make_graph_with_hidden()
+        dead_id = g.add_neuron(role="hidden", activation="linear")
+        cb = RecordingTopologyCallback()
+        ctrl = TopologyController(
+            g, prune_neuron_threshold=1e-6, min_prune_observations=5,
+            grow_cooldown=999, maturation_window=0, topology_callbacks=[cb],
+        )
+        for ep in range(10):
+            g(torch.tensor([1.0]))
+            ctrl.on_episode_end(ep, None)
+        ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
+        prune_events = [e for e in cb.events if e[0] == "prune_neuron"]
+        assert len(prune_events) == 1
+        assert prune_events[0][1] == "default"
+        assert prune_events[0][3] == dead_id
+
+    def test_on_merge_fires_with_kept_and_removed_ids(self):
+        g = NeuronGraph()
+        i0 = g.add_neuron(role="input", activation="linear")
+        h0 = g.add_neuron(role="hidden", activation="tanh")
+        h1 = g.add_neuron(role="hidden", activation="tanh")
+        o0 = g.add_neuron(role="output", activation="linear")
+        g.add_edge(i0, h0, weight=1.0, delay=0)
+        g.add_edge(i0, h1, weight=1.0, delay=0)
+        g.add_edge(h0, o0, weight=0.5, delay=0)
+        g.add_edge(h1, o0, weight=0.5, delay=0)
+
+        cb = RecordingTopologyCallback()
+        ctrl = TopologyController(
+            g, merge_similarity_threshold=0.5, merge_check_interval=1,
+            prune_neuron_threshold=0.0, grow_cooldown=999, topology_callbacks=[cb],
+        )
+        # Build up identical activation histories for h0/h1 so they correlate.
+        from collections import deque
+        ctrl._act_history[h0] = deque(maxlen=100)
+        ctrl._act_history[h1] = deque(maxlen=100)
+        for i in range(12):
+            # Identical, non-constant sequences -> perfect correlation with
+            # nonzero variance (a zero-variance/constant history is skipped
+            # by _check_merge's std guard before correlation is even computed).
+            ctrl._act_history[h0].append(float(i))
+            ctrl._act_history[h1].append(float(i))
+            ctrl._neuron_importance_accum[h0] += 1.0
+            ctrl._neuron_importance_accum[h1] += 1.0
+        ctrl._accum_steps = 12
+
+        ctrl._check_merge(episode_id=1, region_name="main", graph=g)
+        merge_events = [e for e in cb.events if e[0] == "merge"]
+        assert len(merge_events) == 1
+        _, region_name, episode_id, kept, removed, n_neurons, n_edges = merge_events[0]
+        assert kept == h0
+        assert removed == h1
+
+    def test_broken_callback_does_not_stop_training(self):
+        g, *_ = make_graph_with_hidden()
+        cb = BrokenTopologyCallback()
+        ctrl = TopologyController(
+            g, grow_op="insert_edge", grow_cooldown=0, min_score_buffer=0,
+            topology_callbacks=[cb],
+        )
+        # Must not raise despite the callback blowing up.
+        ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)
+
+    def test_no_callbacks_is_a_safe_default(self):
+        g, *_ = make_graph_with_hidden()
+        ctrl = TopologyController(g, grow_op="insert_edge", grow_cooldown=0, min_score_buffer=0)
+        ctrl.on_plateau(episode_id=10, state=LoopState.COOLING)  # must not raise

@@ -4,6 +4,7 @@ import copy
 import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
+from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
 
@@ -223,6 +224,42 @@ class TorchSACAgent(BaseAgent):
                 self._log_alpha.fill_(float(np.load(la_path)))
         self._c1_tgt.load_state_dict(self._c1.state_dict())
         self._c2_tgt.load_state_dict(self._c2.state_dict())
+
+    @property
+    def resumable_components(self) -> frozenset:
+        # Deliberately does NOT include "replay_buffer" — PrioritizedReplayBuffer
+        # has no state_dict()/load_state_dict(), so resuming from a saved
+        # checkpoint restarts with an EMPTY buffer. For an off-policy algorithm
+        # this is a real gap (see BaseAgent.is_on_policy docstring): the first
+        # batch_size steps after resume have no replay data to sample from.
+        # Claiming "replay_buffer" here would be dishonest about what's
+        # actually restored — see resume_state.py's module docstring.
+        return frozenset({"model", "optimizer", "rng"})
+
+    def save_full_state(self, path: str) -> None:
+        self.save_weights(path)
+        save_torch_resume_state(
+            path,
+            actor_opt=self._actor_opt,
+            critic_opt=self._critic_opt,
+            alpha_opt=self._alpha_opt,
+        )
+
+    def load_full_state(self, path: str) -> None:
+        self.load_weights(path)
+        load_torch_resume_state(
+            path,
+            actor_opt=self._actor_opt,
+            critic_opt=self._critic_opt,
+            alpha_opt=self._alpha_opt,
+        )
+
+    def get_weights(self) -> dict:
+        return {
+            "actor":   {k: v.detach().clone() for k, v in self._actor.state_dict().items()},
+            "critic1": {k: v.detach().clone() for k, v in self._c1.state_dict().items()},
+            "critic2": {k: v.detach().clone() for k, v in self._c2.state_dict().items()},
+        }
 
     def average_weights(self, paths: list) -> None:
         import torch

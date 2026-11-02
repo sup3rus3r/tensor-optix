@@ -2,6 +2,7 @@ import os
 import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
+from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches
 
@@ -247,6 +248,24 @@ class TorchPPOAgent(BaseAgent):
         self._critic.load_state_dict(
             torch.load(os.path.join(path, "critic.pt"), map_location=self._device)
         )
+
+    @property
+    def resumable_components(self) -> frozenset:
+        return frozenset({"model", "optimizer", "rng"})
+
+    def save_full_state(self, path: str) -> None:
+        self.save_weights(path)
+        save_torch_resume_state(path, optimizer=self._optimizer)
+
+    def load_full_state(self, path: str) -> None:
+        self.load_weights(path)
+        load_torch_resume_state(path, optimizer=self._optimizer)
+
+    def get_weights(self) -> dict:
+        return {
+            "actor":  {k: v.detach().clone() for k, v in self._actor.state_dict().items()},
+            "critic": {k: v.detach().clone() for k, v in self._critic.state_dict().items()},
+        }
 
     def average_weights(self, paths: list) -> None:
         import torch

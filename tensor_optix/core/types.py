@@ -128,3 +128,9 @@ class PolicySnapshot:
     weights_path: str
     episode_id: int
     timestamp: float = field(default_factory=time.time)
+    resumable_components: frozenset = field(default_factory=frozenset)
+    # Which pieces of full training state were captured beyond weights
+    # (e.g. {"optimizer", "rng"}) — see BaseAgent.resumable_components.
+    # Empty (default) means this snapshot is weights-only: loading it
+    # restores the model, not optimizer/scheduler/RNG continuity, so
+    # "resume training" from it can only be approximate, not exact.

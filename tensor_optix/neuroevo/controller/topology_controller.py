@@ -47,6 +47,7 @@ import torch
 from tensor_optix.core.loop_controller import LoopCallback
 from tensor_optix.core.types import EvalMetrics, LoopState, PolicySnapshot
 
+from .topology_callback import TopologyCallback
 from ..graph.neuron_graph import NeuronGraph
 from ..graph.topology_ops import (
     add_free_edge,
@@ -136,6 +137,7 @@ class TopologyController(LoopCallback):
         min_score_buffer: int = 30,
         max_neurons: int = 256,
         min_hidden_neurons: int = 1,
+        topology_callbacks: Optional[List[TopologyCallback]] = None,
     ) -> None:
         # Accept a single NeuronGraph as a convenience shorthand for {"default": graph}
         if isinstance(regions, NeuronGraph):
@@ -190,6 +192,17 @@ class TopologyController(LoopCallback):
         self._grow_count: int = 0
         self._prune_count: int = 0
         self._merge_count: int = 0
+
+        self._topology_callbacks: List[TopologyCallback] = list(topology_callbacks or [])
+
+    def _fire_topology(self, event: str, *args) -> None:
+        """Same per-callback exception isolation as LoopController._fire —
+        a broken observer must never interrupt training."""
+        for cb in self._topology_callbacks:
+            try:
+                getattr(cb, event)(*args)
+            except Exception as e:
+                logger.warning("TopologyCallback %s raised during %s: %s", cb, event, e)
 
     # ------------------------------------------------------------------
     # Convenience constructors
@@ -261,12 +274,12 @@ class TopologyController(LoopCallback):
             if self._grow_signal_check(region_name):
                 self._do_grow(episode_id, region_name, graph)
 
-            self._check_edge_pruning(graph)
+            self._check_edge_pruning(episode_id, region_name, graph)
             self._check_neuron_pruning(episode_id, graph, region_name)
 
         if episode_id % self.merge_check_interval == 0:
-            for graph in self._regions.values():
-                self._check_merge(graph)
+            for region_name, graph in self._regions.items():
+                self._check_merge(episode_id, region_name, graph)
 
     def on_plateau(self, episode_id: int, state: LoopState) -> None:
         self._plateau_count += 1
@@ -379,6 +392,10 @@ class TopologyController(LoopCallback):
         )
         graph.invalidate_compile()
         self._reset_scheduler()
+        self._fire_topology(
+            "on_grow", region_name, episode_id, op, new_nid,
+            graph.n_neurons(), graph.n_edges(),
+        )
 
     def _grow_insert_edge(self, graph: NeuronGraph) -> Optional[str]:
         edges = graph.all_edges()
@@ -438,7 +455,7 @@ class TopologyController(LoopCallback):
     # Prune — edge
     # ------------------------------------------------------------------
 
-    def _check_edge_pruning(self, graph: NeuronGraph) -> None:
+    def _check_edge_pruning(self, episode_id: int, region_name: str, graph: NeuronGraph) -> None:
         to_prune = []
         for edge in graph.all_edges():
             if abs(edge.weight.item()) < self.prune_edge_threshold:
@@ -456,6 +473,10 @@ class TopologyController(LoopCallback):
             prune_edge(graph, eid)
             self._edge_below_threshold.pop(eid, None)
             self._prune_count += 1
+            self._fire_topology(
+                "on_prune_edge", region_name, episode_id, eid,
+                graph.n_neurons(), graph.n_edges(),
+            )
 
         if to_prune:
             graph.invalidate_compile()
@@ -501,6 +522,10 @@ class TopologyController(LoopCallback):
                 self._act_history.pop(nid, None)
                 self._prune_count += 1
                 pruned_any = True
+                self._fire_topology(
+                    "on_prune_neuron", region_name, episode_id, nid,
+                    graph.n_neurons(), graph.n_edges(),
+                )
 
         self._neuron_importance_accum.clear()
         self._accum_steps = 0
@@ -512,7 +537,7 @@ class TopologyController(LoopCallback):
     # Merge
     # ------------------------------------------------------------------
 
-    def _check_merge(self, graph: NeuronGraph) -> None:
+    def _check_merge(self, episode_id: int, region_name: str, graph: NeuronGraph) -> None:
         hidden = graph.hidden_ids
         if len(hidden) < 2:
             return
@@ -552,6 +577,10 @@ class TopologyController(LoopCallback):
                         self._act_history.pop(nid_b, None)
                         self._merge_count += 1
                         graph.invalidate_compile()
+                        self._fire_topology(
+                            "on_merge", region_name, episode_id, nid_a, nid_b,
+                            graph.n_neurons(), graph.n_edges(),
+                        )
                         return
 
     # ------------------------------------------------------------------

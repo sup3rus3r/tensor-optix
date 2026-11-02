@@ -123,3 +123,64 @@ def test_save_load_roundtrip(agent, episode, tmp_path):
     agent.load_weights(path)
     for o, r in zip(original, agent._actor.parameters()):
         assert torch.allclose(o, r.detach())
+
+
+def test_resumable_components_excludes_replay_buffer(agent):
+    # PrioritizedReplayBuffer has no state_dict()/load_state_dict() --
+    # claiming "replay_buffer" here would be dishonest about what's
+    # actually restored. Resuming from a checkpoint restarts with an
+    # empty buffer; this must be visible, not silently implied as full.
+    components = agent.resumable_components
+    assert "replay_buffer" not in components
+    assert components == frozenset({"model", "optimizer", "rng"})
+
+
+def test_save_full_state_restores_actor_optimizer_momentum(agent, episode, tmp_path):
+    for _ in range(3):
+        agent.learn(episode)
+    assert agent._actor_opt.state
+
+    path = str(tmp_path / "sac_full")
+    agent.save_full_state(path)
+
+    original_state = {
+        id(p): {k: v.clone() if torch.is_tensor(v) else v for k, v in s.items()}
+        for p, s in agent._actor_opt.state.items()
+    }
+    for s in agent._actor_opt.state.values():
+        for k, v in s.items():
+            if torch.is_tensor(v):
+                v.zero_()
+
+    agent.load_full_state(path)
+
+    for p, s in agent._actor_opt.state.items():
+        orig = original_state[id(p)]
+        for k, v in s.items():
+            if torch.is_tensor(v):
+                assert torch.allclose(v, orig[k])
+
+
+def test_load_full_state_does_not_restore_replay_buffer_contents(agent, episode, tmp_path):
+    agent.learn(episode)
+    assert len(agent._buffer) > 0
+
+    path = str(tmp_path / "sac_full_buffer")
+    agent.save_full_state(path)
+
+    # Simulate resuming in a fresh process: a brand new agent has an empty
+    # buffer, and load_full_state() must not (and cannot) repopulate it.
+    fresh_actor = build_actor()
+    fresh_c1, fresh_c2 = build_critic(), build_critic()
+    fresh = TorchSACAgent(
+        actor=fresh_actor, critic1=fresh_c1, critic2=fresh_c2,
+        action_dim=ACTION_DIM,
+        actor_optimizer=torch.optim.Adam(fresh_actor.parameters(), lr=3e-4),
+        critic_optimizer=torch.optim.Adam(
+            list(fresh_c1.parameters()) + list(fresh_c2.parameters()), lr=3e-4
+        ),
+        alpha_optimizer=torch.optim.Adam([torch.tensor(0.0, requires_grad=True)], lr=3e-4),
+        hyperparams=agent._hyperparams.copy(),
+    )
+    fresh.load_full_state(path)
+    assert len(fresh._buffer) == 0

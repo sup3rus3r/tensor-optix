@@ -2,6 +2,7 @@ import os
 import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
+from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 
 
@@ -146,6 +147,21 @@ class TorchAgent(BaseAgent):
         import torch
         state = torch.load(os.path.join(path, "model.pt"), map_location=self._device)
         self.model.load_state_dict(state)
+
+    @property
+    def resumable_components(self) -> frozenset:
+        return frozenset({"model", "optimizer", "rng"})
+
+    def save_full_state(self, path: str) -> None:
+        self.save_weights(path)
+        save_torch_resume_state(path, optimizer=self.optimizer)
+
+    def load_full_state(self, path: str) -> None:
+        self.load_weights(path)
+        load_torch_resume_state(path, optimizer=self.optimizer)
+
+    def get_weights(self) -> dict:
+        return {k: v.detach().clone() for k, v in self.model.state_dict().items()}
 
     def teardown(self) -> None:
         """Move model to CPU and free CUDA memory."""

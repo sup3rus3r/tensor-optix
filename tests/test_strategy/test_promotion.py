@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from tensor_optix.ledger import ExperimentState, ExperimentStore
 from tensor_optix.strategy.promotion import PromotionPolicy
 
@@ -165,7 +167,7 @@ def test_promotion_auto_mode_self_approves_when_all_automatable_criteria_pass(tm
         _seed_full_evaluation(store, "c1", "Acrobot-v1", delta=20.0, seed=seed)
 
     policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1,
-                              max_compute_ratio=10.0, approval_mode="auto")
+                              max_compute_ratio=10.0, approval_mode="auto", acknowledge_auto_approve_bypasses_human_review=True)
     verdict = policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
 
     assert verdict.criteria["human_reviewed"] is True
@@ -185,7 +187,7 @@ def test_promotion_auto_mode_does_not_self_approve_when_a_criterion_fails(tmp_pa
         _seed_full_evaluation(store, "c1", "CartPole-v1", delta=20.0, seed=seed)
     # No Acrobot-v1 evaluations at all -- generalizes_held_out must fail.
 
-    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1, approval_mode="auto")
+    policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1, approval_mode="auto", acknowledge_auto_approve_bypasses_human_review=True)
     verdict = policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
 
     assert verdict.approved is False
@@ -210,9 +212,33 @@ def test_promotion_auto_mode_preserves_recorded_scope_when_self_approving(tmp_pa
         _seed_full_evaluation(store, "c1", "Acrobot-v1", delta=20.0, seed=seed)
 
     policy = PromotionPolicy(store, margin=5.0, min_seeds=3, min_held_out_tasks=1,
-                              max_compute_ratio=10.0, approval_mode="auto")
+                              max_compute_ratio=10.0, approval_mode="auto", acknowledge_auto_approve_bypasses_human_review=True)
     policy.evaluate(candidate_id="c1", train_task_envs=["CartPole-v1"], held_out_task_envs=["Acrobot-v1"])
 
     entry = store.get_strategy_registry_entry("c1")
     assert entry.scope["task_envs"] == ["CartPole-v1"]  # scope recorded before approval survives it
+    store.close()
+
+
+def test_auto_mode_without_acknowledgement_is_rejected(tmp_path):
+    # approval_mode="auto" alone must never be enough to self-approve --
+    # a bare string is too easy to pass by accident. The constructor must
+    # refuse until the bypass is explicitly acknowledged.
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    with pytest.raises(ValueError, match="acknowledge_auto_approve_bypasses_human_review"):
+        PromotionPolicy(store, approval_mode="auto")
+    store.close()
+
+
+def test_auto_mode_with_acknowledgement_false_is_still_rejected(tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    with pytest.raises(ValueError, match="acknowledge_auto_approve_bypasses_human_review"):
+        PromotionPolicy(store, approval_mode="auto", acknowledge_auto_approve_bypasses_human_review=False)
+    store.close()
+
+
+def test_human_mode_never_requires_acknowledgement(tmp_path):
+    store = ExperimentStore(str(tmp_path / "ledger.sqlite3"))
+    PromotionPolicy(store)  # default approval_mode="human" -- must not raise
+    PromotionPolicy(store, approval_mode="human")
     store.close()

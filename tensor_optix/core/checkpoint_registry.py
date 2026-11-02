@@ -46,7 +46,13 @@ class CheckpointRegistry:
         weights_path = os.path.join(snapshot_dir, "weights")
         os.makedirs(snapshot_dir, exist_ok=True)
 
-        agent.save_weights(weights_path)
+        # save_full_state() defaults to save_weights() for any agent that
+        # hasn't opted into full resumability. Fall back directly to
+        # save_weights() for duck-typed agents that don't subclass
+        # BaseAgent (and so don't inherit that default) at all.
+        save_fn = getattr(agent, "save_full_state", agent.save_weights)
+        save_fn(weights_path)
+        resumable_components = sorted(getattr(agent, "resumable_components", frozenset()))
 
         snapshot = PolicySnapshot(
             snapshot_id=snapshot_id,
@@ -54,6 +60,7 @@ class CheckpointRegistry:
             hyperparams=hyperparams,
             weights_path=weights_path,
             episode_id=eval_metrics.episode_id,
+            resumable_components=frozenset(resumable_components),
         )
 
         metadata = {
@@ -64,6 +71,7 @@ class CheckpointRegistry:
             "metrics": eval_metrics.metrics,
             "hyperparams": hyperparams.params,
             "weights_path": weights_path,
+            "resumable_components": resumable_components,
         }
         with open(os.path.join(snapshot_dir, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=2)
@@ -141,7 +149,8 @@ class CheckpointRegistry:
             self._best = self._load_snapshot_from_dir(best_entry["snapshot_dir"])
 
         if self._best is not None:
-            agent.load_weights(self._best.weights_path)
+            load_fn = getattr(agent, "load_full_state", agent.load_weights)
+            load_fn(self._best.weights_path)
         return self._best
 
     @property
@@ -202,4 +211,5 @@ class CheckpointRegistry:
             weights_path=data["weights_path"],
             episode_id=data["episode_id"],
             timestamp=data["timestamp"],
+            resumable_components=frozenset(data.get("resumable_components", [])),
         )
