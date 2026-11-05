@@ -151,7 +151,7 @@ class TFSACAgent(BaseAgent):
         gamma             = float(hp.get("gamma",             0.99))
         tau               = float(hp.get("tau",               0.005))
         batch_size        = int(hp.get("batch_size",          256))
-        updates_per_step  = int(hp.get("updates_per_step",    1))
+        updates_per_step  = float(hp.get("updates_per_step",  1))
 
         obs_arr  = np.array(episode_data.observations, dtype=np.float32)
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
@@ -177,7 +177,10 @@ class TFSACAgent(BaseAgent):
                 "buffer_size": len(self._buffer),
             }
 
-        n_updates = T * updates_per_step
+        # Truncate the product, not updates_per_step itself -- truncating
+        # a fractional updates_per_step (e.g. 0.5) to int first would zero
+        # it out regardless of T.
+        n_updates = int(T * updates_per_step)
         total_actor_loss  = 0.0
         total_critic_loss = 0.0
 
@@ -187,8 +190,8 @@ class TFSACAgent(BaseAgent):
             total_critic_loss += cl
 
         return {
-            "actor_loss":  total_actor_loss  / n_updates,
-            "critic_loss": total_critic_loss / n_updates,
+            "actor_loss":  total_actor_loss  / max(n_updates, 1),
+            "critic_loss": total_critic_loss / max(n_updates, 1),
             "alpha":       float(tf.exp(self._log_alpha).numpy()),
             "buffer_size": len(self._buffer),
         }

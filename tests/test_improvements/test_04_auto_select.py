@@ -45,6 +45,7 @@ from gymnasium.spaces import (
 from gymnasium.spaces import utils as gym_utils
 
 from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
+from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
 from tensor_optix.algorithms.torch_sac import TorchSACAgent
 from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
 from tensor_optix.factory import make_agent
@@ -95,6 +96,15 @@ class TestTypeCorrectness:
         agent = make_agent(env, framework="torch", deterministic=True)
         assert isinstance(agent, TorchTD3Agent), \
             f"Expected TorchTD3Agent for Box space + deterministic=True, got {type(agent).__name__}"
+
+    def test_continuous_ppo_returns_gaussian_ppo_not_sac(self):
+        """make_agent("PPO", env) on a Box action space must build a
+        TorchGaussianPPOAgent, not silently fall through to SAC."""
+        env   = _continuous_env()
+        agent = make_agent("PPO", env, framework="torch")
+        assert isinstance(agent, TorchGaussianPPOAgent), \
+            f"Expected TorchGaussianPPOAgent for Box space + algorithm='PPO', got {type(agent).__name__}"
+        assert not isinstance(agent, TorchSACAgent)
 
     def test_multidiscrete_raises(self):
         env = FakeEnv(_flat_box(8), MultiDiscrete([3, 4]))

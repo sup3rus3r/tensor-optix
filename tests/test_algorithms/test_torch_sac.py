@@ -91,6 +91,36 @@ def test_learn_returns_diagnostics(agent, episode):
     assert "alpha" in diag
 
 
+def test_learn_with_fractional_updates_per_step_does_not_crash(episode):
+    """updates_per_step < 1 (e.g. 0.5, meaning 'update every other step') must
+    not be truncated to 0 before scaling by episode length T."""
+    actor   = build_actor()
+    c1      = build_critic()
+    c2      = build_critic()
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    hp = HyperparamSet(params={
+        "learning_rate":    3e-4,
+        "gamma":            0.99,
+        "tau":              0.005,
+        "batch_size":       16,
+        "updates_per_step": 0.5,
+        "replay_capacity":  1000,
+    }, episode_id=0)
+    frac_agent = TorchSACAgent(
+        actor=actor, critic1=c1, critic2=c2,
+        action_dim=ACTION_DIM,
+        actor_optimizer=torch.optim.Adam(actor.parameters(), lr=3e-4),
+        critic_optimizer=torch.optim.Adam(
+            list(c1.parameters()) + list(c2.parameters()), lr=3e-4
+        ),
+        alpha_optimizer=torch.optim.Adam([log_alpha], lr=3e-4),
+        hyperparams=hp,
+    )
+
+    diag = frac_agent.learn(episode)
+    assert diag["critic_loss"] is not None
+
+
 def test_learn_no_update_when_buffer_small(agent):
     tiny = EpisodeData(
         observations=np.random.rand(3, OBS_DIM).astype(np.float32),

@@ -48,6 +48,14 @@ class VectorBatchPipeline(BasePipeline):
     Note: each env resets automatically when it terminates/truncates. Episode
     boundaries are tracked per-env and merged into the flat yielded arrays.
 
+    GAE correctness: the yielded EpisodeData.final_obs is a list of n_envs
+    entries (one per env's observation after the window's last step, None
+    for an env whose last step was terminal) rather than a single array, and
+    EpisodeData.metadata["n_envs"] records the env count. PPO agents detect
+    this and pass n_envs through to compute_gae(), which resets its
+    recurrence at each env's own stride instead of treating neighbouring
+    entries from different envs as consecutive timesteps of one trajectory.
+
     Warning — gym.Env method name collision:
         gymnasium's VectorEnv wrapper exposes close(), step(), reset(),
         render(), and seed() as its own methods. If your env class defines
@@ -143,6 +151,16 @@ class VectorBatchPipeline(BasePipeline):
 
                 obs_vec = next_obs_vec
 
+            # One final-obs entry per env: the observation immediately after
+            # the window's last step for that env. None per-env when that
+            # env's last step was terminal (dones[-n_envs + i] True) -- there
+            # is no post-window state to bootstrap for an env that just ended.
+            final_obs_vec = [
+                None if (all_terminated[-self._n_envs + i] or all_truncated[-self._n_envs + i])
+                else obs_vec[i]
+                for i in range(self._n_envs)
+            ]
+
             yield EpisodeData(
                 observations=np.array(all_obs),
                 actions=np.array(all_actions),
@@ -151,6 +169,8 @@ class VectorBatchPipeline(BasePipeline):
                 truncated=all_truncated,
                 infos=all_infos,
                 episode_id=self._window_counter,
+                final_obs=final_obs_vec,
+                metadata={"n_envs": self._n_envs},
             )
             self._window_counter += 1
 

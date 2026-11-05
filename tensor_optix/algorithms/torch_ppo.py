@@ -4,7 +4,7 @@ import numpy as np
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches
+from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
 
 
 class TorchPPOAgent(BaseAgent):
@@ -127,17 +127,19 @@ class TorchPPOAgent(BaseAgent):
                     self._reward_normalizer.reset()
             rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
 
-        # Bootstrap: if the window ended mid-episode, V(s_T) from the critic
+        # Bootstrap: if a window ended mid-episode, V(s_T) from the critic
         # corrects the TD target at the last step. Zero when terminal.
-        last_value = 0.0
-        if not dones[-1] and episode_data.final_obs is not None:
+        # With VectorBatchPipeline (final_obs is a list), this resolves one
+        # bootstrap value per env, and n_envs tells compute_gae how the
+        # rewards/values array is interleaved across envs.
+        def _critic_value(obs):
             with torch.no_grad():
-                final_obs_t = torch.as_tensor(
-                    np.atleast_2d(episode_data.final_obs), dtype=torch.float32
-                ).to(self._device)
-                last_value = float(self._critic(final_obs_t).squeeze().item())
+                obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(self._device)
+                return float(self._critic(obs_t).squeeze().item())
 
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
+        last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
+
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value, n_envs=n_envs)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

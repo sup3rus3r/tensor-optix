@@ -174,7 +174,7 @@ class TorchTD3Agent(BaseAgent):
         gamma            = float(hp.get("gamma",            0.99))
         tau              = float(hp.get("tau",              0.005))
         batch_size       = int(hp.get("batch_size",         256))
-        updates_per_step = int(hp.get("updates_per_step",   1))
+        updates_per_step = float(hp.get("updates_per_step", 1))
         policy_delay     = int(hp.get("policy_delay",       2))
 
         obs_arr  = np.array(episode_data.observations, dtype=np.float32)
@@ -198,7 +198,10 @@ class TorchTD3Agent(BaseAgent):
                 "policy_update": 0,
             }
 
-        n_updates = T * updates_per_step
+        # Truncate the product, not updates_per_step itself -- truncating
+        # a fractional updates_per_step (e.g. 0.5, meaning "update every
+        # other step") to int first would zero it out regardless of T.
+        n_updates = int(T * updates_per_step)
         total_al = 0.0
         total_cl = 0.0
         n_actor_updates = 0
@@ -214,7 +217,7 @@ class TorchTD3Agent(BaseAgent):
 
         return {
             "actor_loss":    total_al / max(n_actor_updates, 1),
-            "critic_loss":   total_cl / n_updates,
+            "critic_loss":   total_cl / max(n_updates, 1),
             "buffer_size":   len(self._buffer),
             "policy_update": int(n_actor_updates > 0),
         }

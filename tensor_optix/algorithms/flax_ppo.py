@@ -38,7 +38,7 @@ import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches
+from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
 
 
 # ---------------------------------------------------------------------------
@@ -195,15 +195,14 @@ class FlaxPPOAgent(BaseAgent):
         dones      = episode_data.dones
 
         # Bootstrap value when trajectory ends mid-episode.
-        last_value = 0.0
-        if not dones[-1] and episode_data.final_obs is not None:
-            obs_final  = jnp.array(
-                np.atleast_2d(episode_data.final_obs), dtype=jnp.float32
-            )
-            last_value = float(self._model.critic(obs_final)[0])
+        def _critic_value(obs):
+            obs_final = jnp.array(np.atleast_2d(obs), dtype=jnp.float32)
+            return float(self._model.critic(obs_final)[0])
+
+        last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
 
         advantages, returns = compute_gae(
-            rewards, val_arr, dones, gamma, gae_lambda, last_value
+            rewards, val_arr, dones, gamma, gae_lambda, last_value, n_envs=n_envs
         )
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)

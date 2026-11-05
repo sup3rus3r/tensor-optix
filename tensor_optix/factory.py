@@ -9,6 +9,7 @@ enforces it:
                        (categorical π(a|s) = softmax(logits))
     Box(shape)      →  TorchSACAgent / TFSACAgent          [default]
                        TorchTD3Agent / TFTDDAgent           [deterministic=True]
+                       TorchGaussianPPOAgent / TFGaussianPPOAgent  [algorithm="PPO"]
     MultiDiscrete   →  NotImplementedError
     Dict / Tuple    →  NotImplementedError
 
@@ -215,6 +216,8 @@ def make_agent(
         act_dim = int(act_space.shape[0])
         if deterministic or algorithm == "TD3":
             return _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
+        elif algorithm == "PPO":
+            return _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
         else:
             return _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
 
@@ -458,6 +461,72 @@ def _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp):
         critic_optimizer=tf.keras.optimizers.Adam(lr),
         alpha_optimizer=tf.keras.optimizers.Adam(lr),
         hyperparams=hp,
+    )
+
+
+def _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
+    """Build a Gaussian PPO agent for continuous action spaces."""
+    hp = hyperparams or HyperparamSet(params={
+        "learning_rate":  3e-4,
+        "clip_ratio":     0.2,
+        "entropy_coef":   0.01,
+        "vf_coef":        0.5,
+        "gamma":          0.99,
+        "gae_lambda":     0.95,
+        "n_epochs":       10,
+        "minibatch_size": 64,
+        "max_grad_norm":  0.5,
+    }, episode_id=0)
+
+    if framework == "tf":
+        return _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp)
+    else:
+        return _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device)
+
+
+def _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device):
+    import torch
+    import torch.nn as nn
+    from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
+
+    def _mlp(in_dim, out_dim, activation=nn.Tanh):
+        layers = []
+        prev = in_dim
+        for h in hidden_sizes:
+            layers += [nn.Linear(prev, h), activation()]
+            prev = h
+        layers.append(nn.Linear(prev, out_dim))
+        return nn.Sequential(*layers)
+
+    actor  = _mlp(obs_dim, act_dim * 2)  # mean || log_std
+    critic = _mlp(obs_dim, 1)
+    optimizer = torch.optim.Adam(
+        list(actor.parameters()) + list(critic.parameters()),
+        lr=float(hp.params.get("learning_rate", 3e-4)),
+    )
+    return TorchGaussianPPOAgent(
+        actor=actor, critic=critic, optimizer=optimizer,
+        action_dim=act_dim, hyperparams=hp, device=device,
+    )
+
+
+def _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp):
+    import tensorflow as tf
+    from tensor_optix.algorithms.tf_ppo_continuous import TFGaussianPPOAgent
+
+    def _mlp(out_dim, activation="tanh"):
+        layers = [tf.keras.layers.Input(shape=(obs_dim,))]
+        for h in hidden_sizes:
+            layers.append(tf.keras.layers.Dense(h, activation=activation))
+        layers.append(tf.keras.layers.Dense(out_dim))
+        return tf.keras.Sequential(layers)
+
+    actor  = _mlp(act_dim * 2)
+    critic = _mlp(1)
+    optimizer = tf.keras.optimizers.Adam(float(hp.params.get("learning_rate", 3e-4)))
+    return TFGaussianPPOAgent(
+        actor=actor, critic=critic, optimizer=optimizer,
+        action_dim=act_dim, hyperparams=hp,
     )
 
 

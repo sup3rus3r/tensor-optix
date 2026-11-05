@@ -3,7 +3,7 @@ import numpy as np
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches
+from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
 
 LOG_STD_MIN = -5
 LOG_STD_MAX = 2
@@ -206,15 +206,14 @@ class TorchGaussianPPOAgent(BaseAgent):
                     self._reward_normalizer.reset()
             rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
 
-        last_value = 0.0
-        if not dones[-1] and episode_data.final_obs is not None:
+        def _critic_value(obs):
             with torch.no_grad():
-                final_obs_t = torch.as_tensor(
-                    np.atleast_2d(episode_data.final_obs), dtype=torch.float32
-                ).to(self._device)
-                last_value = float(self._critic(final_obs_t).squeeze().item())
+                obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(self._device)
+                return float(self._critic(obs_t).squeeze().item())
 
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
+        last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
+
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value, n_envs=n_envs)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

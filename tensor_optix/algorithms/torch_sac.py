@@ -146,7 +146,7 @@ class TorchSACAgent(BaseAgent):
         gamma            = float(hp.get("gamma",            0.99))
         tau              = float(hp.get("tau",              0.005))
         batch_size       = int(hp.get("batch_size",         256))
-        updates_per_step = int(hp.get("updates_per_step",  1))
+        updates_per_step = float(hp.get("updates_per_step", 1))
 
         obs_arr  = np.array(episode_data.observations, dtype=np.float32)
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
@@ -166,7 +166,10 @@ class TorchSACAgent(BaseAgent):
                 "buffer_size": len(self._buffer),
             }
 
-        n_updates = T * updates_per_step
+        # Truncate the product, not updates_per_step itself -- truncating
+        # a fractional updates_per_step (e.g. 0.5) to int first would zero
+        # it out regardless of T.
+        n_updates = int(T * updates_per_step)
         total_al = 0.0
         total_cl = 0.0
         for _ in range(n_updates):
@@ -175,8 +178,8 @@ class TorchSACAgent(BaseAgent):
             total_cl += cl
 
         return {
-            "actor_loss":  total_al / n_updates,
-            "critic_loss": total_cl / n_updates,
+            "actor_loss":  total_al / max(n_updates, 1),
+            "critic_loss": total_cl / max(n_updates, 1),
             "alpha":       float(self._log_alpha.exp().item()),
             "buffer_size": len(self._buffer),
         }
