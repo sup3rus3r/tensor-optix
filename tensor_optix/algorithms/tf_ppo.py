@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
+from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf
 
 
 class TFPPOAgent(BaseAgent):
@@ -89,7 +90,7 @@ class TFPPOAgent(BaseAgent):
         Sample action from π(·|obs), cache log_prob and V(obs) for learn().
         Returns a Python int (action index).
         """
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
 
         logits = self._actor(obs, training=False)                 # [1, n_actions]
         log_probs_all = tf.nn.log_softmax(logits)                 # [1, n_actions]
@@ -98,7 +99,9 @@ class TFPPOAgent(BaseAgent):
 
         value = float(tf.squeeze(self._critic(obs, training=False)).numpy())
 
-        self._cache_obs.append(np.squeeze(observation))
+        # Cache the raw observation -- learn() re-batches via
+        # to_batch_numpy(), which handles both array and dict observations.
+        self._cache_obs.append(np.squeeze(observation) if not isinstance(observation, dict) else observation)
         self._cache_log_probs.append(log_prob)
         self._cache_values.append(value)
 
@@ -134,7 +137,7 @@ class TFPPOAgent(BaseAgent):
                 f"Cache underflow: expected >= {T} entries but got {len(self._cache_obs)}. "
                 "Ensure act() is called exactly once per environment step."
             )
-        obs_arr      = np.array(self._cache_obs[:T],      dtype=np.float32)
+        obs_arr      = to_batch_numpy(self._cache_obs[:T])
         old_lp_arr   = np.array(self._cache_log_probs[:T], dtype=np.float32)
         values_arr   = np.array(self._cache_values[:T],    dtype=np.float32)
         rewards      = list(episode_data.rewards)
@@ -155,7 +158,7 @@ class TFPPOAgent(BaseAgent):
         # bootstrap value per env, and n_envs tells compute_gae how the
         # rewards/values array is interleaved across envs.
         def _critic_value(obs):
-            obs_t = tf.cast(np.atleast_2d(obs), tf.float32)
+            obs_t = to_tf_batch(obs)
             return float(tf.squeeze(self._critic(obs_t, training=False)).numpy())
 
         last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
@@ -183,7 +186,7 @@ class TFPPOAgent(BaseAgent):
 
         for _ in range(n_epochs):
             for batch in make_minibatches(rollout, mb_size):
-                obs_b   = tf.cast(batch["obs"],        tf.float32)
+                obs_b   = already_batched_to_tf(batch["obs"])
                 act_b   = tf.cast(batch["actions"],    tf.int32)
                 old_b   = tf.cast(batch["old_lp"],     tf.float32)
                 adv_b   = tf.cast(batch["advantages"], tf.float32)
@@ -248,7 +251,7 @@ class TFPPOAgent(BaseAgent):
         Used by PolicyManager.ensemble_action() to average distributions
         across ensemble members rather than averaging sampled actions.
         """
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
         logits = self._actor(obs, training=False)
         return tf.nn.softmax(logits)[0].numpy()
 

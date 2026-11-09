@@ -78,6 +78,7 @@ from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
 from tensor_optix.core.noisy_linear import NoisyLinear
+from tensor_optix.core.obs_utils import to_batch_numpy, to_torch_batch, batch_index, already_batched_to_torch
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +240,7 @@ class TorchRainbowDQNAgent(BaseAgent):
         At eval time (model.eval()), σ is ignored and only μ weights are used.
         """
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation),
-                              dtype=torch.float32).to(self._device)
+        obs = to_torch_batch(observation, self._device)
         with torch.no_grad():
             log_probs = self._q(obs)                        # (1, n_actions, n_atoms)
             q_mean    = (log_probs.exp() * self._support).sum(dim=-1)  # (1, n_actions)
@@ -259,15 +259,19 @@ class TorchRainbowDQNAgent(BaseAgent):
         batch_size         = int(hp.get("batch_size",           32))
         target_update_freq = int(hp.get("target_update_freq",   200))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        # Same single-network constraint as DQN (see torch_dqn.py's learn()
+        # comment): q_network sees raw observations in both act() and the
+        # distributional Bellman update below, so the buffer stores the raw
+        # (possibly dict) observation rather than a pre-encoded vector.
+        obs_arr  = to_batch_numpy(list(episode_data.observations))
         act_arr  = episode_data.actions
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
         T = len(rew_arr)
 
         for t in range(T - 1):
-            self._buffer.push(obs_arr[t], int(act_arr[t]), float(rew_arr[t]),
-                              obs_arr[t + 1], bool(done_arr[t]))
+            self._buffer.push(batch_index(obs_arr, t), int(act_arr[t]), float(rew_arr[t]),
+                              batch_index(obs_arr, t + 1), bool(done_arr[t]))
         self._buffer.flush_episode()
 
         self._learn_calls += 1
@@ -282,10 +286,10 @@ class TorchRainbowDQNAgent(BaseAgent):
             obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = \
                 self._buffer.sample(batch_size)
 
-            obs_b   = torch.as_tensor(obs_b,   dtype=torch.float32).to(self._device)
+            obs_b   = already_batched_to_torch(obs_b, self._device)
             act_b   = torch.as_tensor(act_b,   dtype=torch.long).to(self._device)
             rew_b   = torch.as_tensor(rew_b,   dtype=torch.float32).to(self._device)
-            next_b  = torch.as_tensor(next_b,  dtype=torch.float32).to(self._device)
+            next_b  = already_batched_to_torch(next_b, self._device)
             done_b  = torch.as_tensor(done_b,  dtype=torch.float32).to(self._device)
             weights = torch.as_tensor(weights, dtype=torch.float32).to(self._device)
             gammas_n = torch.as_tensor(

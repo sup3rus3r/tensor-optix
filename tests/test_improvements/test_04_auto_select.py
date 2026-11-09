@@ -21,7 +21,10 @@ Mathematical invariants being verified:
    We verify this type mismatch directly (no training required).
 
 3. OBSERVATION SPACE VALIDATION
-   Non-flat (image) or non-Box observation spaces raise NotImplementedError.
+   Flat (1-D Box), image (3-D Box, H,W,C), and Dict observation spaces are
+   all supported via an auto-selected encoder (see tensor_optix.encoders
+   and test_09_obs_encoders.py). Other observation space types (2-D Box,
+   MultiDiscrete, Tuple, MultiBinary) still raise NotImplementedError.
 
 4. DETERMINISTIC FLAG
    make_agent(env, deterministic=True) → TD3
@@ -128,32 +131,39 @@ class TestTypeCorrectness:
 
 class TestObservationSpaceValidation:
 
-    def test_image_obs_raises(self):
-        """3-D (image) observation space is not supported."""
+    def test_image_obs_builds_agent_via_cnn_encoder(self):
+        """3-D (image, H,W,C) observation space is supported via an
+        auto-selected CNN encoder -- see tests/test_improvements/
+        test_09_obs_encoders.py for full build+act+learn coverage. This
+        test only pins that make_agent() no longer rejects it."""
         env = FakeEnv(
             Box(low=0, high=255, shape=(84, 84, 3), dtype=np.uint8),
             Discrete(4),
         )
-        with pytest.raises(NotImplementedError, match="1-D"):
-            make_agent(env)
+        agent = make_agent(env, framework="torch")
+        assert isinstance(agent, TorchPPOAgent)
 
     def test_2d_obs_raises(self):
-        """2-D matrix observation is not supported."""
+        """2-D matrix observation (not a valid H,W,C image, no channel
+        axis) is still not supported -- only rank-1 (flat) and rank-3
+        (image) Box shapes have a defined encoder."""
         env = FakeEnv(
             Box(low=-np.inf, high=np.inf, shape=(10, 10), dtype=np.float32),
             Discrete(4),
         )
-        with pytest.raises(NotImplementedError, match="1-D"):
+        with pytest.raises(NotImplementedError):
             make_agent(env)
 
-    def test_dict_obs_raises(self):
-        """Dict observation space is not supported."""
+    def test_dict_obs_builds_agent_via_dict_encoder(self):
+        """Dict observation space is supported via an auto-selected
+        per-key encoder -- see test_09_obs_encoders.py for full coverage.
+        This test only pins that make_agent() no longer rejects it."""
         env = FakeEnv(
             GymDict({"obs": _flat_box(8), "goal": _flat_box(3)}),
             Discrete(4),
         )
-        with pytest.raises(NotImplementedError, match="Box"):
-            make_agent(env)
+        agent = make_agent(env, framework="torch")
+        assert isinstance(agent, TorchPPOAgent)
 
 
 # ---------------------------------------------------------------------------

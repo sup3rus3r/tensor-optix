@@ -6,6 +6,7 @@ import numpy as np
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_batch_numpy, to_torch_batch, batch_index, already_batched_to_torch
 
 
 class TorchDQNAgent(BaseAgent):
@@ -100,7 +101,7 @@ class TorchDQNAgent(BaseAgent):
         epsilon = float(self._hyperparams.params.get("epsilon", 0.1))
         if np.random.random() < epsilon:
             return np.random.randint(self._n_actions)
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
+        obs = to_torch_batch(observation, self._device)
         with torch.no_grad():
             q = self._q(obs)
         return int(q.argmax(dim=-1).item())
@@ -116,15 +117,22 @@ class TorchDQNAgent(BaseAgent):
         epsilon_decay      = float(hp.get("epsilon_decay",      0.995))
         epsilon_min        = float(hp.get("epsilon_min",        0.05))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        # DQN pushes the RAW observation (not pre-encoded) into the replay
+        # buffer, unlike SAC/TD3 -- q_network is the only network and must
+        # see the same raw-obs shape in both act() and the Bellman update
+        # below, so its own EncodedHead encoder runs on every call instead
+        # of being bypassed via a pre-encoded buffer (see
+        # tensor_optix.encoders' module docstring). PrioritizedReplayBuffer
+        # already supports storing dict observations for exactly this case.
+        obs_arr  = to_batch_numpy(list(episode_data.observations))
         act_arr  = episode_data.actions
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
         T = len(rew_arr)
 
         for t in range(T - 1):
-            self._buffer.push(obs_arr[t], int(act_arr[t]), float(rew_arr[t]),
-                              obs_arr[t + 1], bool(done_arr[t]))
+            self._buffer.push(batch_index(obs_arr, t), int(act_arr[t]), float(rew_arr[t]),
+                              batch_index(obs_arr, t + 1), bool(done_arr[t]))
         self._buffer.flush_episode()
 
         self._learn_calls += 1
@@ -149,10 +157,10 @@ class TorchDQNAgent(BaseAgent):
         for _ in range(n_updates):
             obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
 
-            obs_b   = torch.as_tensor(obs_b,    dtype=torch.float32).to(self._device)
+            obs_b   = already_batched_to_torch(obs_b, self._device)
             act_b   = torch.as_tensor(act_b,    dtype=torch.long).to(self._device)
             rew_b   = torch.as_tensor(rew_b,    dtype=torch.float32).to(self._device)
-            next_b  = torch.as_tensor(next_b,   dtype=torch.float32).to(self._device)
+            next_b  = already_batched_to_torch(next_b, self._device)
             done_b  = torch.as_tensor(done_b,   dtype=torch.float32).to(self._device)
             weights = torch.as_tensor(weights,  dtype=torch.float32).to(self._device)
             gammas_n = torch.as_tensor(

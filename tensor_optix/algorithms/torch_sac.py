@@ -7,6 +7,7 @@ from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_torch_batch, already_batched_to_torch
 
 
 class TorchSACAgent(BaseAgent):
@@ -134,9 +135,22 @@ class TorchSACAgent(BaseAgent):
     def is_on_policy(self) -> bool:
         return False  # replay buffer — rollback without buffer clear is harmful
 
+    def _encode(self, obs_tensor):
+        """Run the actor's encoder alone, if it has one (EncodedHead for
+        non-flat observations); identity pass-through for the flat-Box
+        case, exactly matching today's behavior. Used to pre-encode
+        observations before they enter the replay buffer -- see
+        tensor_optix.encoders' module docstring for why SAC/TD3's critic
+        only ever sees already-encoded flat vectors, never raw observations."""
+        encoder = getattr(self._actor, "encoder", None)
+        if encoder is None:
+            return obs_tensor
+        with self._torch.no_grad():
+            return encoder(obs_tensor)
+
     def act(self, observation) -> np.ndarray:
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
+        obs = to_torch_batch(observation, self._device)
         with torch.no_grad():
             action, _ = self._sample_action(obs)
         return action.cpu().numpy()[0]
@@ -148,7 +162,8 @@ class TorchSACAgent(BaseAgent):
         batch_size       = int(hp.get("batch_size",         256))
         updates_per_step = float(hp.get("updates_per_step", 1))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        obs_batched = to_torch_batch(list(episode_data.observations), self._device)
+        obs_arr  = self._encode(obs_batched).cpu().numpy()
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -355,9 +370,27 @@ class TorchSACAgent(BaseAgent):
             module.cpu()
         torch.cuda.empty_cache()
 
-    def _sample_action(self, obs):
+    def _actor_head(self):
+        """The actor's downstream head only, skipping its encoder (if any).
+        Buffer-sampled data (obs_b/next_b in _update_step) is already a
+        flat, pre-encoded vector by the time it reaches here -- see
+        tensor_optix.encoders' module docstring -- so running it back
+        through the actor's encoder (EncodedHead's full forward) a second
+        time would be wrong (and, for a CNN/Dict encoder, shape-incompatible
+        outright). For the flat-Box case (self._actor has no .head
+        attribute, it's a plain nn.Sequential), the actor itself IS the
+        head -- this falls back to calling it directly, identical to
+        today's behavior."""
+        return getattr(self._actor, "head", self._actor)
+
+    def _sample_action(self, obs, pre_encoded: bool = False):
+        """pre_encoded=True: obs is already a flat, encoder-output vector
+        (buffer-sampled data) -- route through the actor's head only.
+        pre_encoded=False (default): obs is a raw observation (from act())
+        -- route through the full actor (encoder + head)."""
         import torch
-        out     = self._actor(obs)
+        net = self._actor_head() if pre_encoded else self._actor
+        out     = net(obs)
         mean, log_std = out.chunk(2, dim=-1)
         log_std = log_std.clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
         std     = log_std.exp()
@@ -377,10 +410,10 @@ class TorchSACAgent(BaseAgent):
         import torch.nn.functional as F
 
         obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
-        obs_b   = torch.as_tensor(obs_b,    dtype=torch.float32).to(self._device)
+        obs_b   = already_batched_to_torch(obs_b, self._device)
         act_b   = torch.as_tensor(act_b,    dtype=torch.float32).to(self._device)
         rew_b   = torch.as_tensor(rew_b,    dtype=torch.float32).to(self._device)
-        next_b  = torch.as_tensor(next_b,   dtype=torch.float32).to(self._device)
+        next_b  = already_batched_to_torch(next_b, self._device)
         done_b  = torch.as_tensor(done_b,   dtype=torch.float32).to(self._device)
         weights = torch.as_tensor(weights,  dtype=torch.float32).to(self._device)
         gammas_n = torch.as_tensor(
@@ -390,7 +423,7 @@ class TorchSACAgent(BaseAgent):
 
         # Critic update
         with torch.no_grad():
-            na, nlp = self._sample_action(next_b)
+            na, nlp = self._sample_action(next_b, pre_encoded=True)
             ci_next = torch.cat([next_b, na], dim=-1)
             q1t = self._c1_tgt(ci_next).squeeze(-1)
             q2t = self._c2_tgt(ci_next).squeeze(-1)
@@ -413,7 +446,7 @@ class TorchSACAgent(BaseAgent):
         self._critic_opt.step()
 
         # Actor update
-        new_a, new_lp = self._sample_action(obs_b)
+        new_a, new_lp = self._sample_action(obs_b, pre_encoded=True)
         ci_new = torch.cat([obs_b, new_a], dim=-1)
         q1n = self._c1(ci_new).squeeze(-1)
         q2n = self._c2(ci_new).squeeze(-1)

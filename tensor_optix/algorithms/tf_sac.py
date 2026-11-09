@@ -7,6 +7,7 @@ import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf
 
 
 class TFSACAgent(BaseAgent):
@@ -132,14 +133,28 @@ class TFSACAgent(BaseAgent):
     def is_on_policy(self) -> bool:
         return False  # replay buffer — rollback without buffer clear is harmful
 
+    def _encode(self, observation_batched):
+        """Run the actor's encoder alone, if it has one (for non-flat
+        observations); identity pass-through for the flat-Box case,
+        exactly matching today's behavior. Used to pre-encode observations
+        before they enter the replay buffer -- see tensor_optix.encoders'
+        module docstring for why SAC's critic only ever sees already-
+        encoded flat vectors, never raw observations. self._actor.encoder
+        is the standalone encoder Model, attached by the factory alongside
+        head_model (see _make_sac_tf), so this never has to split the
+        composed actor Model's graph apart at call time."""
+        encoder = getattr(self._actor, "encoder", None)
+        if encoder is None:
+            return observation_batched
+        return encoder(observation_batched, training=False)
+
     def act(self, observation) -> np.ndarray:
         """
         Sample action from the squashed Gaussian policy.
         Returns np.ndarray of shape [action_dim], values in (-1, 1).
         """
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
         action, _ = self._sample_action(obs, training=False)
-        self._last_obs = np.array(observation, dtype=np.float32)
         return action.numpy()[0]
 
     def learn(self, episode_data: EpisodeData) -> dict:
@@ -153,7 +168,8 @@ class TFSACAgent(BaseAgent):
         batch_size        = int(hp.get("batch_size",          256))
         updates_per_step  = float(hp.get("updates_per_step",  1))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        obs_batched = to_tf_batch(list(episode_data.observations))
+        obs_arr  = self._encode(obs_batched).numpy()
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -267,15 +283,25 @@ class TFSACAgent(BaseAgent):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _sample_action(self, obs_tf, training: bool):
+    def _sample_action(self, obs_tf, training: bool, pre_encoded: bool = False):
         """
         Reparameterized squashed Gaussian sample.
+
+        pre_encoded=True: obs_tf is already a flat, encoder-output vector
+        (buffer-sampled data) -- route through the actor's head_model only,
+        skipping its encoder a second time (see tensor_optix.encoders'
+        module docstring). pre_encoded=False (default): obs_tf is a raw
+        observation (from act()) -- route through the full composed actor
+        (encoder + head). For the flat-Box case (actor has no head_model
+        attribute, it IS the head) this falls back to calling it directly,
+        identical to today's behavior.
 
         Returns:
             action:   tanh(mean + std * ε),  shape [batch, action_dim]
             log_prob: log π(action|obs) with tanh correction, shape [batch]
         """
-        out = self._actor(obs_tf, training=training)        # [batch, 2*action_dim]
+        net = getattr(self._actor, "head_model", self._actor) if pre_encoded else self._actor
+        out = net(obs_tf, training=training)        # [batch, 2*action_dim]
         mean, log_std = tf.split(out, 2, axis=-1)
         log_std = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = tf.exp(log_std)
@@ -306,18 +332,23 @@ class TFSACAgent(BaseAgent):
     def _update_step(self, batch_size: int, gamma: float, tau: float):
         """One full SAC gradient step (critic + actor + alpha + soft update)."""
         obs_b, act_b, rew_b, next_obs_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
-        obs_b      = tf.cast(obs_b,      tf.float32)
+        obs_b      = already_batched_to_tf(obs_b)
         act_b      = tf.cast(act_b,      tf.float32)
         rew_b      = tf.cast(rew_b,      tf.float32)
-        next_obs_b = tf.cast(next_obs_b, tf.float32)
+        next_obs_b = already_batched_to_tf(next_obs_b)
         done_b     = tf.cast(done_b,     tf.float32)
         weights    = tf.cast(weights,    tf.float32)
         gammas_n   = tf.cast(gamma ** n_steps.astype(np.float32), tf.float32)
         alpha      = tf.exp(self._log_alpha)
 
+        # Buffer-sampled obs_b/next_obs_b are already flat, pre-encoded
+        # vectors -- actor updates below train only the head's variables,
+        # never the (frozen, collection-time-only) encoder's.
+        actor_trainable_vars = getattr(self._actor, "head_model", self._actor).trainable_variables
+
         # ---- Critic update ----
         with tf.GradientTape() as tape:
-            next_a, next_lp = self._sample_action(next_obs_b, training=False)
+            next_a, next_lp = self._sample_action(next_obs_b, training=False, pre_encoded=True)
             ci_next = self._critic_input(next_obs_b, next_a)
             q1_tgt  = tf.squeeze(self._c1_tgt(ci_next, training=False), -1)
             q2_tgt  = tf.squeeze(self._c2_tgt(ci_next, training=False), -1)
@@ -339,19 +370,19 @@ class TFSACAgent(BaseAgent):
 
         # ---- Actor update ----
         with tf.GradientTape() as tape:
-            new_a, new_lp = self._sample_action(obs_b, training=True)
+            new_a, new_lp = self._sample_action(obs_b, training=True, pre_encoded=True)
             ci_new = self._critic_input(obs_b, new_a)
             q1_new = tf.squeeze(self._c1(ci_new, training=False), -1)
             q2_new = tf.squeeze(self._c2(ci_new, training=False), -1)
             a_loss = tf.reduce_mean(alpha * new_lp - tf.minimum(q1_new, q2_new))
 
-        a_grads = tape.gradient(a_loss, self._actor.trainable_variables)
+        a_grads = tape.gradient(a_loss, actor_trainable_vars)
         a_grads, _ = tf.clip_by_global_norm(a_grads, 10.0)
-        self._actor_opt.apply_gradients(zip(a_grads, self._actor.trainable_variables))
+        self._actor_opt.apply_gradients(zip(a_grads, actor_trainable_vars))
 
         # ---- Alpha (entropy temperature) update ----
         with tf.GradientTape() as tape:
-            _, new_lp2 = self._sample_action(obs_b, training=False)
+            _, new_lp2 = self._sample_action(obs_b, training=False, pre_encoded=True)
             alpha_loss = -tf.reduce_mean(
                 self._log_alpha * tf.stop_gradient(new_lp2 + self._target_entropy)
             )

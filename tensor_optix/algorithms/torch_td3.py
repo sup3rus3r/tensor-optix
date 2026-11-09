@@ -87,6 +87,7 @@ import numpy as np
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_torch_batch, already_batched_to_torch
 
 
 class TorchTD3Agent(BaseAgent):
@@ -156,15 +157,26 @@ class TorchTD3Agent(BaseAgent):
     def is_on_policy(self) -> bool:
         return False  # replay buffer — rollback without buffer clear is harmful
 
+    def _encode(self, obs_tensor):
+        """Run the actor's encoder alone, if it has one (EncodedHead for
+        non-flat observations); identity pass-through for the flat-Box
+        case, exactly matching today's behavior. Used to pre-encode
+        observations before they enter the replay buffer -- see
+        tensor_optix.encoders' module docstring for why TD3's critic only
+        ever sees already-encoded flat vectors, never raw observations."""
+        encoder = getattr(self._actor, "encoder", None)
+        if encoder is None:
+            return obs_tensor
+        with self._torch.no_grad():
+            return encoder(obs_tensor)
+
     def act(self, observation) -> np.ndarray:
         """
         Deterministic action: a = π_θ(s) = tanh(actor(s)).
         No sampling — the actor network is fully deterministic at inference.
         """
         import torch
-        obs = torch.as_tensor(
-            np.atleast_2d(observation), dtype=torch.float32
-        ).to(self._device)
+        obs = to_torch_batch(observation, self._device)
         with torch.no_grad():
             action = self._actor(obs)
         return action.cpu().numpy()[0]
@@ -177,7 +189,8 @@ class TorchTD3Agent(BaseAgent):
         updates_per_step = float(hp.get("updates_per_step", 1))
         policy_delay     = int(hp.get("policy_delay",       2))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        obs_batched = to_torch_batch(list(episode_data.observations), self._device)
+        obs_arr  = self._encode(obs_batched).cpu().numpy()
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -382,15 +395,23 @@ class TorchTD3Agent(BaseAgent):
         obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = \
             self._buffer.sample(batch_size)
 
-        obs_b   = torch.as_tensor(obs_b,   dtype=torch.float32).to(self._device)
+        obs_b   = already_batched_to_torch(obs_b, self._device)
         act_b   = torch.as_tensor(act_b,   dtype=torch.float32).to(self._device)
         rew_b   = torch.as_tensor(rew_b,   dtype=torch.float32).to(self._device)
-        next_b  = torch.as_tensor(next_b,  dtype=torch.float32).to(self._device)
+        next_b  = already_batched_to_torch(next_b, self._device)
         done_b  = torch.as_tensor(done_b,  dtype=torch.float32).to(self._device)
         weights = torch.as_tensor(weights, dtype=torch.float32).to(self._device)
         gammas_n = torch.as_tensor(
             gamma ** n_steps.astype(np.float32), dtype=torch.float32
         ).to(self._device)
+
+        # Buffer-sampled obs_b/next_b are already flat, pre-encoded vectors
+        # (see tensor_optix.encoders' module docstring) -- route through
+        # the actor's head only, skipping its encoder (if any). For the
+        # flat-Box case (no .head attribute) this falls back to calling
+        # the actor/actor_tgt directly, identical to today's behavior.
+        actor_head     = getattr(self._actor, "head", self._actor)
+        actor_tgt_head = getattr(self._actor_tgt, "head", self._actor_tgt)
 
         # ---- Compute TD targets ----
         with torch.no_grad():
@@ -402,7 +423,7 @@ class TorchTD3Agent(BaseAgent):
                 torch.randn_like(act_b) * target_noise
             ).clamp(-target_noise_clip, target_noise_clip)
 
-            next_action = (self._actor_tgt(next_b) + noise).clamp(-1.0, 1.0)
+            next_action = (actor_tgt_head(next_b) + noise).clamp(-1.0, 1.0)
 
             # Fix 1: twin critics — take the minimum to reduce overestimation.
             ci_next = torch.cat([next_b, next_action], dim=-1)
@@ -437,7 +458,7 @@ class TorchTD3Agent(BaseAgent):
             # ∇_θ J = E[∇_a Q_φ1(s, a)|_{a=π_θ(s)} · ∇_θ π_θ(s)]
             # Implemented as -mean(Q1(s, π_θ(s))) and backpropagating through
             # the actor into Q1 (no entropy term — TD3 is fully deterministic).
-            new_a  = self._actor(obs_b)
+            new_a  = actor_head(obs_b)
             ci_new = torch.cat([obs_b, new_a], dim=-1)
             a_loss = -self._c1(ci_new).mean()
 

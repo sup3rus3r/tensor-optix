@@ -109,6 +109,25 @@ def resolve_gae_bootstrap(episode_data, critic_fn) -> tuple:
     return last_value, n_envs
 
 
+def _minibatch_first_dim(value) -> int:
+    """T for either a plain ndarray or a dict-of-ndarrays (Dict observation
+    space rollout value) -- recurses one level since observations are the
+    only nested value make_minibatches ever receives."""
+    if isinstance(value, dict):
+        return next(iter(value.values())).shape[0]
+    return value.shape[0]
+
+
+def _minibatch_slice(value, batch_idx):
+    """Slice a plain ndarray by batch_idx, or every sub-array of a dict
+    value by the same batch_idx -- keeps obs/actions/advantages/etc. rows
+    aligned across a Dict-observation rollout the same way plain ndarray
+    slicing already keeps a flat-Box rollout aligned."""
+    if isinstance(value, dict):
+        return {k: v[batch_idx] for k, v in value.items()}
+    return value[batch_idx]
+
+
 def make_minibatches(
     data: Dict[str, np.ndarray],
     minibatch_size: int,
@@ -117,21 +136,28 @@ def make_minibatches(
     """
     Yield shuffled minibatch dicts from a flat rollout dict.
 
-    All arrays in `data` must share the same first dimension (T steps).
+    All values in `data` must share the same first dimension (T steps).
     Yields ceil(T / minibatch_size) minibatches per call.
 
     Args:
-        data:           dict of str → np.ndarray, all shape [T, ...]
+        data:           dict of str -> np.ndarray (shape [T, ...]), OR a
+                         dict-of-ndarrays under the "obs" key for a Dict
+                         observation space rollout (e.g.
+                         {"obs": {"vector": arr, "image": arr}, "actions": arr, ...}) --
+                         every sub-array of a dict value is sliced by the
+                         same shuffled index as every plain array value, so
+                         rows stay aligned across both shapes.
         minibatch_size: number of samples per minibatch
         shuffle:        whether to shuffle indices before slicing
 
     Yields:
-        dict with same keys, each value sliced to [minibatch_size, ...]
+        dict with same keys/structure as `data`, each array (or each
+        sub-array of a dict value) sliced to [minibatch_size, ...]
     """
-    T = next(iter(data.values())).shape[0]
+    T = _minibatch_first_dim(next(iter(data.values())))
     indices = np.arange(T)
     if shuffle:
         np.random.shuffle(indices)
     for start in range(0, T, minibatch_size):
         batch_idx = indices[start : start + minibatch_size]
-        yield {key: arr[batch_idx] for key, arr in data.items()}
+        yield {key: _minibatch_slice(value, batch_idx) for key, value in data.items()}

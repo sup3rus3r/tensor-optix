@@ -22,6 +22,31 @@ from typing import Tuple
 import numpy as np
 
 
+def _as_obs(obs):
+    """Normalize a single observation for storage: flat/image arrays become
+    float32 np.ndarray exactly as before; a dict observation (Dict space)
+    is stored as a dict of float32 np.ndarray leaves instead of forcing
+    through np.array(), which would otherwise raise or silently produce a
+    1-D object-dtype array. This is the only change needed to let DQN/
+    Rainbow's single shared q_network (used for both raw-obs act() and
+    buffer-replayed learn() calls) see the same observation structure in
+    both places -- see tensor_optix.encoders' module docstring for why
+    DQN/Rainbow can't use the encode-before-buffer approach SAC/TD3 use."""
+    if isinstance(obs, dict):
+        return {k: np.asarray(v, dtype=np.float32) for k, v in obs.items()}
+    return np.asarray(obs, dtype=np.float32)
+
+
+def _stack_obs(obs_list):
+    """Batch a list of _as_obs()-normalized observations the same way
+    np.array(obs_list, dtype=np.float32) did before -- unchanged for the
+    flat/image-array case; stacks per-key for a list of dicts."""
+    if isinstance(obs_list[0], dict):
+        keys = obs_list[0].keys()
+        return {k: np.array([o[k] for o in obs_list], dtype=np.float32) for k in keys}
+    return np.array(obs_list, dtype=np.float32)
+
+
 class _SumTree:
     """
     Binary sum tree for O(log N) priority sampling.
@@ -146,8 +171,8 @@ class PrioritizedReplayBuffer:
             self._gamma = float(gamma)
 
     def push(self, obs, action, reward, next_obs, done) -> None:
-        obs      = np.array(obs,      dtype=np.float32)
-        next_obs = np.array(next_obs, dtype=np.float32)
+        obs      = _as_obs(obs)
+        next_obs = _as_obs(next_obs)
 
         if self._n_step == 1:
             # Fast path: commit immediately, no accumulation
@@ -191,10 +216,10 @@ class PrioritizedReplayBuffer:
         ones = np.ones(batch_size, dtype=np.float32)
         zeros = np.zeros(batch_size, dtype=np.int64)
         return (
-            np.array(obs,     dtype=np.float32),
+            _stack_obs(obs),
             np.array(actions),
             np.array(rewards, dtype=np.float32),
-            np.array(next_obs,dtype=np.float32),
+            _stack_obs(next_obs),
             np.array(dones,   dtype=np.float32),
             ones, zeros,
             np.array(ns,      dtype=np.int32),
@@ -227,10 +252,10 @@ class PrioritizedReplayBuffer:
         weights = (weights / weights.max()).astype(np.float32)
 
         return (
-            np.array(obs_l,  dtype=np.float32),
+            _stack_obs(obs_l),
             np.array(act_l),
             np.array(rew_l,  dtype=np.float32),
-            np.array(nxt_l,  dtype=np.float32),
+            _stack_obs(nxt_l),
             np.array(don_l,  dtype=np.float32),
             weights, indices,
             np.array(ns_l,   dtype=np.int32),

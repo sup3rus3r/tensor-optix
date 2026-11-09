@@ -62,6 +62,7 @@ import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_tf_batch, already_batched_to_tf
 
 
 class TFTDDAgent(BaseAgent):
@@ -97,6 +98,20 @@ class TFTDDAgent(BaseAgent):
         self._c1_tgt.set_weights(critic1.get_weights())
         self._c2_tgt.set_weights(critic2.get_weights())
 
+        # clone_model() reconstructs the Model graph/config but does not
+        # carry over head_model/encoder (plain Python attributes the
+        # factory attaches post-construction, not part of the Keras
+        # graph/config clone_model reads from) -- re-derive them the same
+        # way so _update_step()'s getattr(self._actor_tgt, "head_model",
+        # ...) lookups actually find the real head-only submodel instead
+        # of silently falling back to the full (encoder+head) actor_tgt.
+        if hasattr(actor, "head_model"):
+            self._actor_tgt.head_model = tf.keras.models.clone_model(actor.head_model)
+            self._actor_tgt.head_model.set_weights(actor.head_model.get_weights())
+        if hasattr(actor, "encoder"):
+            self._actor_tgt.encoder = tf.keras.models.clone_model(actor.encoder)
+            self._actor_tgt.encoder.set_weights(actor.encoder.get_weights())
+
         self._action_dim  = action_dim
         self._actor_opt   = actor_optimizer
         self._critic_opt  = critic_optimizer
@@ -120,9 +135,17 @@ class TFTDDAgent(BaseAgent):
     def is_on_policy(self) -> bool:
         return False
 
+    def _encode(self, observation_batched):
+        """Run the actor's encoder alone, if it has one -- see
+        tf_sac.py's _encode() docstring for the full rationale."""
+        encoder = getattr(self._actor, "encoder", None)
+        if encoder is None:
+            return observation_batched
+        return encoder(observation_batched, training=False)
+
     def act(self, observation) -> np.ndarray:
         """Deterministic action: a = π_θ(s) = tanh(actor(s))."""
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
         action = self._actor(obs, training=False)
         return action.numpy()[0]
 
@@ -134,7 +157,8 @@ class TFTDDAgent(BaseAgent):
         updates_per_step = float(hp.get("updates_per_step", 1))
         policy_delay     = int(hp.get("policy_delay",       2))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        obs_batched = to_tf_batch(list(episode_data.observations))
+        obs_arr  = self._encode(obs_batched).numpy()
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -265,13 +289,20 @@ class TFTDDAgent(BaseAgent):
         obs_b, act_b, rew_b, next_b, done_b, weights, indices, n_steps = \
             self._buffer.sample(batch_size)
 
-        obs_b    = tf.cast(obs_b,    tf.float32)
+        obs_b    = already_batched_to_tf(obs_b)
         act_b    = tf.cast(act_b,    tf.float32)
         rew_b    = tf.cast(rew_b,    tf.float32)
-        next_b   = tf.cast(next_b,   tf.float32)
+        next_b   = already_batched_to_tf(next_b)
         done_b   = tf.cast(done_b,   tf.float32)
         weights  = tf.cast(weights,  tf.float32)
         gammas_n = tf.cast(gamma ** n_steps.astype(np.float32), tf.float32)
+
+        # Buffer-sampled obs_b/next_b are already flat, pre-encoded vectors
+        # -- route through head_model only, skipping the encoder a second
+        # time (see tf_sac.py's _update_step comment for the full
+        # rationale). Falls back to the full actor/actor_tgt for flat-Box.
+        actor_head     = getattr(self._actor, "head_model", self._actor)
+        actor_tgt_head = getattr(self._actor_tgt, "head_model", self._actor_tgt)
 
         # ---- Critic update ----
         with tf.GradientTape() as tape:
@@ -282,7 +313,7 @@ class TFTDDAgent(BaseAgent):
                 target_noise_clip,
             )
             next_action = tf.clip_by_value(
-                self._actor_tgt(next_b, training=False) + noise, -1.0, 1.0
+                actor_tgt_head(next_b, training=False) + noise, -1.0, 1.0
             )
 
             # Fix 1: twin critics
@@ -311,20 +342,20 @@ class TFTDDAgent(BaseAgent):
         a_loss = 0.0
         if update_actor:
             with tf.GradientTape() as tape:
-                new_a  = self._actor(obs_b, training=True)
+                new_a  = actor_head(obs_b, training=True)
                 ci_new = tf.concat([obs_b, new_a], axis=-1)
                 # Deterministic policy gradient: maximise Q1(s, π(s))
                 a_loss_tf = -tf.reduce_mean(
                     tf.squeeze(self._c1(ci_new, training=False), -1)
                 )
 
-            a_grads = tape.gradient(a_loss_tf, self._actor.trainable_variables)
+            a_grads = tape.gradient(a_loss_tf, actor_head.trainable_variables)
             a_grads, _ = tf.clip_by_global_norm(a_grads, 10.0)
             self._actor_opt.apply_gradients(
-                zip(a_grads, self._actor.trainable_variables)
+                zip(a_grads, actor_head.trainable_variables)
             )
             a_loss = float(a_loss_tf.numpy())
-            self._soft_update(self._actor, self._actor_tgt, tau)
+            self._soft_update(actor_head, actor_tgt_head, tau)
 
         self._soft_update(self._c1, self._c1_tgt, tau)
         self._soft_update(self._c2, self._c2_tgt, tau)

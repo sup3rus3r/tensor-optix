@@ -7,6 +7,7 @@ import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf, batch_index
 
 
 class TFDQNAgent(BaseAgent):
@@ -97,7 +98,7 @@ class TFDQNAgent(BaseAgent):
         epsilon = float(self._hyperparams.params.get("epsilon", 0.1))
         if np.random.random() < epsilon:
             return np.random.randint(self._n_actions)
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
         q_values = self._q(obs, training=False)
         return int(tf.argmax(q_values, axis=-1).numpy()[0])
 
@@ -109,7 +110,10 @@ class TFDQNAgent(BaseAgent):
         epsilon_decay      = float(hp.get("epsilon_decay",      0.995))
         epsilon_min        = float(hp.get("epsilon_min",        0.05))
 
-        obs_arr  = np.array(episode_data.observations, dtype=np.float32)
+        # DQN pushes the RAW observation into the buffer (not pre-encoded)
+        # -- same single-network constraint as TorchDQNAgent, see
+        # torch_dqn.py's learn() comment for the full rationale.
+        obs_arr  = to_batch_numpy(list(episode_data.observations))
         act_arr  = episode_data.actions
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -117,8 +121,8 @@ class TFDQNAgent(BaseAgent):
         T = len(rew_arr)
         for t in range(T - 1):
             self._buffer.push(
-                obs_arr[t], int(act_arr[t]), float(rew_arr[t]),
-                obs_arr[t + 1], bool(done_arr[t]),
+                batch_index(obs_arr, t), int(act_arr[t]), float(rew_arr[t]),
+                batch_index(obs_arr, t + 1), bool(done_arr[t]),
             )
         self._buffer.flush_episode()
 
@@ -138,10 +142,10 @@ class TFDQNAgent(BaseAgent):
 
         for _ in range(n_updates):
             obs_b, act_b, rew_b, next_obs_b, done_b, weights, indices, n_steps = self._buffer.sample(batch_size)
-            obs_b      = tf.cast(obs_b,      tf.float32)
+            obs_b      = already_batched_to_tf(obs_b)
             act_b      = tf.cast(act_b,      tf.int32)
             rew_b      = tf.cast(rew_b,      tf.float32)
-            next_obs_b = tf.cast(next_obs_b, tf.float32)
+            next_obs_b = already_batched_to_tf(next_obs_b)
             done_b     = tf.cast(done_b,     tf.float32)
             weights    = tf.cast(weights,    tf.float32)
             gammas_n   = tf.cast(gamma ** n_steps.astype(np.float32), tf.float32)

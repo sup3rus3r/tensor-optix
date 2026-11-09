@@ -5,6 +5,7 @@ from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
+from tensor_optix.core.obs_utils import to_batch_numpy, to_torch_batch, already_batched_to_torch
 
 
 class TorchPPOAgent(BaseAgent):
@@ -79,7 +80,7 @@ class TorchPPOAgent(BaseAgent):
         """Sample action; cache log_prob and V(obs) for learn()."""
         import torch
         import torch.nn.functional as F
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
+        obs = to_torch_batch(observation, self._device)
         with torch.no_grad():
             logits = self._actor(obs)                       # [1, n_actions]
             lp_all = F.log_softmax(logits, dim=-1)
@@ -88,7 +89,13 @@ class TorchPPOAgent(BaseAgent):
             lp     = lp_all[0, action.item()]
             value  = self._critic(obs).squeeze()
 
-        self._cache_obs.append(np.squeeze(observation))
+        # Cache the raw observation -- learn() re-batches the whole cache
+        # via to_batch_numpy(), which stacks a list of dicts per-key exactly
+        # as it stacks a list of flat/image arrays. np.squeeze (today's
+        # exact behavior for the flat-Box case) only applies to array
+        # observations; a dict observation has no meaningful "squeeze" and
+        # is cached as-is.
+        self._cache_obs.append(np.squeeze(observation) if not isinstance(observation, dict) else observation)
         self._cache_log_probs.append(float(lp.item()))
         self._cache_values.append(float(value.item()))
         return int(action.item())
@@ -113,7 +120,7 @@ class TorchPPOAgent(BaseAgent):
                 f"Cache underflow: expected >= {T} entries but got {len(self._cache_obs)}. "
                 "Ensure act() is called exactly once per environment step."
             )
-        obs_arr    = np.array(self._cache_obs[:T],       dtype=np.float32)
+        obs_arr    = to_batch_numpy(self._cache_obs[:T])
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
         rewards    = list(episode_data.rewards)
@@ -134,7 +141,7 @@ class TorchPPOAgent(BaseAgent):
         # rewards/values array is interleaved across envs.
         def _critic_value(obs):
             with torch.no_grad():
-                obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(self._device)
+                obs_t = to_torch_batch(obs, self._device)
                 return float(self._critic(obs_t).squeeze().item())
 
         last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
@@ -160,7 +167,7 @@ class TorchPPOAgent(BaseAgent):
 
         for _ in range(n_epochs):
             for batch in make_minibatches(rollout, mb_size):
-                obs_b   = torch.as_tensor(batch["obs"],        dtype=torch.float32).to(self._device)
+                obs_b = already_batched_to_torch(batch["obs"], self._device)
                 act_b   = torch.as_tensor(batch["actions"],    dtype=torch.long).to(self._device)
                 old_b   = torch.as_tensor(batch["old_lp"],     dtype=torch.float32).to(self._device)
                 adv_b   = torch.as_tensor(batch["advantages"], dtype=torch.float32).to(self._device)

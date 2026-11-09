@@ -4,6 +4,7 @@ import numpy as np
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
+from tensor_optix.core.obs_utils import to_batch_numpy, to_torch_batch, already_batched_to_torch
 
 LOG_STD_MIN = -5
 LOG_STD_MAX = 2
@@ -137,7 +138,7 @@ class TorchGaussianPPOAgent(BaseAgent):
         Returns a float numpy array of shape [action_dim].
         """
         import torch
-        obs = torch.as_tensor(np.atleast_2d(observation), dtype=torch.float32).to(self._device)
+        obs = to_torch_batch(observation, self._device)
 
         with torch.no_grad():
             out     = self._actor(obs)                                # [1, 2*action_dim]
@@ -152,7 +153,9 @@ class TorchGaussianPPOAgent(BaseAgent):
             log_prob = self._gaussian_log_prob(pre_tanh, mean, log_std)  # [1]
             value    = self._critic(obs).squeeze()
 
-        self._cache_obs.append(np.squeeze(observation))
+        # Cache the raw observation -- learn() re-batches via
+        # to_batch_numpy(), which handles both array and dict observations.
+        self._cache_obs.append(np.squeeze(observation) if not isinstance(observation, dict) else observation)
         self._cache_log_probs.append(float(log_prob.item()))
         self._cache_values.append(float(value.item()))
 
@@ -191,7 +194,7 @@ class TorchGaussianPPOAgent(BaseAgent):
                 "Ensure act() is called exactly once per environment step."
             )
 
-        obs_arr    = np.array(self._cache_obs[:T],       dtype=np.float32)
+        obs_arr    = to_batch_numpy(self._cache_obs[:T])
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
         # actions are float arrays of shape [action_dim] per step
@@ -208,7 +211,7 @@ class TorchGaussianPPOAgent(BaseAgent):
 
         def _critic_value(obs):
             with torch.no_grad():
-                obs_t = torch.as_tensor(np.atleast_2d(obs), dtype=torch.float32).to(self._device)
+                obs_t = to_torch_batch(obs, self._device)
                 return float(self._critic(obs_t).squeeze().item())
 
         last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
@@ -234,7 +237,7 @@ class TorchGaussianPPOAgent(BaseAgent):
 
         for _ in range(n_epochs):
             for batch in make_minibatches(rollout, mb_size):
-                obs_b = torch.as_tensor(batch["obs"],        dtype=torch.float32).to(self._device)
+                obs_b = already_batched_to_torch(batch["obs"], self._device)
                 act_b = torch.as_tensor(batch["actions"],    dtype=torch.float32).to(self._device)
                 old_b = torch.as_tensor(batch["old_lp"],     dtype=torch.float32).to(self._device)
                 adv_b = torch.as_tensor(batch["advantages"], dtype=torch.float32).to(self._device)

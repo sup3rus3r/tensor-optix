@@ -132,22 +132,66 @@ def make_agent(
         )
 
     # ------------------------------------------------------------------
-    # Validate observation space: must be a flat 1-D Box
+    # Validate observation space.
+    #
+    # neuroevo mode is flat-1-D-Box-only (NeuronGraph's input-neuron
+    # topology is 1:1 with flattened obs scalars -- a separate, harder
+    # extension, out of scope here). The standard (non-neuroevo) path
+    # additionally accepts any-rank Box (e.g. images) and Dict via the
+    # encoder mechanism in tensor_optix.encoders -- see _make_* builders
+    # below, each of which falls back to today's exact flat-Box behavior
+    # when obs_space is a flat 1-D Box (obs_encoder_factory=None path).
     # ------------------------------------------------------------------
-    if not isinstance(obs_space, Box):
-        raise NotImplementedError(
-            f"make_agent() only supports flat Box observation spaces. "
-            f"Got: {type(obs_space).__name__}. "
-            f"For image or structured observations, build the agent manually."
-        )
-    if len(obs_space.shape) != 1:
-        raise NotImplementedError(
-            f"make_agent() only supports 1-D (flat) observation spaces. "
-            f"Got shape: {obs_space.shape}. "
-            f"For image observations, build the agent manually."
-        )
+    if neuroevo:
+        if not isinstance(obs_space, Box) or len(obs_space.shape) != 1:
+            raise NotImplementedError(
+                f"neuroevo make_agent() only supports flat 1-D Box observation "
+                f"spaces. Got: {type(obs_space).__name__} "
+                f"{getattr(obs_space, 'shape', '')}. "
+                f"Non-flat observations are not yet supported in neuroevo mode."
+            )
+    else:
+        from tensor_optix.encoders.obs_encoder import encoder_output_dim
+        if isinstance(obs_space, (MultiDiscrete, GymTuple, MultiBinary)):
+            raise NotImplementedError(
+                f"make_agent() does not support {type(obs_space).__name__} "
+                f"observation spaces. Build the agent manually."
+            )
+        if not isinstance(obs_space, (Box, Dict)):
+            raise NotImplementedError(
+                f"make_agent() received an unrecognised observation space type: "
+                f"{type(obs_space).__name__}. Build the agent manually."
+            )
+        if isinstance(obs_space, Box) and len(obs_space.shape) == 3:
+            if obs_space.shape[-1] not in (1, 3, 4):
+                raise NotImplementedError(
+                    f"make_agent() only supports image Box observations with a "
+                    f"channel count in (1, 3, 4) in the last axis (H, W, C). "
+                    f"Got shape: {obs_space.shape}. Build the agent manually."
+                )
+        elif isinstance(obs_space, Box) and len(obs_space.shape) not in (1, 3):
+            raise NotImplementedError(
+                f"make_agent() only supports 1-D (flat) or 3-D (image, H,W,C) "
+                f"Box observation spaces. Got shape: {obs_space.shape}. "
+                f"Build the agent manually."
+            )
+        # encoder_output_dim() raises NotImplementedError itself for any
+        # Dict containing an observation type it has no rule for (e.g. a
+        # nested Dict-in-Dict, or a Box shape it doesn't recognise) --
+        # calling it here surfaces that error immediately rather than
+        # deep inside a builder.
+        encoder_output_dim(obs_space)
 
-    obs_dim = int(obs_space.shape[0])
+    # obs_dim is only meaningful (and only used) for flat 1-D Box
+    # observations -- the neuroevo path, and the non-neuroevo "auto"
+    # fallback when obs_encoder_factory is None. For image/Dict spaces,
+    # every builder below derives its input width from obs_space via
+    # encoder_output_dim() instead.
+    obs_dim = int(obs_space.shape[0]) if isinstance(obs_space, Box) and len(obs_space.shape) == 1 else None
+    # None (non-flat) is only passed to builders under the non-neuroevo
+    # path; builders only pass obs_space through to their encoder when it
+    # isn't a flat Box (obs_space=None kwarg default), so this is safe.
+    encoder_obs_space = obs_space if not (isinstance(obs_space, Box) and len(obs_space.shape) == 1) else None
 
     # ------------------------------------------------------------------
     # Neuroevo path — wraps a NeuronGraph in GraphAgent
@@ -202,10 +246,10 @@ def make_agent(
     if isinstance(act_space, Discrete):
         n_actions = int(act_space.n)
         if algorithm == "DQN":
-            return _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device)
+            return _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device, obs_space=encoder_obs_space)
         if algorithm == "RAINBOW":
-            return _make_rainbow(obs_dim, n_actions, hyperparams, device)
-        return _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device)
+            return _make_rainbow(obs_dim, n_actions, hyperparams, device, obs_space=encoder_obs_space)
+        return _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device, obs_space=encoder_obs_space)
 
     elif isinstance(act_space, Box):
         if len(act_space.shape) != 1:
@@ -215,11 +259,11 @@ def make_agent(
             )
         act_dim = int(act_space.shape[0])
         if deterministic or algorithm == "TD3":
-            return _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
+            return _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=encoder_obs_space)
         elif algorithm == "PPO":
-            return _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
+            return _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=encoder_obs_space)
         else:
-            return _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device)
+            return _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=encoder_obs_space)
 
     elif isinstance(act_space, MultiDiscrete):
         raise NotImplementedError(
@@ -253,7 +297,7 @@ def make_agent(
 # Algorithm builders
 # ---------------------------------------------------------------------------
 
-def _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device):
+def _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device, obs_space=None):
     """Build a PPO agent for discrete action spaces."""
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":  3e-4,
@@ -268,14 +312,15 @@ def _make_ppo(obs_dim, n_actions, framework, hidden_sizes, hyperparams, device):
     }, episode_id=0)
 
     if framework == "tf":
-        return _make_ppo_tf(obs_dim, n_actions, hidden_sizes, hp)
+        return _make_ppo_tf(obs_dim, n_actions, hidden_sizes, hp, obs_space=obs_space)
     else:
-        return _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device)
+        return _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device, obs_space=obs_space)
 
 
-def _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device):
+def _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device, obs_space=None):
     import torch.nn as nn
     from tensor_optix.algorithms.torch_ppo import TorchPPOAgent
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
     import torch
 
     def _mlp(in_dim, out_dim, activation=nn.Tanh):
@@ -287,8 +332,18 @@ def _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device):
         layers.append(nn.Linear(prev, out_dim))
         return nn.Sequential(*layers)
 
-    actor  = _mlp(obs_dim, n_actions)
-    critic = _mlp(obs_dim, 1)
+    # PPO is on-policy -- no replay buffer, so both actor AND critic always
+    # see raw observations directly (from act() and the cached rollout in
+    # learn()). Both need their own encoder, each independently initialized
+    # (no weight sharing, same as every other network pair in this file).
+    if obs_space is not None:
+        enc_dim = encoder_output_dim(obs_space)
+        actor  = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, n_actions))
+        critic = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, 1))
+    else:
+        actor  = _mlp(obs_dim, n_actions)
+        critic = _mlp(obs_dim, 1)
+
     optimizer = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()),
         lr=float(hp.params.get("learning_rate", 3e-4)),
@@ -299,30 +354,45 @@ def _make_ppo_torch(obs_dim, n_actions, hidden_sizes, hp, device):
     )
 
 
-def _make_ppo_tf(obs_dim, n_actions, hidden_sizes, hp):
+def _make_ppo_tf(obs_dim, n_actions, hidden_sizes, hp, obs_space=None):
     import tensorflow as tf
     from tensor_optix.algorithms.tf_ppo import TFPPOAgent
+    from tensor_optix.encoders.obs_encoder import encoder_output_dim
+    from tensor_optix.encoders.obs_encoder_tf import build_tf_encoder
 
-    def _mlp(out_dim, activation="tanh"):
-        layers = [tf.keras.layers.Input(shape=(obs_dim,))]
+    def _mlp(in_dim, out_dim, activation="tanh"):
+        layers = [tf.keras.layers.Input(shape=(in_dim,))]
         for h in hidden_sizes:
             layers.append(tf.keras.layers.Dense(h, activation=activation))
         layers.append(tf.keras.layers.Dense(out_dim))
         return tf.keras.Sequential(layers)
 
-    actor  = _mlp(n_actions)
-    critic = _mlp(1)
+    if obs_space is not None:
+        enc_dim = encoder_output_dim(obs_space)
+        actor_encoder = build_tf_encoder(obs_space)
+        actor = tf.keras.Model(
+            inputs=actor_encoder.input, outputs=_mlp(enc_dim, n_actions)(actor_encoder.output)
+        )
+        critic_encoder = build_tf_encoder(obs_space)
+        critic = tf.keras.Model(
+            inputs=critic_encoder.input, outputs=_mlp(enc_dim, 1)(critic_encoder.output)
+        )
+    else:
+        actor  = _mlp(obs_dim, n_actions)
+        critic = _mlp(obs_dim, 1)
+
     optimizer = tf.keras.optimizers.Adam(float(hp.params.get("learning_rate", 3e-4)))
     return TFPPOAgent(
         actor=actor, critic=critic, optimizer=optimizer, hyperparams=hp,
     )
 
 
-def _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device):
+def _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device, obs_space=None):
     """Build a DQN agent for discrete action spaces."""
     import torch
     import torch.nn as nn
     from tensor_optix.algorithms.torch_dqn import TorchDQNAgent
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
 
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":      1e-3,
@@ -335,12 +405,26 @@ def _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device):
         "replay_capacity":    10_000,
     }, episode_id=0)
 
-    layers, prev = [], obs_dim
-    for h in hidden_sizes:
-        layers += [nn.Linear(prev, h), nn.ReLU()]
-        prev = h
-    layers.append(nn.Linear(prev, n_actions))
-    q_net = nn.Sequential(*layers)
+    def _head(in_dim):
+        layers, prev = [], in_dim
+        for h in hidden_sizes:
+            layers += [nn.Linear(prev, h), nn.ReLU()]
+            prev = h
+        layers.append(nn.Linear(prev, n_actions))
+        return nn.Sequential(*layers)
+
+    # DQN has a single q_network used both for raw-obs act() calls AND for
+    # the Bellman update on buffer-replayed (obs, next_obs) pairs -- there
+    # is no separate actor/critic split to exploit encode-before-buffer
+    # with (see tensor_optix.encoders module docstring). Instead,
+    # PrioritizedReplayBuffer stores the raw (possibly non-flat)
+    # observation, and q_network's own EncodedHead encoder runs on every
+    # call -- fully end-to-end trainable, unlike SAC/TD3's frozen-encoder
+    # replay path.
+    if obs_space is not None:
+        q_net = EncodedHead(build_torch_encoder(obs_space), _head(encoder_output_dim(obs_space)))
+    else:
+        q_net = _head(obs_dim)
 
     return TorchDQNAgent(
         q_network=q_net,
@@ -351,10 +435,11 @@ def _make_dqn(obs_dim, n_actions, hidden_sizes, hyperparams, device):
     )
 
 
-def _make_rainbow(obs_dim, n_actions, hyperparams, device):
+def _make_rainbow(obs_dim, n_actions, hyperparams, device, obs_space=None):
     """Build a Rainbow DQN agent for discrete action spaces."""
     import torch
     from tensor_optix.algorithms.torch_rainbow_dqn import TorchRainbowDQNAgent, RainbowQNetwork
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
 
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":      6.25e-5,
@@ -370,18 +455,37 @@ def _make_rainbow(obs_dim, n_actions, hyperparams, device):
         "n_atoms":            51,
     }, episode_id=0)
 
-    q_net = RainbowQNetwork.build(obs_dim, n_actions)
+    # Same single-network constraint as DQN above: the buffer stores raw
+    # observations and RainbowQNetwork's dueling/noisy/distributional head
+    # is wrapped behind its own encoder, trained end-to-end on every call.
+    #
+    # Note: TorchRainbowDQNAgent.export_onnx() builds its dummy trace input
+    # from self._obs_dim as a flat tensor (torch_rainbow_dqn.py ~line 484),
+    # a pre-existing flat-obs assumption in ONNX export unrelated to this
+    # change (every agent's export_onnx() has the same assumption -- see
+    # this feature's plan doc). ONNX export is therefore not supported for
+    # non-flat observations yet; obs_dim is still passed through as the
+    # encoder's output width so export_onnx() fails on a shape mismatch
+    # rather than silently tracing the wrong input.
+    if obs_space is not None:
+        enc_dim = encoder_output_dim(obs_space)
+        q_net = EncodedHead(build_torch_encoder(obs_space), RainbowQNetwork.build(enc_dim, n_actions))
+        obs_dim_for_agent = enc_dim
+    else:
+        q_net = RainbowQNetwork.build(obs_dim, n_actions)
+        obs_dim_for_agent = obs_dim
+
     return TorchRainbowDQNAgent(
         q_network=q_net,
         n_actions=n_actions,
-        obs_dim=obs_dim,
+        obs_dim=obs_dim_for_agent,
         optimizer=torch.optim.Adam(q_net.parameters(), lr=float(hp.params.get("learning_rate", 6.25e-5))),
         hyperparams=hp,
         device=device,
     )
 
 
-def _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
+def _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=None):
     """Build a SAC agent for continuous action spaces."""
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":    3e-4,
@@ -396,15 +500,16 @@ def _make_sac(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
     }, episode_id=0)
 
     if framework == "tf":
-        return _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp)
+        return _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=obs_space)
     else:
-        return _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device)
+        return _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=obs_space)
 
 
-def _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device):
+def _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=None):
     import torch
     import torch.nn as nn
     from tensor_optix.algorithms.torch_sac import TorchSACAgent
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
 
     def _mlp(in_dim, out_dim, activation=nn.ReLU):
         layers = []
@@ -415,9 +520,22 @@ def _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device):
         layers.append(nn.Linear(prev, out_dim))
         return nn.Sequential(*layers)
 
-    actor   = _mlp(obs_dim,           act_dim * 2)  # mean || log_std
-    critic1 = _mlp(obs_dim + act_dim, 1)
-    critic2 = _mlp(obs_dim + act_dim, 1)
+    enc_dim = encoder_output_dim(obs_space) if obs_space is not None else obs_dim
+
+    # The actor sees raw observations (from act()) and must encode them
+    # itself, via EncodedHead. Critics only ever see obs_b sampled back out
+    # of the replay buffer, which is already a flat, pre-encoded vector by
+    # the time TorchSACAgent.learn() pushes it (see core/obs_utils.py's
+    # module docstring) -- so critics stay plain MLPs on enc_dim + act_dim,
+    # exactly as today, with enc_dim replacing obs_dim. No encoder runs
+    # inside the critic.
+    if obs_space is not None:
+        actor = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, act_dim * 2))
+    else:
+        actor = _mlp(obs_dim, act_dim * 2)  # mean || log_std
+
+    critic1 = _mlp(enc_dim + act_dim, 1)
+    critic2 = _mlp(enc_dim + act_dim, 1)
     log_alpha = torch.zeros(1, requires_grad=True)
     lr = float(hp.params.get("learning_rate", 3e-4))
 
@@ -436,9 +554,11 @@ def _make_sac_torch(obs_dim, act_dim, hidden_sizes, hp, device):
     )
 
 
-def _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp):
+def _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=None):
     import tensorflow as tf
     from tensor_optix.algorithms.tf_sac import TFSACAgent
+    from tensor_optix.encoders.obs_encoder import encoder_output_dim
+    from tensor_optix.encoders.obs_encoder_tf import build_tf_encoder
 
     def _mlp(in_dim, out_dim, activation="relu"):
         return tf.keras.Sequential([
@@ -447,9 +567,30 @@ def _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp):
             tf.keras.layers.Dense(out_dim),
         ])
 
-    actor   = _mlp(obs_dim,           act_dim * 2)
-    critic1 = _mlp(obs_dim + act_dim, 1)
-    critic2 = _mlp(obs_dim + act_dim, 1)
+    enc_dim = encoder_output_dim(obs_space) if obs_space is not None else obs_dim
+
+    # Actor sees raw observations -> needs its own encoder, composed into
+    # one Model (encoder's Input(s) in, head's output out). Critics only see
+    # obs already encoded to a flat vector by the replay buffer (see
+    # core/obs_utils.py) -- plain MLPs on enc_dim + act_dim, no encoder.
+    #
+    # actor.head_model is the standalone head-only Sequential, and
+    # actor.encoder is the standalone encoder Model (same objects used to
+    # build the composed actor's output tensor) -- attached so
+    # TFSACAgent's _encode()/_update_step() can call either directly
+    # without re-running or splitting the composed Model's graph apart at
+    # call time. Mirrors EncodedHead.encoder/.head on the Torch side.
+    if obs_space is not None:
+        actor_encoder = build_tf_encoder(obs_space)
+        head_model = _mlp(enc_dim, act_dim * 2)
+        actor = tf.keras.Model(inputs=actor_encoder.input, outputs=head_model(actor_encoder.output))
+        actor.head_model = head_model
+        actor.encoder = actor_encoder
+    else:
+        actor = _mlp(obs_dim, act_dim * 2)
+
+    critic1 = _mlp(enc_dim + act_dim, 1)
+    critic2 = _mlp(enc_dim + act_dim, 1)
     lr = float(hp.params.get("learning_rate", 3e-4))
 
     return TFSACAgent(
@@ -464,7 +605,7 @@ def _make_sac_tf(obs_dim, act_dim, hidden_sizes, hp):
     )
 
 
-def _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
+def _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=None):
     """Build a Gaussian PPO agent for continuous action spaces."""
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":  3e-4,
@@ -479,15 +620,16 @@ def _make_gaussian_ppo(obs_dim, act_dim, framework, hidden_sizes, hyperparams, d
     }, episode_id=0)
 
     if framework == "tf":
-        return _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp)
+        return _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=obs_space)
     else:
-        return _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device)
+        return _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=obs_space)
 
 
-def _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device):
+def _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=None):
     import torch
     import torch.nn as nn
     from tensor_optix.algorithms.torch_ppo_continuous import TorchGaussianPPOAgent
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
 
     def _mlp(in_dim, out_dim, activation=nn.Tanh):
         layers = []
@@ -498,8 +640,16 @@ def _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device):
         layers.append(nn.Linear(prev, out_dim))
         return nn.Sequential(*layers)
 
-    actor  = _mlp(obs_dim, act_dim * 2)  # mean || log_std
-    critic = _mlp(obs_dim, 1)
+    # On-policy, same as discrete PPO: both actor and critic always see raw
+    # observations, so both get their own independently-initialized encoder.
+    if obs_space is not None:
+        enc_dim = encoder_output_dim(obs_space)
+        actor  = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, act_dim * 2))
+        critic = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, 1))
+    else:
+        actor  = _mlp(obs_dim, act_dim * 2)  # mean || log_std
+        critic = _mlp(obs_dim, 1)
+
     optimizer = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()),
         lr=float(hp.params.get("learning_rate", 3e-4)),
@@ -510,19 +660,33 @@ def _make_gaussian_ppo_torch(obs_dim, act_dim, hidden_sizes, hp, device):
     )
 
 
-def _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp):
+def _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=None):
     import tensorflow as tf
     from tensor_optix.algorithms.tf_ppo_continuous import TFGaussianPPOAgent
+    from tensor_optix.encoders.obs_encoder import encoder_output_dim
+    from tensor_optix.encoders.obs_encoder_tf import build_tf_encoder
 
-    def _mlp(out_dim, activation="tanh"):
-        layers = [tf.keras.layers.Input(shape=(obs_dim,))]
+    def _mlp(in_dim, out_dim, activation="tanh"):
+        layers = [tf.keras.layers.Input(shape=(in_dim,))]
         for h in hidden_sizes:
             layers.append(tf.keras.layers.Dense(h, activation=activation))
         layers.append(tf.keras.layers.Dense(out_dim))
         return tf.keras.Sequential(layers)
 
-    actor  = _mlp(act_dim * 2)
-    critic = _mlp(1)
+    if obs_space is not None:
+        enc_dim = encoder_output_dim(obs_space)
+        actor_encoder = build_tf_encoder(obs_space)
+        actor = tf.keras.Model(
+            inputs=actor_encoder.input, outputs=_mlp(enc_dim, act_dim * 2)(actor_encoder.output)
+        )
+        critic_encoder = build_tf_encoder(obs_space)
+        critic = tf.keras.Model(
+            inputs=critic_encoder.input, outputs=_mlp(enc_dim, 1)(critic_encoder.output)
+        )
+    else:
+        actor  = _mlp(obs_dim, act_dim * 2)
+        critic = _mlp(obs_dim, 1)
+
     optimizer = tf.keras.optimizers.Adam(float(hp.params.get("learning_rate", 3e-4)))
     return TFGaussianPPOAgent(
         actor=actor, critic=critic, optimizer=optimizer,
@@ -530,7 +694,7 @@ def _make_gaussian_ppo_tf(obs_dim, act_dim, hidden_sizes, hp):
     )
 
 
-def _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
+def _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device, obs_space=None):
     """Build a TD3 agent for continuous action spaces (deterministic policy)."""
     hp = hyperparams or HyperparamSet(params={
         "learning_rate":     3e-4,
@@ -547,15 +711,16 @@ def _make_td3(obs_dim, act_dim, framework, hidden_sizes, hyperparams, device):
     }, episode_id=0)
 
     if framework == "tf":
-        return _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp)
+        return _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=obs_space)
     else:
-        return _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device)
+        return _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=obs_space)
 
 
-def _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device):
+def _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device, obs_space=None):
     import torch
     import torch.nn as nn
     from tensor_optix.algorithms.torch_td3 import TorchTD3Agent
+    from tensor_optix.encoders.obs_encoder import EncodedHead, build_torch_encoder, encoder_output_dim
 
     def _mlp(in_dim, out_dim, activation=nn.ReLU, out_activation=None):
         layers = []
@@ -568,9 +733,18 @@ def _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device):
             layers.append(out_activation())
         return nn.Sequential(*layers)
 
-    actor   = _mlp(obs_dim,           act_dim, out_activation=nn.Tanh)
-    critic1 = _mlp(obs_dim + act_dim, 1)
-    critic2 = _mlp(obs_dim + act_dim, 1)
+    enc_dim = encoder_output_dim(obs_space) if obs_space is not None else obs_dim
+
+    # Same actor/critic asymmetry as SAC (see _make_sac_torch): actor sees
+    # raw observations from act() and needs its own encoder; critics only
+    # ever see obs already encoded to a flat vector by the replay buffer.
+    if obs_space is not None:
+        actor = EncodedHead(build_torch_encoder(obs_space), _mlp(enc_dim, act_dim, out_activation=nn.Tanh))
+    else:
+        actor = _mlp(obs_dim, act_dim, out_activation=nn.Tanh)
+
+    critic1 = _mlp(enc_dim + act_dim, 1)
+    critic2 = _mlp(enc_dim + act_dim, 1)
     lr = float(hp.params.get("learning_rate", 3e-4))
 
     return TorchTD3Agent(
@@ -587,9 +761,11 @@ def _make_td3_torch(obs_dim, act_dim, hidden_sizes, hp, device):
     )
 
 
-def _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp):
+def _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp, obs_space=None):
     import tensorflow as tf
     from tensor_optix.algorithms.tf_td3 import TFTDDAgent
+    from tensor_optix.encoders.obs_encoder import encoder_output_dim
+    from tensor_optix.encoders.obs_encoder_tf import build_tf_encoder
 
     def _mlp(in_dim, out_dim, activation="relu", out_activation=None):
         layers = [
@@ -599,9 +775,21 @@ def _make_td3_tf(obs_dim, act_dim, hidden_sizes, hp):
         ]
         return tf.keras.Sequential(layers)
 
-    actor   = _mlp(obs_dim,           act_dim, out_activation="tanh")
-    critic1 = _mlp(obs_dim + act_dim, 1)
-    critic2 = _mlp(obs_dim + act_dim, 1)
+    enc_dim = encoder_output_dim(obs_space) if obs_space is not None else obs_dim
+
+    # actor.head_model/.encoder attached the same way as _make_sac_tf --
+    # see that function's comment for why TFTDDAgent needs both standalone.
+    if obs_space is not None:
+        actor_encoder = build_tf_encoder(obs_space)
+        head_model = _mlp(enc_dim, act_dim, out_activation="tanh")
+        actor = tf.keras.Model(inputs=actor_encoder.input, outputs=head_model(actor_encoder.output))
+        actor.head_model = head_model
+        actor.encoder = actor_encoder
+    else:
+        actor = _mlp(obs_dim, act_dim, out_activation="tanh")
+
+    critic1 = _mlp(enc_dim + act_dim, 1)
+    critic2 = _mlp(enc_dim + act_dim, 1)
     lr = float(hp.params.get("learning_rate", 3e-4))
 
     return TFTDDAgent(

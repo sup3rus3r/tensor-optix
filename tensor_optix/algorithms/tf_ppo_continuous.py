@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
 from tensor_optix.core.trajectory_buffer import compute_gae, make_minibatches, resolve_gae_bootstrap
+from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf
 
 LOG_STD_MIN = -5
 LOG_STD_MAX = 2
@@ -133,7 +134,7 @@ class TFGaussianPPOAgent(BaseAgent):
         Sample action ∈ (-1, 1)^action_dim; cache log_prob and V(obs) for learn().
         Returns a float numpy array of shape [action_dim].
         """
-        obs = tf.cast(np.atleast_2d(observation), tf.float32)
+        obs = to_tf_batch(observation)
 
         out     = self._actor(obs, training=False)             # [1, 2*action_dim]
         mean    = out[:, :self._action_dim]
@@ -147,7 +148,7 @@ class TFGaussianPPOAgent(BaseAgent):
         log_prob = self._gaussian_log_prob(pre_tanh, mean, log_std)  # [1]
         value    = float(tf.squeeze(self._critic(obs, training=False)).numpy())
 
-        self._cache_obs.append(np.squeeze(observation))
+        self._cache_obs.append(np.squeeze(observation) if not isinstance(observation, dict) else observation)
         self._cache_log_probs.append(float(tf.squeeze(log_prob).numpy()))
         self._cache_values.append(value)
 
@@ -179,7 +180,7 @@ class TFGaussianPPOAgent(BaseAgent):
                 "Ensure act() is called exactly once per environment step."
             )
 
-        obs_arr    = np.array(self._cache_obs[:T],       dtype=np.float32)
+        obs_arr    = to_batch_numpy(self._cache_obs[:T])
         old_lp_arr = np.array(self._cache_log_probs[:T], dtype=np.float32)
         val_arr    = np.array(self._cache_values[:T],    dtype=np.float32)
         act_arr    = np.array(episode_data.actions,      dtype=np.float32)
@@ -194,7 +195,7 @@ class TFGaussianPPOAgent(BaseAgent):
             rewards = list(self._reward_normalizer.normalize(np.array(rewards, dtype=np.float32)))
 
         def _critic_value(obs):
-            obs_t = tf.cast(np.atleast_2d(obs), tf.float32)
+            obs_t = to_tf_batch(obs)
             return float(tf.squeeze(self._critic(obs_t, training=False)).numpy())
 
         last_value, n_envs = resolve_gae_bootstrap(episode_data, _critic_value)
@@ -220,7 +221,7 @@ class TFGaussianPPOAgent(BaseAgent):
 
         for _ in range(n_epochs):
             for batch in make_minibatches(rollout, mb_size):
-                obs_b = tf.cast(batch["obs"],        tf.float32)
+                obs_b = already_batched_to_tf(batch["obs"])
                 act_b = tf.cast(batch["actions"],    tf.float32)
                 old_b = tf.cast(batch["old_lp"],     tf.float32)
                 adv_b = tf.cast(batch["advantages"], tf.float32)
