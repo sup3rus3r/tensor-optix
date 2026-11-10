@@ -108,12 +108,27 @@ class BaseMLModel(ABC):
         metrics="auto",
         callbacks: Optional[List] = None,
         checkpoint_dir: Optional[str] = None,
+        lr_schedule: Optional[object] = None,
+        augment: Optional[object] = None,
     ) -> FitHistory:
         """
         Train for up to `epochs` epochs. If val_data is given and
         early_stopping_patience is set, stops early once the validation
         primary_score hasn't improved for that many consecutive epochs,
         and restores the best checkpoint's weights before returning.
+
+        lr_schedule: an optional callable(epoch) -> float (see
+        tensor_optix.ml_core.lr_schedules for StepLR/CosineAnnealingLR/
+        WarmupLR), applied once per epoch before that epoch's training
+        batches run. When set, learning_rate is no longer handed to SPSA
+        for online tuning during this fit() call -- the schedule owns it.
+
+        augment: an optional callable(X_batch, y_batch) -> (X_batch, y_batch),
+        applied to every training batch (not validation). Only takes
+        effect when train_data is a raw (X, y) array pair -- a native
+        Dataset/DataLoader/tf.data.Dataset already has its own place for
+        augmentation (a transform or .map()), so this hook doesn't
+        duplicate that path.
 
         See tensor_optix.ml_core.trainer.Trainer for the actual loop --
         this method only constructs and runs it, matching the sklearn-style
@@ -129,5 +144,7 @@ class BaseMLModel(ABC):
             metrics=metrics,
             callbacks=callbacks,
             checkpoint_dir=checkpoint_dir,
+            lr_schedule=lr_schedule,
+            augment=augment,
         )
         return trainer.run(train_data, val_data)

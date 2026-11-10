@@ -122,10 +122,15 @@ class TFMLModel(BaseMLModel):
             loss=avg_loss, epoch=self._step_count,
         )
 
-    def iter_batches(self, data, batch_size: int):
+    def iter_batches(self, data, batch_size: int, augment=None):
         """
         Accepts either a raw (X, y) array pair or a native tf.data.Dataset
         -- auto-detected. Mirrors torch_model.py's iter_batches().
+
+        augment: optional callable(X_batch, y_batch) -> (X_batch, y_batch),
+        applied per-batch. Only takes effect for the raw (X, y) array
+        form -- a tf.data.Dataset already has a natural place to put
+        augmentation (.map()), so this hook doesn't duplicate that path.
         """
         tf = self._tf
 
@@ -140,7 +145,10 @@ class TFMLModel(BaseMLModel):
             y = np.asarray(y)
             n = len(X)
             for start in range(0, n, batch_size):
-                yield X[start:start + batch_size], y[start:start + batch_size]
+                X_batch, y_batch = X[start:start + batch_size], y[start:start + batch_size]
+                if augment is not None:
+                    X_batch, y_batch = augment(X_batch, y_batch)
+                yield X_batch, y_batch
             return
 
         raise TypeError(

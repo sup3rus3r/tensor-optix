@@ -1,4 +1,6 @@
-# Train any PyTorch model (ML mode)
+# Train any PyTorch model (ML mode, legacy)
+
+> **Deprecated, not removed.** This path treats every mini-batch as a fake RL episode, scored by an RL reward-return evaluator computing `-loss`, with no real classification/regression metrics. `tensor_optix.ml_core` ([guide](ml-core.md)) is the first-class way to train ML models with tensor-optix - real `fit()`/`predict()`/`evaluate()`, real metrics, real validation-based early stopping. This path keeps working unchanged and emits a `DeprecationWarning` on `MLAgent` construction; it is not scheduled for removal.
 
 tensor-optix's loop isn't RL-specific. Pass any `nn.Module` and a PyTorch `Dataset` or `DataLoader` to `Optimizer`, and the same SPSA hyperparameter tuning, rollback-on-degradation, convergence detection, and checkpointing apply automatically - the loop treats one mini-batch as one "episode."
 

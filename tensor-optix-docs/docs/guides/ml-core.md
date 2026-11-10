@@ -23,7 +23,29 @@ print(history.epochs_run, history.stopped_early, history.best_epoch)
 print(history.val_metrics[-1].metrics)  # {'accuracy': 0.94, 'f1_macro': 0.93, 'confusion_matrix_0_0': ..., ...}
 ```
 
-`TorchMLModel` and `TFMLModel` are provided (`from tensor_optix.ml_core import TorchMLModel, TFMLModel`); each wraps an `nn.Module` / `tf.keras.Model` respectively. There is no JAX/Flax adapter yet.
+`TorchMLModel`, `TFMLModel`, and `FlaxMLModel` are provided (`from tensor_optix.ml_core import TorchMLModel, TFMLModel, FlaxMLModel`); each wraps an `nn.Module` / `tf.keras.Model` / `flax.nnx.Module` respectively.
+
+```python
+from flax import nnx
+import jax.numpy as jnp
+import optax
+from tensor_optix.ml_core import FlaxMLModel
+
+class MLP(nnx.Module):
+    def __init__(self, din, dh, dout, rngs):
+        self.fc1 = nnx.Linear(din, dh, rngs=rngs)
+        self.fc2 = nnx.Linear(dh, dout, rngs=rngs)
+    def __call__(self, x):
+        return self.fc2(jnp.tanh(self.fc1(x)))
+
+def cross_entropy(pred, y):
+    return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(pred, y))
+
+model = FlaxMLModel(MLP(784, 256, 10, nnx.Rngs(0)), loss_fn=cross_entropy, learning_rate=1e-3)
+history = model.fit((X_train, y_train), (X_val, y_val), epochs=50, early_stopping_patience=5)
+```
+
+`FlaxMLModel.iter_batches()` only accepts a raw `(X, y)` array pair -- there's no Dataset/DataLoader equivalent in this codebase's JAX dependency set.
 
 ## Data input
 
@@ -84,13 +106,61 @@ class MyModel(TorchMLModel):
 
 `TorchMLModel`/`TFMLModel` both already set this for `learning_rate`/`weight_decay` by default.
 
+## Learning-rate schedules
+
+Pass `lr_schedule` to `fit()` for a per-epoch learning-rate schedule, independent of SPSA:
+
+```python
+from tensor_optix.ml_core import StepLR, CosineAnnealingLR, WarmupLR
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=CosineAnnealingLR(base_lr=1e-3, epochs=50))
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=StepLR(base_lr=1e-3, step_size=10, gamma=0.5))
+
+# Linear warmup for 5 epochs, then cosine decay over the remaining 45
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=WarmupLR(base_lr=1e-3, warmup_epochs=5,
+                                after=CosineAnnealingLR(base_lr=1e-3, epochs=45)))
+```
+
+`lr_schedule` and SPSA are mutually exclusive for `learning_rate` within a single `fit()` call: when `lr_schedule` is set, `Trainer` drops `learning_rate` from the bounds it hands `SPSAOptimizer` for that run (a schedule and a score-driven probe both mutating the same hyperparameter every epoch would fight each other). `weight_decay` and any other SPSA-tunable hyperparameter are unaffected. A schedule is any `callable(epoch: int) -> float`, so writing a custom one is a plain function.
+
+## Data augmentation
+
+```python
+def augment(X_batch, y_batch):
+    # Torch: X_batch is a tensor; TF: X_batch is a numpy array
+    return X_batch + torch.randn_like(X_batch) * 0.05, y_batch
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=20, augment=augment)
+```
+
+`augment` is a `callable(X_batch, y_batch) -> (X_batch, y_batch)` applied to every training batch, never to validation batches. It only takes effect when `train_data` is a raw `(X, y)` array pair — if you pass a native `Dataset`/`DataLoader`/`tf.data.Dataset`, build augmentation into that pipeline instead (a `transform` on the `Dataset`, or `.map()` on the `tf.data.Dataset`), which is where augmentation naturally belongs for those input forms.
+
+## Pretrained backbones and transfer learning
+
+```python
+from tensor_optix.ml_core import load_pretrained_backbone, freeze_layers, unfreeze_layers
+import torch.nn as nn
+
+backbone = load_pretrained_backbone("resnet18", framework="torch", pretrained=True, freeze=True)
+model = nn.Sequential(backbone, nn.Linear(512, 10))  # resnet18's head is already stripped to nn.Identity()
+
+ml_model = TorchMLModel(model, loss_fn=nn.CrossEntropyLoss())
+ml_model.fit((X_train, y_train), epochs=10)  # only the new head trains while backbone is frozen
+
+unfreeze_layers(backbone)  # fine-tune the whole thing afterward
+```
+
+`load_pretrained_backbone(name, framework="torch"|"tf", pretrained=True, freeze=False, input_shape=None)` loads a backbone from `torchvision.models` (Torch) or `tf.keras.applications` (TF) with its classifier head removed, ready for a new head. Only a small set of common architectures is supported by name (see [reference](../reference/ml-core.md)); anything else, build it with `torchvision.models`/`tf.keras.applications` directly and pass it straight to `TorchMLModel`/`TFMLModel`.
+
+`freeze_layers(model, layers=None)`/`unfreeze_layers(model, layers=None)` work on any `nn.Module` or `tf.keras.Model`, not just backbones from `load_pretrained_backbone()`. `layers=None` freezes/unfreezes the whole model; pass submodule names (Torch, from `model.named_modules()`) or layer names (TF, from `layer.name`) to target specific parts. Freezing works before *or* after wrapping in `TorchMLModel`/`TFMLModel` -- a frozen parameter accumulates no gradient and is never updated, whether or not it was already in the optimizer's param group when `fit()` starts.
+
 ## What's not here yet
 
 - No multi-GPU / distributed training.
-- No data augmentation hooks. Apply augmentation in your `Dataset`/`tf.data.Dataset` pipeline before it reaches `fit()`.
-- No pretrained-backbone / transfer-learning helpers. Load/freeze layers on your `nn.Module`/`tf.keras.Model` yourself before wrapping it.
-- No learning-rate schedules beyond SPSA's online tuning.
-- No JAX/Flax adapter.
 
 ## Reference
 

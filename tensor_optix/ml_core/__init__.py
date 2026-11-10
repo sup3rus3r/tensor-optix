@@ -17,6 +17,8 @@ tensor-optix going forward.
 """
 from tensor_optix.ml_core.base_model import BaseMLModel, FitHistory
 from tensor_optix.ml_core.metrics import MLMetrics, available_metrics, resolve_metrics
+from tensor_optix.ml_core.lr_schedules import StepLR, CosineAnnealingLR, WarmupLR
+from tensor_optix.ml_core.transfer import freeze_layers, unfreeze_layers, load_pretrained_backbone
 
 __all__ = [
     "BaseMLModel",
@@ -24,6 +26,12 @@ __all__ = [
     "MLMetrics",
     "available_metrics",
     "resolve_metrics",
+    "StepLR",
+    "CosineAnnealingLR",
+    "WarmupLR",
+    "freeze_layers",
+    "unfreeze_layers",
+    "load_pretrained_backbone",
 ]
 
 try:
@@ -35,5 +43,11 @@ except ImportError:
 try:
     from tensor_optix.ml_core.adapters.tf_model import TFMLModel
     __all__.append("TFMLModel")
+except ImportError:
+    pass
+
+try:
+    from tensor_optix.ml_core.adapters.flax_model import FlaxMLModel
+    __all__.append("FlaxMLModel")
 except ImportError:
     pass

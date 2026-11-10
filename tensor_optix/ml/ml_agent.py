@@ -40,6 +40,7 @@ Usage::
 
 import logging
 import os
+import warnings
 from typing import Any, Union
 
 import torch
@@ -90,6 +91,17 @@ class MLAgent(BaseAgent):
         max_grad_norm: float = 10.0,
         device: str = "auto",
     ) -> None:
+        warnings.warn(
+            "MLAgent/DatasetPipeline treat each batch as a fake RL episode "
+            "(scored by an RL reward-return evaluator computing -loss), with "
+            "no real classification/regression metrics. tensor_optix.ml_core "
+            "(BaseMLModel/Trainer, sklearn-style fit()/predict()/evaluate()) "
+            "is the first-class way to train ML models with tensor-optix -- "
+            "see the ml_core guide. This path keeps working unchanged and is "
+            "not scheduled for removal.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.model = model
         self.loss_fn = loss_fn
         self.max_grad_norm = max_grad_norm

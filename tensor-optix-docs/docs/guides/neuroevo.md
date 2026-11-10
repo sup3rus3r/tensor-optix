@@ -27,6 +27,8 @@ agent = make_agent("SAC", env, neuroevo=True, neuroevo_mode="feature_extractor")
 
 Neuroevo options on `make_agent`: `graph_in` (default `min(obs_dim, 16)`), `graph_hidden` (default 8), `graph_out` (default `act_dim + 1`), `hebbian_lr`, `hebbian_decay`, `grow_cooldown`.
 
+Neuroevo only supports flat 1-D `Box` observation spaces. `NeuronGraph`'s input neurons are 1:1 with flattened observation scalars, so images and `Dict` observations (supported in the standard, non-neuroevo path via `tensor_optix.encoders`) aren't supported here. `make_agent(neuroevo=True)` raises `NotImplementedError` immediately if the observation space isn't flat `Box`.
+
 ## Building a graph manually
 
 ```python

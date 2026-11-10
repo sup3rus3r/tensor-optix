@@ -231,9 +231,13 @@ def _build_ml_optimizer(
     loss_key = loss if isinstance(loss, str) else "custom"
     loss_fn = resolve_loss(loss, dataset=dataset)
 
-    # Build MLAgent
+    # Build MLAgent -- emits its own DeprecationWarning pointing to ml_core
     ml_agent = MLAgent(model=model, loss_fn=loss_fn)
-    logger.info("Optimizer: ML mode — %s, loss='%s'", type(model).__name__, loss_key)
+    logger.info(
+        "Optimizer: ML mode (legacy) — %s, loss='%s'. "
+        "tensor_optix.ml_core is the first-class way to train ML models.",
+        type(model).__name__, loss_key,
+    )
 
     # Build DatasetPipeline
     pipeline = DatasetPipeline(

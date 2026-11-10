@@ -66,6 +66,8 @@ class Trainer:
         metrics,
         callbacks: Optional[List],
         checkpoint_dir: Optional[str],
+        lr_schedule: Optional[object] = None,
+        augment: Optional[object] = None,
     ):
         self._model = model
         self._epochs = epochs
@@ -74,6 +76,8 @@ class Trainer:
         self._metrics = metrics
         self._callbacks = callbacks or []
         self._checkpoint_dir = checkpoint_dir
+        self._lr_schedule = lr_schedule
+        self._augment = augment
 
         self._scheduler = BackoffScheduler(**ML_BACKOFF_DEFAULTS)
         self._registry = (
@@ -81,11 +85,17 @@ class Trainer:
         )
 
         self._spsa = None
-        if getattr(model, "default_param_bounds", None):
+        param_bounds = dict(getattr(model, "default_param_bounds", None) or {})
+        if lr_schedule is not None:
+            # A schedule and SPSA both mutating learning_rate every epoch
+            # would fight each other -- the schedule owns learning_rate
+            # for the whole run; SPSA still tunes any other bounded param.
+            param_bounds.pop("learning_rate", None)
+        if param_bounds:
             from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
             self._spsa = SPSAOptimizer(
-                param_bounds=model.default_param_bounds,
-                log_params=getattr(model, "default_log_params", []),
+                param_bounds=param_bounds,
+                log_params=[p for p in getattr(model, "default_log_params", []) if p in param_bounds],
             )
 
     def run(self, train_data, val_data) -> "FitHistory":
@@ -97,6 +107,15 @@ class Trainer:
         metrics_history = []  # List[EvalMetrics], grows every eval -- SPSAOptimizer.suggest()'s contract (same as LoopController's usage)
 
         for epoch in range(self._epochs):
+            if self._lr_schedule is not None:
+                from tensor_optix.core.types import HyperparamSet
+                current = self._model.get_hyperparams()
+                new_params = dict(current.params)
+                new_params["learning_rate"] = self._lr_schedule(epoch)
+                self._model.set_hyperparams(
+                    HyperparamSet(params=new_params, episode_id=current.episode_id)
+                )
+
             epoch_loss = self._run_train_epoch(train_data)
             history.train_loss.append(epoch_loss)
             history.epochs_run = epoch + 1
@@ -185,4 +204,4 @@ class Trainer:
         framework-agnostic and never inspects batch contents, per the
         plan's "both input forms, auto-detected" decision.
         """
-        return self._model.iter_batches(data, self._batch_size)
+        return self._model.iter_batches(data, self._batch_size, augment=self._augment)

@@ -22,9 +22,11 @@ class BaseMLModel(ABC):
         """Run inference over an entire dataset/loader and compute MLMetrics
         via resolve_metrics()."""
 
-    def iter_batches(self, data, batch_size: int):
+    def iter_batches(self, data, batch_size: int, augment=None):
         """Yield framework-appropriate batches from a raw (X, y) pair or a
-        native Dataset/DataLoader/tf.data.Dataset -- auto-detected."""
+        native Dataset/DataLoader/tf.data.Dataset -- auto-detected.
+        augment, if given, is applied per-batch and only takes effect for
+        the raw (X, y) array form."""
 
     def save_weights(self, path: str) -> None: ...
     def load_weights(self, path: str) -> None: ...
@@ -51,6 +53,8 @@ class BaseMLModel(ABC):
         metrics="auto",
         callbacks: Optional[List] = None,
         checkpoint_dir: Optional[str] = None,
+        lr_schedule: Optional[Callable[[int], float]] = None,
+        augment: Optional[Callable] = None,
     ) -> FitHistory:
         """
         Train for up to `epochs` epochs. If val_data is given and
@@ -59,6 +63,14 @@ class BaseMLModel(ABC):
         and restores the best checkpoint's weights before returning.
         "New best" is tracked independently of whether checkpoint_dir is
         set -- early stopping works even with no disk checkpointing.
+
+        lr_schedule: callable(epoch) -> float, applied once per epoch.
+        Mutually exclusive with SPSA tuning of learning_rate for this run
+        (see tensor_optix.ml_core.lr_schedules).
+
+        augment: callable(X_batch, y_batch) -> (X_batch, y_batch), applied
+        to every training batch (never validation). Only takes effect on
+        the raw (X, y) array input form.
         """
 ```
 
@@ -111,6 +123,8 @@ class Trainer:
         metrics,
         callbacks: Optional[List],
         checkpoint_dir: Optional[str],
+        lr_schedule: Optional[Callable[[int], float]] = None,
+        augment: Optional[Callable] = None,
     ): ...
 
     def run(self, train_data, val_data) -> FitHistory: ...
@@ -228,6 +242,85 @@ class TFMLModel(BaseMLModel):
     """
 ```
 
-Both adapters' `iter_batches()` accept a raw `(X, y)` array pair or a native `Dataset`/`DataLoader` (Torch) / `tf.data.Dataset` (TF), auto-detected by type.
+```python
+class FlaxMLModel(BaseMLModel):
+    """
+    JAX/Flax NNX adapter. Conventions mirror tensor_optix.algorithms.flax_ppo,
+    the only other Flax NNX code in the codebase: nnx.Optimizer for the
+    update step, nnx.value_and_grad for the gradient, nnx.state/to_pure_dict
+    + replace_by_pure_dict/update for weight save/load.
+
+    Parameters
+    ----------
+    model:    Any flax.nnx.Module. Called as model(x).
+    loss_fn:  callable(pred, target) -> scalar jax array. There is no Flax
+              equivalent of an instantiated loss object, so this is always
+              a plain function (e.g. wrapping optax.softmax_cross_entropy_
+              with_integer_labels to reduce to a scalar).
+    learning_rate, weight_decay: optax.adamw when weight_decay > 0, plain
+                                   optax.adam otherwise.
+    max_grad_norm: applied via optax.clip_by_global_norm in the optax.chain.
+                     None disables.
+    metrics:  Passed through to evaluate() as resolve_metrics()'s metrics arg.
+
+    default_param_bounds = {"learning_rate": (1e-5, 1e-2), "weight_decay": (0.0, 1e-2)}
+    """
+```
+
+All three adapters' `iter_batches()` accept a raw `(X, y)` array pair, or a native `Dataset`/`DataLoader` (Torch) / `tf.data.Dataset` (TF), auto-detected by type. `FlaxMLModel` accepts only the raw `(X, y)` form -- there is no Dataset/DataLoader equivalent in this codebase's JAX dependency set.
+
+## lr_schedules
+
+```python
+class StepLR:
+    """base_lr * gamma**(epoch // step_size)."""
+    def __init__(self, base_lr: float, step_size: int, gamma: float = 0.1): ...
+    def __call__(self, epoch: int) -> float: ...
+
+class CosineAnnealingLR:
+    """Cosine decay from base_lr to min_lr over `epochs` total epochs."""
+    def __init__(self, base_lr: float, epochs: int, min_lr: float = 0.0): ...
+    def __call__(self, epoch: int) -> float: ...
+
+class WarmupLR:
+    """Linear warmup from 0 to base_lr over warmup_epochs, then delegates
+    to `after` (any other schedule) for epochs >= warmup_epochs, re-based
+    to 0 at that point."""
+    def __init__(self, base_lr: float, warmup_epochs: int, after: Optional[object] = None): ...
+    def __call__(self, epoch: int) -> float: ...
+```
+
+Any `callable(epoch: int) -> float` works as `lr_schedule` -- these three are provided for convenience, not a closed interface.
+
+## transfer
+
+```python
+def freeze_layers(model, layers: Optional[Sequence[str]] = None) -> None:
+    """Freeze parameters/layers in-place. model: nn.Module or tf.keras.Model.
+    layers: submodule names (Torch, model.named_modules()) or layer names
+    (TF, layer.name) to target. None freezes the whole model."""
+
+def unfreeze_layers(model, layers: Optional[Sequence[str]] = None) -> None:
+    """Inverse of freeze_layers()."""
+
+def load_pretrained_backbone(
+    name: str,
+    framework: str = "torch",
+    pretrained: bool = True,
+    freeze: bool = False,
+    input_shape: Optional[tuple] = None,
+):
+    """
+    Load a common pretrained backbone with its classifier head removed.
+    Torch: name is a torchvision.models function name (resnet18, resnet34,
+    resnet50, resnet101, resnet152, vgg11/13/16/19, densenet121/169/201,
+    mobilenet_v2, mobilenet_v3_small/large, efficientnet_b0/b1/b2) -- head
+    replaced with nn.Identity(). TF: name is a tf.keras.applications class
+    name (e.g. ResNet50, MobileNetV2, EfficientNetB0) -- loaded with
+    include_top=False, which requires input_shape. Any other architecture:
+    build it directly via torchvision.models/tf.keras.applications and
+    strip the head yourself.
+    """
+```
 
 See [Train an ML model](../guides/ml-core.md) for the full guide.

@@ -75,7 +75,8 @@ class TorchMLModel(BaseMLModel):
         self._lr = learning_rate
         self._wd = weight_decay
         self._optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=learning_rate, weight_decay=weight_decay,
+            (p for p in self.model.parameters() if p.requires_grad),
+            lr=learning_rate, weight_decay=weight_decay,
         )
         self._step_count = 0
 
@@ -144,11 +145,17 @@ class TorchMLModel(BaseMLModel):
             loss=avg_loss, epoch=self._step_count,
         )
 
-    def iter_batches(self, data, batch_size: int):
+    def iter_batches(self, data, batch_size: int, augment=None):
         """
         Accepts either a raw (X, y) array pair or a native
         torch.utils.data.Dataset/DataLoader -- auto-detected, mirroring
         tensor_optix.ml.loss_registry's auto-detection style.
+
+        augment: optional callable(X_batch, y_batch) -> (X_batch, y_batch),
+        applied per-batch. Only takes effect for the raw (X, y) array
+        form -- a Dataset/DataLoader already has a natural place to put
+        augmentation (__getitem__ or a transform), so this hook doesn't
+        duplicate that path.
         """
         from torch.utils.data import DataLoader, Dataset, TensorDataset
 
@@ -165,7 +172,10 @@ class TorchMLModel(BaseMLModel):
             X_t = self._to_tensor(X)
             y_t = self._to_target_tensor(y)
             dataset = TensorDataset(X_t.cpu(), y_t.cpu())
-            yield from DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            for X_batch, y_batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+                if augment is not None:
+                    X_batch, y_batch = augment(X_batch, y_batch)
+                yield X_batch, y_batch
             return
 
         raise TypeError(
