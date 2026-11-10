@@ -1,12 +1,21 @@
 # tensor-optix
 
-tensor-optix is a training loop framework with statistical convergence control, online hyperparameter optimisation, and an optional neuroevolution subsystem for dynamic topology.
+tensor-optix is a training framework for reinforcement learning and for supervised/unsupervised machine learning. Both have statistical convergence control, online hyperparameter optimisation, and real checkpointing.
 
-The core loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected using a corrected t-test on the smoothed score slope plus lag-1 autocorrelation, not a fixed patience counter. Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape. Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
+It has two parallel cores:
 
-The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. Weights for excitatory and inhibitory neurons follow softplus Dale's Law: raw parameter θ maps to `softplus(θ)` (excitatory) or `-softplus(θ)` (inhibitory), eliminating gradient dead zones at weight boundaries. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to reset for the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges — when a neuron is pruned from a region, all inter-region edges referencing it are automatically cleaned up. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
+- **RL core**. An episode-driven loop (`LoopController`/`RLOptimizer`) built around `BaseAgent`'s `act()`/`learn()` contract. Statistical convergence control, SPSA-based online hyperparameter tuning, and an optional neuroevolution subsystem for dynamic topology.
+- **ML core** (`tensor_optix.ml_core`). An epoch/batch-driven loop (`Trainer`, wrapped by `BaseMLModel.fit()`) built around a sklearn-style `fit()`/`predict()`/`evaluate()` contract. Real classification metrics (accuracy, precision/recall/F1, confusion matrix) and regression metrics (MAE, RMSE, R²), validation-based early stopping, and checkpointing on the best metric.
 
-The entire system, including neuroevo, is accessed through a six-method `BaseAgent` interface:
+Both cores reuse the same lower-level, algorithm-agnostic machinery: `CheckpointRegistry`, `BackoffScheduler`'s convergence/plateau detection, `SPSAOptimizer`. Each core has its own contract on top because an RL episode and a training epoch aren't the same shape. See [Concepts](https://sup3rus3r.github.io/tensor-optix/getting-started/concepts/).
+
+## RL core
+
+The RL loop runs your agent against a pipeline, maintains a separate validation signal, and manages four states: ACTIVE, COOLING, DORMANT, and watchdog shutdown. Convergence is detected via a linear trend fit over the recent score window compared against an adaptive, noise-scaled floor, not a fixed patience counter (see [Concepts](https://sup3rus3r.github.io/tensor-optix/getting-started/concepts/) for the exact math; `BackoffScheduler` is the implementation). Hyperparameters are updated every episode via SPSA gradient estimates, with automatic routing to momentum-based or sign-only updates depending on the autocorrelation structure of the score landscape (`AdaptiveOptimizer`). Checkpointing and rollback are driven by the validation signal only, never training score. On DORMANT, a MetaController evaluates the generalization gap and its slope to decide between spawning a policy variant, pruning the ensemble, or stopping.
+
+The neuroevo subsystem (`pip install tensor-optix[neuroevo]`) represents the policy as a `NeuronGraph`: a mutable directed graph of heterogeneous scalar neurons (point, GRU, LSTM, trainable-GRU, trainable-LSTM) with variable-delay edges. Weights for excitatory and inhibitory neurons follow softplus Dale's Law: raw parameter θ maps to `softplus(θ)` (excitatory) or `-softplus(θ)` (inhibitory), eliminating gradient dead zones at weight boundaries. `TopologyController` runs as a loop callback and evaluates three independent signals per episode: improvement slope significance, residual autocorrelation structure, and gradient utilization across hidden neurons. All three must cross their thresholds before a grow operation fires. Pruning is by importance score (incident edge weight magnitude times mean absolute activation). Merging is by Pearson correlation of per-episode activation histories. After every structural mutation the controller calls `graph.invalidate_compile()` to reset for the new topology. `TopologyAwareAdam` resets momentum state for parameters affected by any structural change. `BrainNetwork` composes multiple named `NeuronGraph` regions with sparse learnable inter-region edges. When a neuron is pruned from a region, all inter-region edges referencing it are automatically cleaned up. `HebbianHook` accumulates co-activation products across each episode and applies an Oja-style weight update after the PPO gradient step. `NeuromodulatorSignal` maps a `RegimeDetector` output (trending / ranging / volatile) to simultaneous changes in Hebbian learning rate, entropy coefficient, and topology grow/prune thresholds.
+
+The RL core (including neuroevo) is accessed through a six-method `BaseAgent` interface:
 
 ```python
 class BaseAgent(ABC):
@@ -19,6 +28,40 @@ class BaseAgent(ABC):
 ```
 
 Fifteen agents are included across PyTorch, TensorFlow, and JAX/Flax. Bring your own by implementing the interface above.
+
+## ML core
+
+The ML loop trains your model for a number of epochs, evaluates on a held-out validation set each epoch, and stops early once the validation metric plateaus. It restores the best checkpoint automatically. It is accessed through a `BaseMLModel` interface, with `fit()` as the one-call entry point built on top:
+
+```python
+class BaseMLModel(ABC):
+    def predict(self, X) -> Any: ...
+    def train_step(self, batch) -> float: ...
+    def evaluate(self, data) -> MLMetrics: ...
+    def iter_batches(self, data, batch_size: int): ...
+    def save_weights(self, path: str) -> None: ...
+    def load_weights(self, path: str) -> None: ...
+    # fit(train_data, val_data, epochs, early_stopping_patience, ...) is provided
+```
+
+```python
+import torch.nn as nn
+from tensor_optix.ml_core import TorchMLModel
+
+model = TorchMLModel(
+    nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 10)),
+    loss_fn=nn.CrossEntropyLoss(),
+)
+history = model.fit(
+    (X_train, y_train), (X_val, y_val),
+    epochs=50, early_stopping_patience=5, checkpoint_dir="./checkpoints",
+)
+print(history.val_metrics[-1].metrics)  # {'accuracy': 0.94, 'f1_macro': 0.93, ...}
+```
+
+Metrics are auto-detected from the target dtype. Integer/class-index targets get classification metrics (accuracy, per-class and macro precision/recall/F1, confusion matrix). Float targets get regression metrics (MAE, RMSE, R²). Pass `metrics="classification"`, `metrics="regression"`, or a list of custom `(y_true, y_pred) -> float` callables to override. `TorchMLModel` and `TFMLModel` are provided. Both accept a raw `(X, y)` array pair or a native `Dataset`/`DataLoader`/`tf.data.Dataset`. See [Train an ML model](https://sup3rus3r.github.io/tensor-optix/guides/ml-core/) for the full guide.
+
+There is also an older, RL-loop-based way to train an arbitrary `nn.Module`: `Optimizer(model, dataset)`, which runs the model through the RL loop as a fake episode. See [ML support](#ml-support) below. It predates `ml_core`, is kept for backward compatibility, and has no real classification/regression metrics and no validation-based early stopping. Use `ml_core` for new code.
 
 ---
 
@@ -535,6 +578,8 @@ graph.invalidate_compile()
 ---
 
 ## ML support
+
+> **Use [`tensor_optix.ml_core`](#ml-core) for new code.** The `Optimizer(model, dataset)` path below is the original way to train an arbitrary `nn.Module`. It runs the model through the RL loop's `BaseAgent`/`RLOptimizer` machinery by treating each mini-batch as a fake RL episode (`reward = -loss`). It is kept for backward compatibility and still works. It has no real classification/regression metrics (checkpointing and rollback compare mean "episode return," which is just negative loss) and no validation-split-based early stopping. `ml_core`'s `BaseMLModel`/`Trainer` reuse the same convergence/checkpointing machinery through a real `fit()`/`evaluate()` contract with real metrics.
 
 tensor-optix also supports general ML training via `Optimizer`. Pass any `nn.Module` and a PyTorch `Dataset` or `DataLoader` — the same SPSA hyperparameter tuning, rollback on degradation, convergence detection, and checkpointing apply automatically.
 

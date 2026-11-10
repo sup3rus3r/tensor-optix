@@ -1,5 +1,9 @@
 # Concepts
 
+## Two cores, not one
+
+Everything below describes the **RL core**: `LoopController`, `BaseAgent`, episodes. There is a second, separate **ML core** (`tensor_optix.ml_core`) for supervised/unsupervised training: `Trainer`, `BaseMLModel`, epochs and batches. It is not a mode of the RL loop. An ML training epoch is not an RL episode. The older `Optimizer(model, dataset)` path treats a training epoch as a fake RL episode (see [ML support](../guides/ml-mode.md)); `ml_core` does not. The two cores share the same lower-level, algorithm-agnostic pieces (`CheckpointRegistry`, `BackoffScheduler`, `SPSAOptimizer`) but expose different contracts on top. See [Train an ML model](../guides/ml-core.md).
+
 ## The five abstractions
 
 `LoopController` (wrapped by `RLOptimizer` and, more simply, `Optimizer`) coordinates five things through abstract interfaces. It has no knowledge of TensorFlow, PyTorch, JAX, PPO, DQN, or SAC - only these contracts:

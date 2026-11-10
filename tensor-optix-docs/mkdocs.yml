@@ -10,13 +10,14 @@ nav:
       - Concepts: getting-started/concepts.md
   - Guides:
       - Train an RL agent: guides/train-rl-agent.md
+      - Train an ML model: guides/ml-core.md
       - Tune hyperparameters online: guides/hyperparameter-optimization.md
       - Run trial-level search: guides/trial-search.md
       - Configure via YAML / CLI: guides/cli-config.md
       - Ensembles and policy evolution: guides/ensembles-evolution.md
       - Add exploration bonuses (RND): guides/exploration-rnd.md
       - Distributed training (IMPALA): guides/distributed-training.md
-      - Train any PyTorch model (ML mode): guides/ml-mode.md
+      - Train any PyTorch model (legacy ML mode): guides/ml-mode.md
       - Build a neuroevo agent: guides/neuroevo.md
       - Export to ONNX: guides/onnx-export.md
       - Write a custom agent: guides/custom-agent.md
@@ -55,7 +56,8 @@ nav:
       - Distributed (IMPALA + V-trace): reference/distributed.md
       - Trial search (TrialOrchestrator): reference/orchestrator.md
       - Config / CLI: reference/config-cli.md
-      - ML mode: reference/ml.md
+      - ml_core (BaseMLModel / Trainer / metrics): reference/ml-core.md
+      - ML mode (legacy): reference/ml.md
       - Exploration (RND): reference/exploration.md
       - Neuroevo:
           - Overview: reference/neuroevo/index.md

@@ -2566,6 +2566,20 @@ wheels = [
 ]
 
 [[package]]
+name = "pettingzoo"
+version = "1.27.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gymnasium" },
+    { name = "numpy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e5/14/2c089f488135e699db7d473490b6ceb84df5b470b4bc64f435d9b42041e9/pettingzoo-1.27.0.tar.gz", hash = "sha256:d61210fff2ba59f54e191796dc8b16b37d201137b28882f4c96dd7121a749033", size = 472105, upload-time = "2026-08-13T18:02:41.809Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/1f/ff1bebbe1fc168b6435b482a34d9757249c9da1b14ebc61868cc19998cca/pettingzoo-1.27.0-py3-none-any.whl", hash = "sha256:075a6ab7c32d32d9a674f1af395010198bf09c172341aa38fa5415461601ac61", size = 668492, upload-time = "2026-08-13T18:02:40.528Z" },
+]
+
+[[package]]
 name = "pillow"
 version = "12.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3474,6 +3488,9 @@ onnx = [
     { name = "onnxruntime" },
     { name = "onnxscript" },
 ]
+pettingzoo = [
+    { name = "pettingzoo" },
+]
 tensorboard = [
     { name = "tensorboard" },
     { name = "torch" },
@@ -3523,6 +3540,7 @@ requires-dist = [
     { name = "optax", marker = "extra == 'all'", specifier = ">=0.2.8" },
     { name = "optax", marker = "extra == 'jax'", specifier = ">=0.2.8" },
     { name = "optuna", specifier = ">=3.0.0" },
+    { name = "pettingzoo", marker = "extra == 'pettingzoo'", specifier = ">=1.24.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -3546,7 +3564,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.16" },
 ]
-provides-extras = ["tensorflow", "tensorflow-gpu", "torch", "jax", "cuda", "box2d", "atari", "mujoco", "all", "neuroevo", "onnx", "wandb", "tensorboard", "dev"]
+provides-extras = ["tensorflow", "tensorflow-gpu", "torch", "jax", "cuda", "box2d", "atari", "mujoco", "pettingzoo", "all", "neuroevo", "onnx", "wandb", "tensorboard", "dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]

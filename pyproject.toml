@@ -60,6 +60,10 @@ atari = [
 mujoco = [
     "gymnasium[mujoco]>=1.0.0",
 ]
+# Multi-agent environments (tensor_optix.multi_agent)
+pettingzoo = [
+    "pettingzoo>=1.24.0",
+]
 # Convenience bundles
 all = [
     "tensorflow>=2.18.0",
