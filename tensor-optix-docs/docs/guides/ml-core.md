@@ -158,9 +158,46 @@ unfreeze_layers(backbone)  # fine-tune the whole thing afterward
 
 `freeze_layers(model, layers=None)`/`unfreeze_layers(model, layers=None)` work on any `nn.Module` or `tf.keras.Model`, not just backbones from `load_pretrained_backbone()`. `layers=None` freezes/unfreezes the whole model; pass submodule names (Torch, from `model.named_modules()`) or layer names (TF, from `layer.name`) to target specific parts. Freezing works before *or* after wrapping in `TorchMLModel`/`TFMLModel` -- a frozen parameter accumulates no gradient and is never updated, whether or not it was already in the optimizer's param group when `fit()` starts.
 
+## Multi-GPU training
+
+`ml_core` has no first-class multi-GPU wrapper. There's no `TorchMLModel(..., strategy="ddp")`-style flag. Each framework's own multi-GPU mechanism is a different shape (process groups for Torch, a strategy scope for TF, explicit sharding for JAX), and wrapping all three generically behind one `fit()` call would hide more than it'd help. Instead, build your model with your framework's own multi-GPU mechanism *before* handing it to `TorchMLModel`/`TFMLModel`/`FlaxMLModel` — `fit()`/`predict()`/`evaluate()` then just run on top of it.
+
+**Torch** — wrap with `DistributedDataParallel` (multi-process, one GPU per process) before constructing `TorchMLModel`:
+
+```python
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group(backend="nccl")
+model = MyModel().to(local_rank)
+model = DDP(model, device_ids=[local_rank])
+
+ml_model = TorchMLModel(model, loss_fn=nn.CrossEntropyLoss(), device=f"cuda:{local_rank}")
+ml_model.fit((X_train, y_train), epochs=50)  # launch one process per GPU, e.g. via torchrun
+```
+
+Each process gets its own `TorchMLModel`/`Trainer`/`CheckpointRegistry`; only rank 0 should pass `checkpoint_dir` to avoid every process writing to the same files. `torch.nn.DataParallel` (single-process, multi-thread) also works by passing the `DataParallel`-wrapped module directly, but Torch itself recommends `DistributedDataParallel` even for single-machine use.
+
+**TensorFlow** — wrap the model build in `tf.distribute.MirroredStrategy`'s scope before constructing `TFMLModel`:
+
+```python
+strategy = tf.distribute.MirroredStrategy()
+with strategy.scope():
+    model = build_my_keras_model()
+
+ml_model = TFMLModel(model, loss_fn=tf.keras.losses.SparseCategoricalCrossentropy())
+ml_model.fit((X_train, y_train), epochs=50)
+```
+
+`MirroredStrategy` replicates the model across all visible GPUs on one machine and all-reduces gradients automatically; building inside its scope is what makes the model's variables mirrored.
+
+**JAX/Flax** — multi-GPU in JAX is explicit sharding, not a wrapper object. `FlaxMLModel.train_step()` calls `self.model(X)` and `nnx.value_and_grad` directly; to shard across devices, shard `model`'s parameters and the input batch yourself (e.g. with `jax.sharding.NamedSharding` / `jax.jit` with an explicit mesh) before calling `fit()`, following [Flax's own multi-device guide](https://flax.readthedocs.io/) — `ml_core` doesn't add anything on top of plain JAX here.
+
+None of this has been run against real multi-GPU hardware in this codebase's own test suite (CI and this repo's dev environment are CPU-only); treat it as the standard approach for each framework, not as something `ml_core` has verified end-to-end.
+
 ## What's not here yet
 
-- No multi-GPU / distributed training.
+Nothing from the original ml_core gap list — see [Multi-GPU training](#multi-gpu-training) above for how that's handled (manual, framework-native wrapping, not a built-in flag).
 
 ## Reference
 
