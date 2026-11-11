@@ -5,14 +5,14 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <link rel="shortcut icon" href="../../img/favicon.ico" />
-    <title>Train any PyTorch model (ML mode) - tensor-optix</title>
+    <title>Train any PyTorch model (legacy ML mode) - tensor-optix</title>
     <link rel="stylesheet" href="../../css/theme.css" />
     <link rel="stylesheet" href="../../css/theme_extra.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
     
       <script>
         // Current page data
-        var mkdocs_page_name = "Train any PyTorch model (ML mode)";
+        var mkdocs_page_name = "Train any PyTorch model (legacy ML mode)";
         var mkdocs_page_input_path = "guides\\ml-mode.md";
         var mkdocs_page_url = null;
       </script>
@@ -56,6 +56,8 @@
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Train any PyTorch model (legacy ML mode)</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#available-loss-strings">Available loss= strings</a>
     </li>
@@ -85,6 +89,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -141,6 +152,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
@@ -151,7 +166,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
                   </li>
@@ -199,7 +216,7 @@
   <ul class="wy-breadcrumbs">
     <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
           <li class="breadcrumb-item">Guides</li>
-      <li class="breadcrumb-item active">Train any PyTorch model (ML mode)</li>
+      <li class="breadcrumb-item active">Train any PyTorch model (legacy ML mode)</li>
     <li class="wy-breadcrumbs-aside">
           <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/ml-mode.md" class="icon icon-github"> Edit on GitHub</a>
     </li>
@@ -209,7 +226,10 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
             <div class="section" itemprop="articleBody">
               
-                <h1 id="train-any-pytorch-model-ml-mode">Train any PyTorch model (ML mode)</h1>
+                <h1 id="train-any-pytorch-model-ml-mode-legacy">Train any PyTorch model (ML mode, legacy)</h1>
+<blockquote>
+<p><strong>Deprecated, not removed.</strong> This path treats every mini-batch as a fake RL episode, scored by an RL reward-return evaluator computing <code>-loss</code>, with no real classification/regression metrics. <code>tensor_optix.ml_core</code> (<a href="../ml-core/">guide</a>) is the first-class way to train ML models with tensor-optix - real <code>fit()</code>/<code>predict()</code>/<code>evaluate()</code>, real metrics, real validation-based early stopping. This path keeps working unchanged and emits a <code>DeprecationWarning</code> on <code>MLAgent</code> construction; it is not scheduled for removal.</p>
+</blockquote>
 <p>tensor-optix's loop isn't RL-specific. Pass any <code>nn.Module</code> and a PyTorch <code>Dataset</code> or <code>DataLoader</code> to <code>Optimizer</code>, and the same SPSA hyperparameter tuning, rollback-on-degradation, convergence detection, and checkpointing apply automatically - the loop treats one mini-batch as one "episode."</p>
 <pre><code class="language-python">import tensor_optix as optix
 import torch.nn as nn
@@ -318,7 +338,7 @@ ml_agent.load_weights(&quot;checkpoint.pt&quot;)
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../distributed-training/" class="btn btn-neutral float-left" title="Distributed training (IMPALA)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../multi-agent/" class="btn btn-neutral float-left" title="Multi-agent training (PettingZoo)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../neuroevo/" class="btn btn-neutral float-right" title="Build a neuroevo agent">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -346,7 +366,7 @@ ml_agent.load_weights(&quot;checkpoint.pt&quot;)
         </span>
     
     
-      <span><a href="../distributed-training/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../multi-agent/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../neuroevo/" style="color: #fcfcfc">Next &raquo;</a></span>

@@ -51,6 +51,8 @@
                   </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Concepts</a>
     <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#two-cores-not-one">Two cores, not one</a>
+    </li>
     <li class="toctree-l2"><a class="reference internal" href="#the-five-abstractions">The five abstractions</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#loop-states">Loop states</a>
@@ -72,6 +74,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -84,7 +88,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -93,6 +99,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -149,6 +162,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
@@ -159,7 +176,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
                   </li>
@@ -218,6 +237,8 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="concepts">Concepts</h1>
+<h2 id="two-cores-not-one">Two cores, not one</h2>
+<p>Everything below describes the <strong>RL core</strong>: <code>LoopController</code>, <code>BaseAgent</code>, episodes. There is a second, separate <strong>ML core</strong> (<code>tensor_optix.ml_core</code>) for supervised/unsupervised training: <code>Trainer</code>, <code>BaseMLModel</code>, epochs and batches. It is not a mode of the RL loop. An ML training epoch is not an RL episode. The older <code>Optimizer(model, dataset)</code> path treats a training epoch as a fake RL episode (see <a href="../../guides/ml-mode/">ML support</a>); <code>ml_core</code> does not. The two cores share the same lower-level, algorithm-agnostic pieces (<code>CheckpointRegistry</code>, <code>BackoffScheduler</code>, <code>SPSAOptimizer</code>) but expose different contracts on top. See <a href="../../guides/ml-core/">Train an ML model</a>.</p>
 <h2 id="the-five-abstractions">The five abstractions</h2>
 <p><code>LoopController</code> (wrapped by <code>RLOptimizer</code> and, more simply, <code>Optimizer</code>) coordinates five things through abstract interfaces. It has no knowledge of TensorFlow, PyTorch, JAX, PPO, DQN, or SAC - only these contracts:</p>
 <table>
@@ -265,6 +286,14 @@
 <h2 id="checkpointing-is-validation-only">Checkpointing is validation-only</h2>
 <p>When a <code>val_pipeline</code> is configured, <code>primary_score</code> is the <strong>validation</strong> score, not the training score. The training score can keep climbing while validation degrades - that's overfitting, and the loop is built to act on it rather than reward it.</p>
 <p><code>run()</code> always restores the best known checkpoint before returning, regardless of how the loop ended (convergence, <code>stop()</code>, or <code>max_episodes</code>). Pass <code>checkpoint_score_fn</code> to drive checkpoint <em>selection</em> from an independent, deterministic external evaluation instead of the noisy training-window mean.</p>
+<p>By default, "best" is the single episode with the highest <code>primary_score</code> -
+a raw point comparison. That's fine most of the time, but a lucky episode
+(reward concentrated on one favorable step, not earned consistently) can
+score higher than anything a genuinely better policy produces later, and
+become a permanent, unbeatable "best." <code>criteria_mode</code> and
+<code>checkpoint_confirmation</code> (both opt-in, off by default) widen the
+measurement and require corroboration before trusting an improvement - see
+<a href="../../guides/train-rl-agent/#avoiding-unicorn-checkpoints">Avoiding unicorn checkpoints</a>.</p>
 <h2 id="on-policy-vs-off-policy-rollback">On-policy vs. off-policy rollback</h2>
 <p><code>BaseAgent.is_on_policy</code> (default <code>True</code>) tells the loop whether rollback is safe:</p>
 <ul>

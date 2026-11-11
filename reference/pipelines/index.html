@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -141,6 +152,10 @@
     </li>
     </ul>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
@@ -151,7 +166,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -210,7 +227,7 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="tensor_optixpipeline">tensor_optix.pipeline</h1>
-<p>Three concrete <code>BasePipeline</code> implementations.</p>
+<p>Three concrete <code>BasePipeline</code> implementations. For PettingZoo environments see <a href="../multi-agent/">multi_agent</a>; for the intrinsic-reward wrapper see <a href="../exploration/">Exploration (RND)</a>.</p>
 <h2 id="batchpipeline">BatchPipeline</h2>
 <pre><code class="language-python">class BatchPipeline(BasePipeline):
     &quot;&quot;&quot;
@@ -244,8 +261,14 @@
     &quot;&quot;&quot;
 
     def __init__(self, env, agent=None, window_size: int = 200): ...
+
+    @property
+    def steps_per_episode(self) -&gt; int:
+        &quot;&quot;&quot;Env steps per yielded window (== window_size).&quot;&quot;&quot;
 </code></pre>
 <p>Physics-engine exceptions raised during <code>env.step()</code> (e.g. Box2D <code>AssertionError</code>) are caught and treated as episode termination rather than propagating.</p>
+<p>When an episode ends mid-window and the agent defines <code>reset_hidden()</code> (e.g. <code>TorchRecurrentPPOAgent</code>), the pipeline calls it right after the env reset, so recurrent state never leaks from one episode into the next.</p>
+<p><code>steps_per_episode</code> is the step hint <code>TrialOrchestrator</code> / <code>ConcurrentTrialScheduler</code> use to convert a <code>trial_steps</code> budget into a number of windows.</p>
 <h2 id="livepipeline">LivePipeline</h2>
 <pre><code class="language-python">class LivePipeline(BasePipeline):
     &quot;&quot;&quot;
@@ -272,7 +295,8 @@
 
     def __init__(
         self, data_source, agent=None,
-        episode_boundary_fn=None, reconnect_on_disconnect=True,
+        episode_boundary_fn=None, buffer_size: int = 1000,
+        reconnect_on_disconnect=True,
     ): ...
 
     @staticmethod
@@ -282,6 +306,13 @@
     @staticmethod
     def on_done_signal(): ...
 </code></pre>
+<p>Behaviour notes:</p>
+<ul>
+<li><strong>Backpressure.</strong> The producer thread blocks while the bounded queue (<code>buffer_size</code> items) is full and resumes when the consumer catches up. A slow <code>learn()</code> therefore throttles the source instead of being mistaken for a disconnect - no samples are dropped and the stream is not restarted.</li>
+<li><strong>End of stream.</strong> With <code>reconnect_on_disconnect=False</code>, when <code>stream()</code> is exhausted (or raises) the steps collected so far are yielded as a final, shorter <code>EpisodeData</code> and <code>episodes()</code> then ends.</li>
+<li><strong>Idle source.</strong> If no item arrives for 30 s the current episode is closed with whatever was collected.</li>
+<li><strong>YAML configs.</strong> <code>LivePipeline</code> needs a <code>data_source</code> object, so it cannot be built from a Gymnasium env id - see <a href="../config-cli/">Config / CLI</a>.</li>
+</ul>
 <h2 id="vectorbatchpipeline">VectorBatchPipeline</h2>
 <pre><code class="language-python">class VectorBatchPipeline(BasePipeline):
     &quot;&quot;&quot;
@@ -306,7 +337,7 @@
     &quot;&quot;&quot;
 
     def __init__(
-        self, env_fns, agent=None, window_size: int = 200, async_envs: bool = False,
+        self, env_fns, agent=None, window_size: int = 256, async_envs: bool = False,
     ): ...
 
     def episodes(self):
@@ -320,14 +351,27 @@
 
     @property
     def n_envs(self) -&gt; int: ...
+
+    @property
+    def steps_per_episode(self) -&gt; int:
+        &quot;&quot;&quot;Env steps per yielded window (window_size * n_envs).&quot;&quot;&quot;
 </code></pre>
+<p>Window layout and how the rest of the library consumes it:</p>
+<ul>
+<li><strong>Layout.</strong> Flat arrays are interleaved as <code>[t * n_envs + env]</code>. <code>EpisodeData.metadata["n_envs"]</code> records the env count and <code>EpisodeData.final_obs</code> is a <strong>list</strong> with one entry per env (the observation after that env's last step, <code>None</code> if that step ended an episode).</li>
+<li><strong>Autoreset.</strong> Vector envs are created with <code>autoreset_mode=SAME_STEP</code> (Gymnasium &gt;= 1.1), so the observation returned by a terminal step is already the first observation of the next episode. Gymnasium's default <code>NEXT_STEP</code> mode would instead insert one action-ignored, zero-reward "reset" transition after every episode into the training data. On Gymnasium 1.0.x (no <code>AutoresetMode</code>) the library falls back to the vector env's default.</li>
+<li><strong>On-policy agents</strong> (PPO family) pass <code>n_envs</code> to <code>compute_gae()</code>, which runs the recurrence per env and bootstraps each env from its own <code>final_obs</code>.</li>
+<li><strong>Off-policy agents</strong> (DQN, Rainbow, SAC, TD3 - Torch and TF) pair each step with the next step <em>of the same env</em> when filling the replay buffer, and flush n-step accumulation per env.</li>
+<li><strong>Evaluators</strong> (<code>TorchEvaluator</code> / <code>TFEvaluator</code>) and the composite-score breadth signal split episodes per env.</li>
+<li><strong>Not supported:</strong> <code>TorchRecurrentPPOAgent</code> keeps a single hidden state and must be used with <code>BatchPipeline</code>.</li>
+</ul>
 <p>See <a href="../../guides/train-rl-agent/">Train an RL agent</a> for the <code>optimal_window_size()</code> helper that picks a sensible <code>window_size</code> automatically.</p>
               
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
         <a href="../algorithms/" class="btn btn-neutral float-left" title="Algorithms"><span class="icon icon-circle-arrow-left"></span> Previous</a>
-        <a href="../optimizers/" class="btn btn-neutral float-right" title="Optimizers (hyperparameter tuning)">Next <span class="icon icon-circle-arrow-right"></span></a>
+        <a href="../multi-agent/" class="btn btn-neutral float-right" title="Multi-agent (PettingZoo)">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
   <hr/>
@@ -357,7 +401,7 @@
       <span><a href="../algorithms/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <span><a href="../optimizers/" style="color: #fcfcfc">Next &raquo;</a></span>
+      <span><a href="../multi-agent/" style="color: #fcfcfc">Next &raquo;</a></span>
     
   </span>
 </div>

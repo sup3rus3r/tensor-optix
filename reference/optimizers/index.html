@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -133,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Optimizers (hyperparameter tuning)</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#spsaoptimizer">SPSAOptimizer</a>
@@ -155,7 +170,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -251,7 +268,7 @@
     LoopController suppresses degradation detection.
     &quot;&quot;&quot;
 </code></pre>
-<p>Constructor accepts <code>param_bounds: dict[str, (lo, hi)]</code> and <code>log_params: set[str]</code> (params normalized in log space - use for learning rates and anything spanning orders of magnitude). On improvement, probes shrink (avoid disrupting active learning); on plateau, probes widen (explore more aggressively).</p>
+<p>Constructor accepts <code>param_bounds: dict[str, (lo, hi)]</code> and <code>log_params: set[str]</code> (params normalized in log space - use for learning rates and anything spanning orders of magnitude). On improvement, probes shrink (avoid disrupting active learning); on plateau, probes widen (explore more aggressively) and the cycle restarts. If <code>on_plateau()</code> interrupts a cycle mid-probe, the next cycle starts from the interrupted cycle's base point <code>x</code>, not from the probe point <code>x ± c·Δ</code> the agent happens to hold at that moment - an unevaluated probe is never silently adopted as the new baseline.</p>
 <h2 id="momentumoptimizer">MomentumOptimizer</h2>
 <pre><code class="language-python">class MomentumOptimizer:
     &quot;&quot;&quot;
@@ -296,11 +313,14 @@
     round-robin. With N bounded params, a full cycle takes 2N episodes
     (probe + commit per param).
 
-    Phase 1 - PROBE: x + δ, record base_score.
-    Phase 2 - COMMIT: gradient = (probe_score - base_score) / δ
-        gradient &gt; 0 → keep probe value
-        gradient &lt; 0 → apply x - δ (reflected step)
-        gradient ≈ 0 → keep current value
+    Phase 1 - PROBE: x + δ (x - δ when x is already at the upper bound),
+                     record base_score.
+    Phase 2 - COMMIT: improvement = probe_score - base_score
+        improvement &gt; 0 → keep the probe value
+        improvement &lt; 0 → step the other way from x (reflected step,
+                          clipped to the bounds - so a failed downward
+                          probe at the upper bound returns to x)
+        improvement ≈ 0 → restore the pre-probe value x
 
     On improvement: increase perturbation_scale. On plateau: increase further,
     reset cycle.
@@ -374,7 +394,7 @@
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../pipelines/" class="btn btn-neutral float-left" title="Pipelines"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../encoders/" class="btn btn-neutral float-left" title="Encoders (image / Dict observations)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../callbacks/" class="btn btn-neutral float-right" title="Callbacks">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -402,7 +422,7 @@
         </span>
     
     
-      <span><a href="../pipelines/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../encoders/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../callbacks/" style="color: #fcfcfc">Next &raquo;</a></span>

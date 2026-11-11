@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Multi-agent (PettingZoo) - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Multi-agent (PettingZoo)";
+        var mkdocs_page_input_path = "reference\\multi-agent.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Multi-agent (PettingZoo)</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#seatenvview">SeatEnvView</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#parallelmultiagentpipeline">ParallelMultiAgentPipeline</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#aecmultiagentpipeline">AECMultiAgentPipeline</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#multiagentrunner">MultiAgentRunner</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+      <li class="breadcrumb-item active">Multi-agent (PettingZoo)</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/multi-agent.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="tensor_optixmulti_agent">tensor_optix.multi_agent</h1>
+<p>Pipelines and a minimal runner for <a href="https://pettingzoo.farama.org/">PettingZoo</a> multi-agent environments. Each <em>seat</em> (PettingZoo agent id) is driven by its own ordinary <code>BaseAgent</code>; a window yields one <code>EpisodeData</code> per seat.</p>
+<pre><code class="language-bash">pip install tensor-optix[torch,pettingzoo]
+</code></pre>
+<pre><code class="language-python">from tensor_optix.multi_agent import (
+    SeatEnvView,
+    ParallelMultiAgentPipeline,
+    AECMultiAgentPipeline,
+    MultiAgentRunner,
+)
+</code></pre>
+<p><code>MultiAgentEpisodeData</code> (in <code>tensor_optix.multi_agent.multi_agent_episode</code>) is the alias <code>Dict[Hashable, EpisodeData]</code> - the type both pipelines yield.</p>
+<h2 id="seatenvview">SeatEnvView</h2>
+<pre><code class="language-python">class SeatEnvView:
+    &quot;&quot;&quot;
+    A single seat's view of a PettingZoo env: exposes .observation_space and
+    .action_space for one agent id, so make_agent(view) can build that
+    seat's agent exactly as it would for a Gymnasium env.
+
+    Discrete observation spaces are presented as a one-hot Box(n,) -
+    make_agent() needs a Box observation space.
+    &quot;&quot;&quot;
+
+    def __init__(self, pz_env, agent_id): ...
+
+    def encode_observation(self, raw_observation):
+        &quot;&quot;&quot;One-hot encode a Discrete observation; pass anything else through.&quot;&quot;&quot;
+</code></pre>
+<p>Pass the views to a pipeline's <code>views=</code> argument so observations are encoded the same way the agent's network was sized.</p>
+<h2 id="parallelmultiagentpipeline">ParallelMultiAgentPipeline</h2>
+<pre><code class="language-python">class ParallelMultiAgentPipeline:
+    &quot;&quot;&quot;
+    Drives a PettingZoo ParallelEnv: every active seat acts each round.
+
+    window_size: rounds collected per yielded window (each active seat
+                 contributes one step per round).
+    views:       optional {agent_id: SeatEnvView} for observation encoding.
+    &quot;&quot;&quot;
+
+    def __init__(self, env, agents: Dict[Hashable, Any], window_size: int = 200, views=None): ...
+    def set_agents(self, agents) -&gt; None: ...
+    def setup(self) -&gt; None: ...
+    def episodes(self) -&gt; Generator[Dict[Hashable, EpisodeData], None, None]: ...
+    def teardown(self) -&gt; None: ...
+</code></pre>
+<p>When every seat is done the env is reset and the window keeps filling, mirroring <code>BatchPipeline</code>.</p>
+<h2 id="aecmultiagentpipeline">AECMultiAgentPipeline</h2>
+<pre><code class="language-python">class AECMultiAgentPipeline:
+    &quot;&quot;&quot;
+    Drives a PettingZoo AECEnv (turn-based, one seat acts per env.step()).
+
+    window_size: TOTAL env.step() calls per window, split across whichever
+                 seats take turns during it - not window_size per seat.
+    &quot;&quot;&quot;
+
+    def __init__(self, env, agents: Dict[Hashable, Any], window_size: int = 200, views=None): ...
+</code></pre>
+<p><strong>Reward alignment.</strong> In the AEC API, <code>env.last()</code> returns the reward a seat accumulated <em>since its previous action</em>. The pipeline credits that reward - and the <code>terminated</code>/<code>truncated</code> flag observed on the seat's final <code>action=None</code> turn - back to the seat's previously recorded step. So within a seat's <code>EpisodeData</code>:</p>
+<ul>
+<li><code>rewards[k]</code> is the outcome of <code>actions[k]</code>.</li>
+<li>A seat's last acted step of an episode carries the terminal reward with <code>terminated</code> (or <code>truncated</code>) set, so <code>dones</code> marks real episode boundaries for GAE / n-step returns.</li>
+<li>No un-acted-on step is ever appended, so agents' <code>act()</code>-populated rollout caches stay in sync with <code>rewards</code>.</li>
+</ul>
+<p><strong>Known limitation.</strong> The outcome of a seat's <em>last</em> action in a window only arrives on its next turn, which belongs to the next window. That one reward per seat per window boundary is not credited (the step keeps reward <code>0.0</code> and no done flag). <code>final_obs</code> is <code>None</code> for AEC windows - there is no per-seat post-window observation to bootstrap from.</p>
+<p>A seat that gets no turn in a window yields an empty <code>EpisodeData</code>; skip <code>learn()</code> for it (<code>MultiAgentRunner</code> does).</p>
+<h2 id="multiagentrunner">MultiAgentRunner</h2>
+<pre><code class="language-python">class MultiAgentRunner:
+    &quot;&quot;&quot;
+    Minimal training driver: for each window, call learn() on every seat's
+    agent with that seat's EpisodeData (empty seats skipped).
+    &quot;&quot;&quot;
+
+    def __init__(self, pipeline, agents: Dict[Hashable, Any]): ...
+    def run(self, max_windows: Optional[int] = None) -&gt; None: ...
+</code></pre>
+<p><code>MultiAgentRunner</code> is deliberately small - it does not run the <code>LoopController</code> state machine (no checkpointing, hyperparameter tuning, or convergence detection). To get those for one seat, wrap that seat in your own <code>BasePipeline</code> and use <code>RLOptimizer</code>.</p>
+<p>See <a href="../../guides/multi-agent/">Multi-agent training</a> for a worked example.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../pipelines/" class="btn btn-neutral float-left" title="Pipelines"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../encoders/" class="btn btn-neutral float-right" title="Encoders (image / Dict observations)">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../pipelines/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../encoders/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

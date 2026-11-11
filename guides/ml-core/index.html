@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Train an ML model - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Train an ML model";
+        var mkdocs_page_input_path = "guides\\ml-core.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Train an ML model</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#data-input">Data input</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#metrics">Metrics</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#checkpointing-and-early-stopping">Checkpointing and early stopping</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#hyperparameter-tuning">Hyperparameter tuning</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#learning-rate-schedules">Learning-rate schedules</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#data-augmentation">Data augmentation</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#pretrained-backbones-and-transfer-learning">Pretrained backbones and transfer learning</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#multi-gpu-training">Multi-GPU training</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#whats-not-here-yet">What's not here yet</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#reference">Reference</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Guides</li>
+      <li class="breadcrumb-item active">Train an ML model</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/ml-core.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="train-an-ml-model-ml_core">Train an ML model (ml_core)</h1>
+<p><code>tensor_optix.ml_core</code> is the first-class way to train a supervised or unsupervised model with tensor-optix. The older <code>Optimizer(model, dataset)</code> path (see <a href="../ml-mode/">ML mode</a>) is built on top of the RL loop, treating each mini-batch as a fake episode. <code>BaseMLModel</code>/<code>Trainer</code> are a separate, epoch-driven contract with real classification/regression metrics and validation-based early stopping.</p>
+<pre><code class="language-python">import torch.nn as nn
+from tensor_optix.ml_core import TorchMLModel
+
+model = TorchMLModel(
+    nn.Sequential(nn.Linear(784, 256), nn.ReLU(), nn.Linear(256, 10)),
+    loss_fn=nn.CrossEntropyLoss(),
+    learning_rate=1e-3,
+)
+
+history = model.fit(
+    (X_train, y_train), (X_val, y_val),
+    epochs=50,
+    early_stopping_patience=5,
+    checkpoint_dir=&quot;./checkpoints&quot;,
+)
+
+print(history.epochs_run, history.stopped_early, history.best_epoch)
+print(history.val_metrics[-1].metrics)  # {'accuracy': 0.94, 'f1_macro': 0.93, 'confusion_matrix_0_0': ..., ...}
+</code></pre>
+<p><code>TorchMLModel</code>, <code>TFMLModel</code>, and <code>FlaxMLModel</code> are provided (<code>from tensor_optix.ml_core import TorchMLModel, TFMLModel, FlaxMLModel</code>); each wraps an <code>nn.Module</code> / <code>tf.keras.Model</code> / <code>flax.nnx.Module</code> respectively.</p>
+<pre><code class="language-python">from flax import nnx
+import jax.numpy as jnp
+import optax
+from tensor_optix.ml_core import FlaxMLModel
+
+class MLP(nnx.Module):
+    def __init__(self, din, dh, dout, rngs):
+        self.fc1 = nnx.Linear(din, dh, rngs=rngs)
+        self.fc2 = nnx.Linear(dh, dout, rngs=rngs)
+    def __call__(self, x):
+        return self.fc2(jnp.tanh(self.fc1(x)))
+
+def cross_entropy(pred, y):
+    return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(pred, y))
+
+model = FlaxMLModel(MLP(784, 256, 10, nnx.Rngs(0)), loss_fn=cross_entropy, learning_rate=1e-3)
+history = model.fit((X_train, y_train), (X_val, y_val), epochs=50, early_stopping_patience=5)
+</code></pre>
+<p><code>FlaxMLModel.iter_batches()</code> only accepts a raw <code>(X, y)</code> array pair -- there's no Dataset/DataLoader equivalent in this codebase's JAX dependency set.</p>
+<h2 id="data-input">Data input</h2>
+<p><code>fit()</code>, <code>evaluate()</code>, and <code>predict()</code> all accept either form, auto-detected:</p>
+<pre><code class="language-python"># Raw (X, y) array pair, simplest case
+model.fit((X_train, y_train), (X_val, y_val), epochs=20)
+
+# A native Dataset/DataLoader (Torch) or tf.data.Dataset (TF)
+model.fit(train_dataset, val_dataset, epochs=20, batch_size=64)
+</code></pre>
+<h2 id="metrics">Metrics</h2>
+<p><code>metrics="auto"</code> (the default) detects task type from the target dtype. Integer/class-index targets get classification metrics, float targets get regression metrics:</p>
+<pre><code class="language-python">model = TorchMLModel(net, loss_fn=nn.CrossEntropyLoss())             # metrics=&quot;auto&quot;
+model = TorchMLModel(net, loss_fn=nn.MSELoss(), metrics=&quot;regression&quot;) # explicit
+model = TorchMLModel(net, loss_fn=nn.CrossEntropyLoss(),
+                      metrics=[my_custom_metric])                     # custom callables
+</code></pre>
+<table>
+<thead>
+<tr>
+<th><code>metrics=</code></th>
+<th>Computed keys</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"classification"</code></td>
+<td><code>accuracy</code>, <code>precision_macro</code>, <code>recall_macro</code>, <code>f1_macro</code>, per-class <code>precision_&lt;i&gt;</code>/<code>recall_&lt;i&gt;</code>/<code>f1_&lt;i&gt;</code>, flattened <code>confusion_matrix_&lt;i&gt;_&lt;j&gt;</code></td>
+</tr>
+<tr>
+<td><code>"regression"</code></td>
+<td><code>mae</code>, <code>rmse</code>, <code>r2</code></td>
+</tr>
+<tr>
+<td>a list of <code>(y_true, y_pred) -&gt; float</code> callables</td>
+<td>one key per callable, named by <code>__name__</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every call to <code>evaluate()</code> returns an <code>MLMetrics</code>: <code>primary_score</code> (higher-is-better; <code>accuracy</code> for classification, <code>r2</code> for regression, <code>-loss</code> for custom metrics), <code>loss</code>, <code>task_type</code>, the full <code>metrics</code> dict, and <code>epoch</code>. This is the value checkpointing and early stopping compare against.</p>
+<h2 id="checkpointing-and-early-stopping">Checkpointing and early stopping</h2>
+<p>Pass <code>checkpoint_dir</code> to <code>fit()</code> to persist the best validation checkpoint via the same <code>CheckpointRegistry</code> the RL core uses. <code>fit()</code> restores the best checkpoint's weights automatically before returning, regardless of whether training ran to completion or stopped early:</p>
+<pre><code class="language-python">history = model.fit(
+    (X_train, y_train), (X_val, y_val),
+    epochs=100,
+    early_stopping_patience=10,   # stop after 10 epochs with no new best
+    checkpoint_dir=&quot;./checkpoints&quot;,
+)
+</code></pre>
+<p><code>early_stopping_patience</code> works even without <code>checkpoint_dir</code> set. "New best" is tracked independently of whether checkpoints are being persisted to disk. <code>checkpoint_dir</code> only controls whether that best state is saved and restorable later.</p>
+<p>Convergence/plateau detection reuses <code>BackoffScheduler</code> from the RL core, with defaults re-tuned for per-epoch validation curves instead of the RL defaults. Per-epoch validation curves are typically smoother and evaluated far less often than per-episode RL reward. See <a href="../../reference/ml-core/"><code>tensor_optix.ml_core.trainer.ML_BACKOFF_DEFAULTS</code></a> for the exact values.</p>
+<h2 id="hyperparameter-tuning">Hyperparameter tuning</h2>
+<p>If your model overrides <code>default_param_bounds</code> (the same mechanism <code>MLAgent</code>/RL agents use), <code>Trainer</code> activates <code>SPSAOptimizer</code> automatically, tuning hyperparameters once per epoch from the validation score:</p>
+<pre><code class="language-python">class MyModel(TorchMLModel):
+    default_param_bounds = {&quot;learning_rate&quot;: (1e-5, 1e-2), &quot;weight_decay&quot;: (0.0, 1e-2)}
+</code></pre>
+<p><code>TorchMLModel</code>/<code>TFMLModel</code> both already set this for <code>learning_rate</code>/<code>weight_decay</code> by default.</p>
+<h2 id="learning-rate-schedules">Learning-rate schedules</h2>
+<p>Pass <code>lr_schedule</code> to <code>fit()</code> for a per-epoch learning-rate schedule, independent of SPSA:</p>
+<pre><code class="language-python">from tensor_optix.ml_core import StepLR, CosineAnnealingLR, WarmupLR
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=CosineAnnealingLR(base_lr=1e-3, epochs=50))
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=StepLR(base_lr=1e-3, step_size=10, gamma=0.5))
+
+# Linear warmup for 5 epochs, then cosine decay over the remaining 45
+model.fit((X_train, y_train), (X_val, y_val), epochs=50,
+          lr_schedule=WarmupLR(base_lr=1e-3, warmup_epochs=5,
+                                after=CosineAnnealingLR(base_lr=1e-3, epochs=45)))
+</code></pre>
+<p><code>lr_schedule</code> and SPSA are mutually exclusive for <code>learning_rate</code> within a single <code>fit()</code> call: when <code>lr_schedule</code> is set, <code>Trainer</code> drops <code>learning_rate</code> from the bounds it hands <code>SPSAOptimizer</code> for that run (a schedule and a score-driven probe both mutating the same hyperparameter every epoch would fight each other). <code>weight_decay</code> and any other SPSA-tunable hyperparameter are unaffected. A schedule is any <code>callable(epoch: int) -&gt; float</code>, so writing a custom one is a plain function.</p>
+<h2 id="data-augmentation">Data augmentation</h2>
+<pre><code class="language-python">def augment(X_batch, y_batch):
+    # Torch: X_batch is a tensor; TF: X_batch is a numpy array
+    return X_batch + torch.randn_like(X_batch) * 0.05, y_batch
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=20, augment=augment)
+</code></pre>
+<p><code>augment</code> is a <code>callable(X_batch, y_batch) -&gt; (X_batch, y_batch)</code> applied to every training batch, never to validation batches. It only takes effect when <code>train_data</code> is a raw <code>(X, y)</code> array pair — if you pass a native <code>Dataset</code>/<code>DataLoader</code>/<code>tf.data.Dataset</code>, build augmentation into that pipeline instead (a <code>transform</code> on the <code>Dataset</code>, or <code>.map()</code> on the <code>tf.data.Dataset</code>), which is where augmentation naturally belongs for those input forms.</p>
+<h2 id="pretrained-backbones-and-transfer-learning">Pretrained backbones and transfer learning</h2>
+<pre><code class="language-python">from tensor_optix.ml_core import load_pretrained_backbone, freeze_layers, unfreeze_layers
+import torch.nn as nn
+
+backbone = load_pretrained_backbone(&quot;resnet18&quot;, framework=&quot;torch&quot;, pretrained=True, freeze=True)
+model = nn.Sequential(backbone, nn.Linear(512, 10))  # resnet18's head is already stripped to nn.Identity()
+
+ml_model = TorchMLModel(model, loss_fn=nn.CrossEntropyLoss())
+ml_model.fit((X_train, y_train), epochs=10)  # only the new head trains while backbone is frozen
+
+unfreeze_layers(backbone)  # fine-tune the whole thing afterward
+</code></pre>
+<p><code>load_pretrained_backbone(name, framework="torch"|"tf", pretrained=True, freeze=False, input_shape=None)</code> loads a backbone from <code>torchvision.models</code> (Torch) or <code>tf.keras.applications</code> (TF) with its classifier head removed, ready for a new head. Only a small set of common architectures is supported by name (see <a href="../../reference/ml-core/">reference</a>); anything else, build it with <code>torchvision.models</code>/<code>tf.keras.applications</code> directly and pass it straight to <code>TorchMLModel</code>/<code>TFMLModel</code>.</p>
+<p><code>freeze_layers(model, layers=None)</code>/<code>unfreeze_layers(model, layers=None)</code> work on any <code>nn.Module</code> or <code>tf.keras.Model</code>, not just backbones from <code>load_pretrained_backbone()</code>. <code>layers=None</code> freezes/unfreezes the whole model; pass submodule names (Torch, from <code>model.named_modules()</code>) or layer names (TF, from <code>layer.name</code>) to target specific parts. Freezing works before <em>or</em> after wrapping in <code>TorchMLModel</code>/<code>TFMLModel</code> -- a frozen parameter accumulates no gradient and is never updated, whether or not it was already in the optimizer's param group when <code>fit()</code> starts.</p>
+<h2 id="multi-gpu-training">Multi-GPU training</h2>
+<p><code>ml_core</code> has no first-class multi-GPU wrapper. There's no <code>TorchMLModel(..., strategy="ddp")</code>-style flag. Each framework's own multi-GPU mechanism is a different shape (process groups for Torch, a strategy scope for TF, explicit sharding for JAX), and wrapping all three generically behind one <code>fit()</code> call would hide more than it'd help. Instead, build your model with your framework's own multi-GPU mechanism <em>before</em> handing it to <code>TorchMLModel</code>/<code>TFMLModel</code>/<code>FlaxMLModel</code> — <code>fit()</code>/<code>predict()</code>/<code>evaluate()</code> then just run on top of it.</p>
+<p><strong>Torch</strong> — wrap with <code>DistributedDataParallel</code> (multi-process, one GPU per process) before constructing <code>TorchMLModel</code>:</p>
+<pre><code class="language-python">import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+dist.init_process_group(backend=&quot;nccl&quot;)
+model = MyModel().to(local_rank)
+model = DDP(model, device_ids=[local_rank])
+
+ml_model = TorchMLModel(model, loss_fn=nn.CrossEntropyLoss(), device=f&quot;cuda:{local_rank}&quot;)
+ml_model.fit((X_train, y_train), epochs=50)  # launch one process per GPU, e.g. via torchrun
+</code></pre>
+<p>Each process gets its own <code>TorchMLModel</code>/<code>Trainer</code>/<code>CheckpointRegistry</code>; only rank 0 should pass <code>checkpoint_dir</code> to avoid every process writing to the same files. <code>torch.nn.DataParallel</code> (single-process, multi-thread) also works by passing the <code>DataParallel</code>-wrapped module directly, but Torch itself recommends <code>DistributedDataParallel</code> even for single-machine use.</p>
+<p><strong>TensorFlow</strong> — wrap the model build in <code>tf.distribute.MirroredStrategy</code>'s scope before constructing <code>TFMLModel</code>:</p>
+<pre><code class="language-python">strategy = tf.distribute.MirroredStrategy()
+with strategy.scope():
+    model = build_my_keras_model()
+
+ml_model = TFMLModel(model, loss_fn=tf.keras.losses.SparseCategoricalCrossentropy())
+ml_model.fit((X_train, y_train), epochs=50)
+</code></pre>
+<p><code>MirroredStrategy</code> replicates the model across all visible GPUs on one machine and all-reduces gradients automatically; building inside its scope is what makes the model's variables mirrored.</p>
+<p><strong>JAX/Flax</strong> — multi-GPU in JAX is explicit sharding, not a wrapper object. <code>FlaxMLModel.train_step()</code> calls <code>self.model(X)</code> and <code>nnx.value_and_grad</code> directly; to shard across devices, shard <code>model</code>'s parameters and the input batch yourself (e.g. with <code>jax.sharding.NamedSharding</code> / <code>jax.jit</code> with an explicit mesh) before calling <code>fit()</code>, following <a href="https://flax.readthedocs.io/">Flax's own multi-device guide</a> — <code>ml_core</code> doesn't add anything on top of plain JAX here.</p>
+<p>None of this has been run against real multi-GPU hardware in this codebase's own test suite (CI and this repo's dev environment are CPU-only); treat it as the standard approach for each framework, not as something <code>ml_core</code> has verified end-to-end.</p>
+<h2 id="whats-not-here-yet">What's not here yet</h2>
+<p>Nothing from the original ml_core gap list — see <a href="#multi-gpu-training">Multi-GPU training</a> above for how that's handled (manual, framework-native wrapping, not a built-in flag).</p>
+<h2 id="reference">Reference</h2>
+<p><code>BaseMLModel</code>, <code>Trainer</code>, <code>MLMetrics</code>, <code>resolve_metrics()</code>, and the adapters: <a href="../../reference/ml-core/">ml_core reference</a>.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../train-rl-agent/" class="btn btn-neutral float-left" title="Train an RL agent"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../hyperparameter-optimization/" class="btn btn-neutral float-right" title="Tune hyperparameters online">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../train-rl-agent/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../hyperparameter-optimization/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

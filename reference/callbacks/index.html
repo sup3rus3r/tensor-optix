@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -133,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Callbacks</a>
@@ -143,6 +158,14 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#tensorboardcallback">TensorBoardCallback</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#asynccallbackadapter">AsyncCallbackAdapter</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#experimentledgercallback">ExperimentLedgerCallback</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#step-numbering">Step numbering</a>
+    </li>
+        </ul>
+    </li>
     </ul>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../distributed/">Distributed (IMPALA + V-trace)</a>
@@ -151,7 +174,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -289,7 +314,33 @@
 
     def __init__(self, log_dir=None, comment=&quot;&quot;, flush_secs=10, **writer_kwargs): ...
 </code></pre>
+<h2 id="asynccallbackadapter">AsyncCallbackAdapter</h2>
+<p><code>tensor_optix.core.async_callback</code></p>
+<pre><code class="language-python">class AsyncCallbackAdapter(LoopCallback):
+    &quot;&quot;&quot;
+    Wraps `inner` so its hooks run on a background thread via a bounded
+    queue, never on the training thread.
+
+    Overflow policy: when the queue is full, the OLDEST pending event is
+    dropped to make room for the newest one. Dropped events are counted.
+    &quot;&quot;&quot;
+
+    def __init__(self, inner: LoopCallback, maxsize: int = 256): ...
+
+    @property
+    def dropped_count(self) -&gt; int: ...
+    @property
+    def pending_count(self) -&gt; int: ...
+
+    def close(self, timeout: Optional[float] = None) -&gt; None:
+        &quot;&quot;&quot;Stop the background thread once training is done.&quot;&quot;&quot;
+</code></pre>
+<p><code>LoopController</code> fires callbacks synchronously on the training thread, so a slow callback (GUI update, network I/O) stalls training. Wrap such a callback in <code>AsyncCallbackAdapter</code> to decouple it. Only use it for callbacks that are safe to run on another thread and do not need to observe or influence training synchronously - a wrapped callback cannot, for example, resume the loop at <code>DORMANT</code>.</p>
+<h2 id="experimentledgercallback">ExperimentLedgerCallback</h2>
+<p>Records a run into the experiment ledger - documented with the ledger in <a href="../learning-to-learn/#experimentledgercallback">Learning-to-Learn reference</a>.</p>
 <p>See <a href="../../guides/logging-callbacks/">Logging and dashboards</a> for usage and writing your own <code>LoopCallback</code>.</p>
+<h3 id="step-numbering">Step numbering</h3>
+<p><code>WandbCallback</code> and <code>TensorBoardCallback</code> log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires <code>on_improvement</code> / <code>on_plateau</code> / <code>on_degradation</code>, then <code>on_hyperparam_update</code>, then <code>on_episode_end</code>; steps are kept monotonic across those hooks so Weights &amp; Biases does not drop the hyperparameter entries.</p>
               
             </div>
           </div><footer>

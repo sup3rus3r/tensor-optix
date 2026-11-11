@@ -56,6 +56,8 @@
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Build a neuroevo agent</a>
     <ul class="current">
@@ -96,6 +100,8 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#reference">Reference</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#things-to-know">Things to know</a>
+    </li>
     </ul>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
@@ -103,6 +109,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -159,6 +172,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
@@ -169,7 +186,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
                   </li>
@@ -248,6 +267,7 @@ agent = make_agent(&quot;SAC&quot;, env, neuroevo=True, neuroevo_mode=&quot;feat
 <li><code>"feature_extractor"</code> - the graph runs in parallel as a feature extractor; its output is concatenated with the raw observation before SAC's actor/critic networks. SAC handles exploration and replay; the graph adds adaptive temporal features via GRU + LSTM neurons with Hebbian learning.</li>
 </ul>
 <p>Neuroevo options on <code>make_agent</code>: <code>graph_in</code> (default <code>min(obs_dim, 16)</code>), <code>graph_hidden</code> (default 8), <code>graph_out</code> (default <code>act_dim + 1</code>), <code>hebbian_lr</code>, <code>hebbian_decay</code>, <code>grow_cooldown</code>.</p>
+<p>Neuroevo only supports flat 1-D <code>Box</code> observation spaces. <code>NeuronGraph</code>'s input neurons are 1:1 with flattened observation scalars, so images and <code>Dict</code> observations (supported in the standard, non-neuroevo path via <code>tensor_optix.encoders</code>) aren't supported here. <code>make_agent(neuroevo=True)</code> raises <code>NotImplementedError</code> immediately if the observation space isn't flat <code>Box</code>.</p>
 <h2 id="building-a-graph-manually">Building a graph manually</h2>
 <pre><code class="language-python">from tensor_optix.neuroevo import NeuronGraph, GraphAgent, GRUNeuron, LSTMNeuron
 
@@ -382,7 +402,7 @@ agent.learn(episode_data)
 hook.apply()
 hook.reset()
 </code></pre>
-<p><code>HebbianHook</code> is a <code>LoopCallback</code> - pass it directly via <code>callbacks=</code> and it wires itself automatically. Use <code>HebbianHook.from_brain(brain, ...)</code> for <code>BrainNetwork</code> graphs.</p>
+<p><code>HebbianHook</code> is a <code>LoopCallback</code> - pass it directly via <code>callbacks=</code> and it wires itself automatically (it records after every <code>act()</code> and applies the update after each <code>learn()</code>; don't call <code>record()</code> yourself in that case). Use <code>HebbianHook.from_brain(brain, ...)</code> for <code>BrainNetwork</code> graphs.</p>
 <h2 id="neuromodulation">Neuromodulation</h2>
 <pre><code class="language-python">from tensor_optix.neuroevo import NeuromodulatorSignal
 from tensor_optix.core import RegimeDetector
@@ -416,11 +436,17 @@ w = graph.effective_weight(edge_id)  # reads post-softplus value
 <p><code>TopologyController</code> calls <code>graph.invalidate_compile()</code> automatically after every grow/prune/merge. If you mutate the graph directly outside the controller, call it yourself.</p>
 <h2 id="reference">Reference</h2>
 <p>Full class and function documentation: <a href="../../reference/neuroevo/">Neuroevo reference</a>.</p>
+<h2 id="things-to-know">Things to know</h2>
+<ul>
+<li><code>make_agent(env, neuroevo=True)</code> attaches its <code>HebbianHook</code> and <code>TopologyController</code> as <code>agent._neuroevo_callbacks</code>; <code>Optimizer</code> wires them into the loop automatically. With <code>RLOptimizer</code>, pass them yourself: <code>callbacks=agent._neuroevo_callbacks</code>.</li>
+<li>In <code>neuroevo_mode="feature_extractor"</code> the graph is a recurrent feature extractor in front of SAC. Checkpoints contain the SAC networks <strong>and</strong> the graph (topology + weights) and the fixed random projection, so a restored agent reproduces the same features. The features the policy acted on are cached and reused by <code>learn()</code>.</li>
+<li>Restoring a checkpoint (rollback, best-weight restore at the end of <code>run()</code>) rebuilds the graph in place - callbacks keep operating on the live graph.</li>
+</ul>
               
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../ml-mode/" class="btn btn-neutral float-left" title="Train any PyTorch model (ML mode)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../ml-mode/" class="btn btn-neutral float-left" title="Train any PyTorch model (legacy ML mode)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../onnx-export/" class="btn btn-neutral float-right" title="Export to ONNX">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 

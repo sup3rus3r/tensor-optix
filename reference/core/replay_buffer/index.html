@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -117,6 +128,8 @@
     <ul class="current">
     <li class="toctree-l3"><a class="reference internal" href="#prioritizedreplaybuffer">PrioritizedReplayBuffer</a>
     </li>
+    <li class="toctree-l3"><a class="reference internal" href="#window-helpers">Window helpers</a>
+    </li>
     </ul>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../her_buffer/">her_buffer</a>
@@ -137,6 +150,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
@@ -147,7 +164,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
                   </li>
@@ -271,6 +290,29 @@ Design:
     def __len__(self) -&gt; int: ...
 </code></pre>
 <p>Internally backed by a binary <code>_SumTree</code> for O(log N) priority sampling when <code>alpha &gt; 0</code>; an ordinary <code>deque</code> is used when <code>alpha == 0</code> for zero overhead on the common case.</p>
+<p>New transitions enter the tree at the current maximum leaf priority (Schaul et al. 2016), so every transition is replayed at least once before its TD error is known. Leaves store <code>p^alpha</code> directly; <code>update_priorities()</code> writes <code>(|td_error| + eps)^alpha</code>.</p>
+<p><code>flush_episode()</code> discards any partially accumulated n-step entries; agents call it at the end of each env's slice of a window so n-step returns never span two windows or two environments.</p>
+<h2 id="window-helpers">Window helpers</h2>
+<pre><code class="language-python">def episode_n_envs(episode_data) -&gt; int:
+    &quot;&quot;&quot;Number of interleaved parallel envs in a window
+    (EpisodeData.metadata[&quot;n_envs&quot;], 1 for single-env pipelines).&quot;&quot;&quot;
+
+def window_transition_pairs(T: int, n_envs: int = 1):
+    &quot;&quot;&quot;
+    Yield, per environment, the list of (t, t_next) index pairs of
+    temporally consecutive steps in a flat window of T entries.
+
+    n_envs == 1 -&gt; one list [(0, 1), ..., (T-2, T-1)].
+    n_envs  &gt; 1 -&gt; env i's steps are n_envs apart ([t * n_envs + i] layout).
+    The final step of each env has no in-window successor and is not paired.
+    &quot;&quot;&quot;
+</code></pre>
+<p>All built-in off-policy agents use these to fill the buffer, which is what makes them correct on <code>VectorBatchPipeline</code> windows. Use the same pattern in a custom off-policy agent:</p>
+<pre><code class="language-python">for env_pairs in window_transition_pairs(T, episode_n_envs(episode_data)):
+    for t, t_next in env_pairs:
+        buffer.push(obs[t], actions[t], rewards[t], obs[t_next], dones[t])
+    buffer.flush_episode()
+</code></pre>
 <p>See also <a href="../her_buffer/">HERReplayBuffer</a>, which wraps this buffer with goal relabeling.</p>
               
             </div>

@@ -56,6 +56,8 @@
               <ul class="current">
                   <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
@@ -84,7 +86,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -93,6 +97,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -149,6 +160,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
@@ -159,7 +174,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
                   </li>
@@ -229,18 +246,18 @@ opt = RLOptimizer(..., callbacks=[cb])
 <p>With no <code>agent_factory</code>, <code>DORMANT</code> rolls back to the best checkpoint and otherwise leaves the loop's own convergence/stopping logic in control.</p>
 <h2 id="spawning-variants">Spawning variants</h2>
 <pre><code class="language-python">pm = PolicyManager(registry, max_spawns=4)
-cb = pm.as_callback(agent, agent_factory=make_agent)
+cb = pm.as_callback(agent, agent_factory=lambda: make_agent(env))   # zero-argument factory
 cb.set_stop_fn(opt.stop)
 opt.add_callback(cb)
 opt.run()
 </code></pre>
-<p><code>set_stop_fn</code> is required when spawning is enabled - when the spawn budget is exhausted, <code>PolicyManagerCallback</code> calls it to terminate the loop cleanly with the best-known weights already restored.</p>
+<p>Each <code>DORMANT</code> event with budget remaining spawns a variant (best checkpoint weights + perturbed hyperparameters and weights), the scheduler is reset to <code>ACTIVE</code>, and training continues. <code>set_stop_fn</code> should be set when spawning is enabled - when the spawn budget is exhausted, <code>PolicyManagerCallback</code> calls it to terminate the loop cleanly with the best-known weights already restored. With <code>max_spawns=4</code> the run therefore passes through <code>DORMANT</code> five times: four spawns, then the stop.</p>
 <h2 id="letting-metacontroller-decide">Letting MetaController decide</h2>
 <p>Without a <code>MetaController</code>, <code>PolicyManagerCallback</code> spawns whenever budget allows. With one, the spawn/prune/stop decision is signal-driven:</p>
 <pre><code class="language-python">from tensor_optix import MetaController
 
 mc = MetaController(gap_threshold=0.2, gap_slope_threshold=0.02, improvement_threshold=0.01)
-cb = pm.as_callback(agent, agent_factory=make_agent, meta_controller=mc)
+cb = pm.as_callback(agent, agent_factory=lambda: make_agent(env), meta_controller=mc)
 cb.set_stop_fn(opt.stop)
 </code></pre>
 <p><code>MetaController</code> checks, in order: spawn budget exhausted → <code>STOP</code>; generalization gap level too high → <code>PRUNE</code>; gap actively widening (even if level is still tolerable) → <code>PRUNE</code>; validation improvement too flat → <code>SPAWN</code>; otherwise → <code>NO_OP</code>. This requires a <code>val_pipeline</code> for the gap signals to be meaningful.</p>
@@ -254,6 +271,7 @@ ensemble = EnsembleAgent(pm, primary_agent=agent_a)
 pipeline.set_agent(ensemble)
 opt = RLOptimizer(agent=ensemble, pipeline=pipeline, ...)
 </code></pre>
+<p>With several members, <code>EnsembleAgent.act()</code> returns the combined output of <code>PolicyManager.ensemble_action()</code> - for discrete PPO members that is an averaged probability vector to sample/<code>argmax</code>, not an action index - so a multi-member ensemble is primarily an inference-time construct (see the <a href="../../reference/core/ensemble_agent/#limitations">reference</a>).</p>
 <p><code>EnsembleAgent.learn()</code> trains <strong>every</strong> registered agent on the same episode data - this is mathematically necessary; non-primary agents that don't update will drift away from the primary's action distribution as training progresses, degrading the ensemble. <code>get_hyperparams</code>/<code>set_hyperparams</code>/<code>save_weights</code>/<code>load_weights</code> all delegate to the primary agent only - it's the authoritative agent for checkpointing.</p>
 <h2 id="regime-conditional-boosting">Regime-conditional boosting</h2>
 <p>Outside the spawn/prune pipeline, you can shift ensemble weight toward a specific agent based on detected regime:</p>

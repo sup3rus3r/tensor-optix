@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Reference - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Reference";
+        var mkdocs_page_input_path = "reference\\learning-to-learn.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Reference</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#1-ledger-tensor_optixledger">1. Ledger (tensor_optix.ledger)</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#experimentledgercallback">ExperimentLedgerCallback</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#2-concurrent-scheduler-tensor_optixscheduler">2. Concurrent scheduler (tensor_optix.scheduler)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#3-baseline-selection-tensor_optixselection">3. Baseline selection (tensor_optix.selection)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#4-cross-task-transfer-tensor_optixnanonets">4. Cross-task transfer (tensor_optix.nanonets)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#5-strategy-discovery-tensor_optixstrategy">5. Strategy discovery (tensor_optix.strategy)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#6-live-adaptive-runtime-tensor_optixruntime">6. Live adaptive runtime (tensor_optix.runtime)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#behaviour-notes">Behaviour notes</a>
+    </li>
+    </ul>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Learning-to-Learn Engine</li>
+      <li class="breadcrumb-item active">Reference</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/learning-to-learn.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="learning-to-learn-engine">Learning-to-Learn Engine</h1>
+<pre><code>Six composable layers, each reading/writing the shared experiment ledger:
+
+  1. tensor_optix.ledger      - ExperimentStore (SQLite-backed, idempotent, provenance-tracked)
+  2. tensor_optix.scheduler   - ConcurrentTrialScheduler (real mp.Process worker isolation)
+  3. tensor_optix.selection   - StrategySelector (non-learned baseline allocation)
+  4. tensor_optix.nanonets    - NanonetsSelector (cross-task pooling, conservative abstention gate)
+  5. tensor_optix.strategy    - typed grammar, StrategyTrialRunner, PromotionPolicy
+  6. tensor_optix.runtime     - LiveAdaptiveRuntime (recommend-only observe/experiment/evaluate loop)
+
+No layer uses generative AI or executes arbitrary generated code. Strategy
+candidates are reconstructed only from a fixed OP_REGISTRY via keyword
+arguments matching each dataclass's declared fields -- never eval()/exec().
+
+See the guide for narrative usage: ../guides/learning-to-learn.md
+</code></pre>
+<h2 id="1-ledger-tensor_optixledger">1. Ledger (<code>tensor_optix.ledger</code>)</h2>
+<pre><code class="language-python">class ExperimentStore:
+    def __init__(self, db_path: str): ...
+    def close(self) -&gt; None: ...
+
+    # Experiments
+    def create_experiment(
+        self, *, task_env: str, algorithm: str, framework: str, seed: int,
+        checkpoint_dir: str, solve_threshold: Optional[float] = None,
+        config: Optional[Dict[str, Any]] = None,
+        parent_experiment_id: Optional[str] = None, study_id: Optional[str] = None,
+        experiment_id: Optional[str] = None,
+    ) -&gt; ExperimentRecord:
+        &quot;&quot;&quot;Idempotent on experiment_id -- a second call with the same id
+        returns the existing row rather than raising or duplicating it.&quot;&quot;&quot;
+
+    def start_experiment(self, experiment_id: str) -&gt; None: ...
+    def record_progress(
+        self, experiment_id: str, *, best_primary_score: Optional[float] = None,
+        best_train_score: Optional[float] = None, best_val_score: Optional[float] = None,
+        generalization_gap: Optional[float] = None,
+    ) -&gt; None: ...
+    def finalize_experiment(
+        self, experiment_id: str, *, state: ExperimentState,
+        evaluation_status: EvaluationStatus = EvaluationStatus.PRELIMINARY,
+        final_metrics: Optional[Dict[str, Any]] = None, error_message: Optional[str] = None,
+    ) -&gt; None:
+        &quot;&quot;&quot;Idempotent -- guarded by WHERE finished_at IS NULL.&quot;&quot;&quot;
+
+    def get_experiment(self, experiment_id: str) -&gt; Optional[ExperimentRecord]: ...
+    def query_experiments(
+        self, *, task_env: Optional[str] = None, algorithm: Optional[str] = None,
+        framework: Optional[str] = None, state: Optional[ExperimentState] = None,
+        evaluation_status: Optional[EvaluationStatus] = None, study_id: Optional[str] = None,
+        created_after: Optional[float] = None, created_before: Optional[float] = None,
+        min_best_primary_score: Optional[float] = None, limit: int = 100,
+    ) -&gt; List[ExperimentRecord]: ...
+
+    # Events (append-only, per-experiment)
+    def append_event(self, experiment_id: str, event: EventRecord) -&gt; bool: ...
+    def get_events(self, experiment_id: str) -&gt; List[EventRecord]: ...
+
+    # Artifacts
+    def record_artifact(self, artifact: ArtifactRef) -&gt; None: ...
+    def get_artifacts(self, experiment_id: str) -&gt; List[ArtifactRef]: ...
+
+    # Strategy candidates / evaluations / registry (sec 5 below)
+    def create_strategy_candidate(self, *, candidate_id: str, op_name: str, op_version: int,
+                                   grammar_schema_version: int, params: Optional[Dict] = None,
+                                   created_by: Optional[str] = None) -&gt; StrategyCandidateRecord: ...
+    def get_strategy_candidate(self, candidate_id: str) -&gt; Optional[StrategyCandidateRecord]: ...
+    def record_strategy_evaluation(self, *, candidate_id: str, experiment_id: str, task_env: str,
+                                    algorithm: str, framework: str, seed: int,
+                                    baseline_experiment_id: Optional[str] = None,
+                                    outcome_delta: Optional[float] = None,
+                                    evaluation_id: Optional[str] = None) -&gt; StrategyEvaluationRecord: ...
+    def query_strategy_evaluations(self, *, candidate_id: Optional[str] = None,
+                                    task_env: Optional[str] = None, limit: int = 1000) -&gt; List[StrategyEvaluationRecord]: ...
+    def get_strategy_registry_entry(self, candidate_id: str) -&gt; Optional[StrategyRegistryRecord]: ...
+    def approve_strategy(self, candidate_id: str, *, reviewer: str, scope: Optional[Dict] = None) -&gt; None:
+        &quot;&quot;&quot;The only call that can set a candidate's status to APPROVED.
+        Never called by PromotionPolicy.evaluate() in approval_mode=&quot;human&quot;.&quot;&quot;&quot;
+    def demote_strategy(self, candidate_id: str, reason: str) -&gt; None:
+        &quot;&quot;&quot;Sets status to DEMOTED. Every consumer of the registry filters
+        status=='approved' live on every read, never cached -- a demotion
+        takes effect immediately everywhere.&quot;&quot;&quot;
+    def query_approved_strategies(self, *, limit: int = 100) -&gt; List[StrategyRegistryRecord]: ...
+    def record_strategy_scope(self, candidate_id: str, scope: Dict[str, Any]) -&gt; None: ...
+    def get_strategy_scope(self, candidate_id: str) -&gt; Optional[Dict[str, Any]]: ...
+</code></pre>
+<h3 id="experimentledgercallback">ExperimentLedgerCallback</h3>
+<pre><code class="language-python">class ExperimentLedgerCallback(LoopCallback):
+    def __init__(
+        self, store: ExperimentStore, *, task_env: str, algorithm: str,
+        framework: str = &quot;torch&quot;, seed: int = 0, checkpoint_dir: str,
+        solve_threshold: Optional[float] = None, config: Optional[Dict[str, Any]] = None,
+        parent_experiment_id: Optional[str] = None, study_id: Optional[str] = None,
+        experiment_id: Optional[str] = None, checkpoint_registry: Optional[Any] = None,
+    ): ...
+
+    @property
+    def experiment_id(self) -&gt; str: ...
+
+    def mark_failed(self, exc: Exception) -&gt; None:
+        &quot;&quot;&quot;Finalize the experiment as FAILED / INCONCLUSIVE (idempotent).&quot;&quot;&quot;
+</code></pre>
+<p>Attach it to any <code>RLOptimizer</code> / <code>LoopController</code> run to record that run in the ledger: the
+experiment row (with provenance: tensor-optix version, git revision, library versions, hostname),
+one event per loop hook, a progress update and an <code>ArtifactRef</code> (with a SHA-256 of the weights)
+per improvement.</p>
+<p>Terminal state is decided in <code>on_loop_stop</code>, which the loop fires from <code>run()</code>'s <code>finally</code>:</p>
+<table>
+<thead>
+<tr>
+<th>How the run ended</th>
+<th><code>state</code></th>
+<th><code>evaluation_status</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>returned normally</td>
+<td><code>COMPLETED</code></td>
+<td><code>PRELIMINARY</code></td>
+</tr>
+<tr>
+<td>an exception is propagating</td>
+<td><code>FAILED</code> (with <code>error_message</code>)</td>
+<td><code>INCONCLUSIVE</code></td>
+</tr>
+<tr>
+<td><code>KeyboardInterrupt</code></td>
+<td><code>CANCELLED</code></td>
+<td><code>INCONCLUSIVE</code></td>
+</tr>
+</tbody>
+</table>
+<p>So a crashed run is recorded as failed without any caller-side handling; calling
+<code>mark_failed(exc)</code> yourself afterwards is harmless (finalization is idempotent).</p>
+<p>Library versions are read from package metadata; frameworks that the run has not imported
+(e.g. TensorFlow in a torch-only run) are not imported just to stamp the row.</p>
+<p>Schema version 3. Tables: <code>experiments</code>, <code>events</code>, <code>artifacts</code>, <code>strategy_candidates</code>,
+<code>strategy_evaluations</code>, <code>strategy_registry</code>. Migrations are version-gated in
+<code>tensor_optix/ledger/schema.py::_migrate()</code> — one <code>if from_version == N:</code> branch per real,
+shipped hop.</p>
+<h2 id="2-concurrent-scheduler-tensor_optixscheduler">2. Concurrent scheduler (<code>tensor_optix.scheduler</code>)</h2>
+<pre><code class="language-python">class ConcurrentTrialScheduler:
+    def __init__(
+        self, agent_factory: Callable[[Dict[str, Any]], BaseAgent],
+        pipeline_factory: Callable[[], BasePipeline],
+        param_space: Optional[ParamSpace] = None, n_trials: int = 20,
+        trial_steps: int = 50_000, direction: str = &quot;maximize&quot;,
+        n_startup_trials: int = 10, pruner_warmup_steps: int = 5, pruner_interval: int = 1,
+        rloptimizer_kwargs: Optional[Dict[str, Any]] = None,
+        val_pipeline_factory: Optional[Callable[[], BasePipeline]] = None,
+        checkpoint_score_fn: Optional[Callable[[BaseAgent], float]] = None,
+        study_name: Optional[str] = None, storage: Optional[str] = None,
+        sampler: Optional[&quot;optuna.samplers.BaseSampler&quot;] = None, n_workers: int = 2,
+        max_wall_clock_s: Optional[float] = None, trial_timeout_s: Optional[float] = None,
+        max_retries: int = 2, ledger_store: Optional[ExperimentStore] = None,
+        task_env: Optional[str] = None, algorithm: Optional[str] = None,
+        framework: str = &quot;torch&quot;, solve_threshold: Optional[float] = None,
+        base_seed: int = 0, poll_interval_s: float = 0.5,
+        device_placement_fn: Optional[Callable[[int], str]] = None,
+    ): ...
+
+    def run(self) -&gt; Tuple[Dict[str, Any], float]:
+        &quot;&quot;&quot;Dispatches up to n_workers concurrent trials as real mp.Process
+        workers. Returns (best_params, best_score).&quot;&quot;&quot;
+
+    @property
+    def study(self) -&gt; &quot;optuna.Study&quot;: ...
+</code></pre>
+<p>Workers never touch the Optuna <code>Study</code> or the <code>ExperimentStore</code> directly — they receive a
+plain sampled-params dict and report scores back over a queue; all ledger/study writes happen
+in the parent process.</p>
+<p>Failure handling:</p>
+<ul>
+<li>A worker that <strong>raises</strong> reports <code>status="failed"</code>; that is a property of the trial, not of
+  the infrastructure, so it is not retried - the trial is told to Optuna as <code>FAIL</code> and
+  finalized <code>FAILED</code> in the ledger.</li>
+<li>A worker process that <strong>dies without reporting</strong> (OOM-kill, segfault, external kill) is
+  detected by the parent on the next poll. It is treated as transient and re-dispatched with
+  a new seed up to <code>max_retries</code> times, then finalized <code>FAILED</code> with the exit code in
+  <code>error_message</code>. <code>run()</code> therefore always terminates, with or without <code>trial_timeout_s</code>.</li>
+<li>A trial exceeding <code>trial_timeout_s</code> is cancelled and finalized <code>TIMED_OUT</code>.</li>
+</ul>
+<h2 id="3-baseline-selection-tensor_optixselection">3. Baseline selection (<code>tensor_optix.selection</code>)</h2>
+<pre><code class="language-python">@dataclass
+class MethodStats:
+    method: str
+    n_experiments: int
+    n_completed: int
+    best_score: Optional[float]
+    score_interval: Optional[ScoreInterval]
+    success_rate: float
+
+@dataclass
+class SelectionDecision:
+    allocations: Dict[str, int]
+    rationale: str
+
+class StrategySelector:
+    def __init__(self, store: ExperimentStore): ...
+    def stats_for(self, *, task_env: str, method: str) -&gt; MethodStats: ...
+    def compare(self, *, task_env: str, methods: List[str]) -&gt; Dict[str, MethodStats]: ...
+    def propose(
+        self, *, task_env: str, methods: List[str], budget: int,
+        task_features: Optional[Dict[str, Any]] = None,
+    ) -&gt; SelectionDecision:
+        &quot;&quot;&quot;task_features must be None in this layer -- raises NotImplementedError
+        otherwise; reserved for the Nanonets layer above.&quot;&quot;&quot;
+    def observe(
+        self, *, orchestrator, task_env: str, algorithm: str, framework: str = &quot;torch&quot;,
+        seed: int = 0, solve_threshold: Optional[float] = None,
+    ) -&gt; List[Any]:
+        &quot;&quot;&quot;Backfills a completed TrialOrchestrator study into the ledger.&quot;&quot;&quot;
+</code></pre>
+<p><code>tensor_optix.selection.uncertainty.score_interval(scores: List[float]) -&gt; ScoreInterval</code>
+computes a normal-approximation 95% CI (<code>mean</code>, <code>std</code>, <code>n</code>, <code>lo95</code>, <code>hi95</code>) — descriptive
+uncertainty over repeated ledger observations, not a predictive model.</p>
+<h2 id="4-cross-task-transfer-tensor_optixnanonets">4. Cross-task transfer (<code>tensor_optix.nanonets</code>)</h2>
+<pre><code class="language-python">@dataclass
+class PooledEstimate:
+    method: str
+    pooled_mean: float
+    pooled_interval: SmallNInterval
+    sources_used: List[str]
+    sources_gated_out: List[str]
+    fallback_triggered: bool
+
+class NanonetsSelector:
+    def __init__(self, store: ExperimentStore, *, source_task_envs: List[str]):
+        &quot;&quot;&quot;source_task_envs is always explicit -- never auto-discovered,
+        so leave-one-task-out leakage discipline is enforced at the call
+        site, not inferred.&quot;&quot;&quot;
+
+    def task_features(self, task_env: str) -&gt; TaskFeatures: ...
+    def pooled_stats(self, *, task_env: str, method: str) -&gt; PooledEstimate: ...
+    def propose(self, *, task_env: str, methods: List[str], budget: int) -&gt; SelectionDecision:
+        &quot;&quot;&quot;Falls back to StrategySelector.propose() if every method's
+        pooled estimate triggers fallback_triggered.&quot;&quot;&quot;
+</code></pre>
+<p>Abstention gate (<code>tensor_optix.nanonets.abstention</code>):</p>
+<pre><code class="language-python">MIN_TARGET_N = 2
+
+def normalize_score(raw_score: float, solve_threshold: float) -&gt; Optional[float]:
+    &quot;&quot;&quot;(raw_score - solve_threshold) / abs(solve_threshold). None if
+    solve_threshold == 0.0. Plain division is unsafe across a sign
+    boundary -- this signed-distance form is not.&quot;&quot;&quot;
+
+def normalize_scores(raw_scores: List[float], solve_threshold: Optional[float]) -&gt; Optional[List[float]]: ...
+
+def passes_percentile_gate(source_scores: List[float], target_scores: List[float]) -&gt; bool:
+    &quot;&quot;&quot;A source is eligible iff its median &gt;= the target's own 95th
+    percentile, both on NORMALIZED scores.&quot;&quot;&quot;
+
+def similarity_weight(*, source_algorithm: str, target_algorithm: str,
+                       source_n: int, target_n: int) -&gt; float:
+    &quot;&quot;&quot;Algorithm-family match contributes full weight (mismatch halves
+    it); extreme sample-size imbalance scales the weight down further.&quot;&quot;&quot;
+</code></pre>
+<p>Pooling (<code>tensor_optix.nanonets.pooling.pool_estimates</code>) combines the target's own scores with
+gate-passed sources via inverse-variance + similarity weighting. The caller (<code>NanonetsSelector</code>)
+normalizes inputs the same way the gate does before pooling, then de-normalizes the pooled
+result back to the target's own raw units — pooling in raw, mixed-scale units was a real bug
+found and fixed via live validation; pooling must happen in the same comparable space the gate
+uses, not a different one.</p>
+<h2 id="5-strategy-discovery-tensor_optixstrategy">5. Strategy discovery (<code>tensor_optix.strategy</code>)</h2>
+<pre><code class="language-python">@dataclass(frozen=True)
+class StrategyOp:
+    op_name: ClassVar[str] = &quot;&quot;
+    def required_capabilities(self) -&gt; Tuple[str, ...]: ...
+    def supports(self, agent: BaseAgent) -&gt; bool: ...
+    def attach(self, agent: BaseAgent, **kwargs) -&gt; Optional[LoopCallback]:
+        &quot;&quot;&quot;Returns None (never raises) if `agent` lacks a capability this
+        op needs -- self-exclusion is the primary safety mechanism.&quot;&quot;&quot;
+
+OP_REGISTRY: Dict[str, Type[StrategyOp]]  # the 7 concrete ops, nothing else reachable
+</code></pre>
+<p>The 7 concrete ops — <code>LearningRateTrendOp</code>, <code>CheckpointRollbackOp</code>, <code>ExplorationBoundsOp</code>,
+<code>OptimizationMethodChoiceOp</code>, <code>BudgetAllocationOp</code>, <code>ScheduleChangeOp</code>,
+<code>PolicyVariantSelectionOp</code> — each a frozen dataclass with named, typed fields; see the guide for
+field-level detail on each.</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class StrategyCandidate:
+    candidate_id: str            # sha256 content hash, first 16 hex chars
+    op_name: str
+    op_version: int
+    params: Dict[str, Any]
+    grammar_schema_version: int = 1
+
+    @staticmethod
+    def from_op(op: StrategyOp, op_version: int = 1) -&gt; &quot;StrategyCandidate&quot;: ...
+    def to_op(self) -&gt; StrategyOp:
+        &quot;&quot;&quot;Reconstructs via OP_REGISTRY[self.op_name](**self.params) only
+        -- never eval()/exec(). Raises ValueError for an unknown op_name,
+        TypeError for an unknown param key (dataclass construction itself
+        enforces the closed field set).&quot;&quot;&quot;
+</code></pre>
+<pre><code class="language-python">class StrategyTrialRunner:
+    def __init__(
+        self, *, agent_factory: Callable[[Dict[str, Any]], BaseAgent],
+        pipeline_factory: Callable[[], BasePipeline],
+        base_params: Optional[Dict[str, Any]] = None,
+        rloptimizer_kwargs: Optional[Dict[str, Any]] = None,
+        checkpoint_score_fn: Optional[Callable[[BaseAgent], float]] = None,
+        trial_steps: int = 50_000, ledger_store: Optional[ExperimentStore] = None,
+        task_env: str = &quot;&quot;, algorithm: str = &quot;&quot;, framework: str = &quot;torch&quot;,
+        solve_threshold: Optional[float] = None, trial_timeout_s: Optional[float] = None,
+        poll_interval_s: float = 0.5,
+    ): ...
+
+    def run_candidate(self, candidate: StrategyCandidate, *, seeds: List[int]) -&gt; List[Dict[str, Any]]:
+        &quot;&quot;&quot;For each seed, dispatches a PAIRED candidate + no-strategy-
+        baseline mp.Process trial (same seed/task/budget). Returns a list
+        of {seed, candidate_score, baseline_score, outcome_delta,
+        candidate_experiment_id, baseline_experiment_id, candidate_status,
+        baseline_status} dicts. Writes ExperimentRecords and one
+        StrategyEvaluationRecord per seed if a ledger_store is supplied.&quot;&quot;&quot;
+</code></pre>
+<p>Comparator (<code>tensor_optix.strategy.comparator</code>):</p>
+<pre><code class="language-python">MIN_EVALUATIONS = 3
+
+def compare_candidate(store: ExperimentStore, candidate_id: str, task_env: str,
+                       *, margin: float = 0.0) -&gt; StrategyComparison:
+    &quot;&quot;&quot;Gates on lo95(outcome_delta) &gt; margin AND n_evaluations &gt;= 3 --
+    the pessimistic CI bound, not the mean; hard floor on distinct seeds.&quot;&quot;&quot;
+
+def compare_against_approved(store: ExperimentStore, candidate_id: str, task_env: str,
+                              *, margin: float = 0.0) -&gt; StrategyComparison:
+    &quot;&quot;&quot;As above, plus recomputes (never cached) each currently-approved
+    strategy's own interval for the same task_env for a head-to-head check.&quot;&quot;&quot;
+</code></pre>
+<p>Promotion (<code>tensor_optix.strategy.promotion</code>):</p>
+<pre><code class="language-python">class PromotionPolicy:
+    def __init__(
+        self, store: ExperimentStore, *, margin: float = 0.0, min_seeds: int = 3,
+        min_held_out_tasks: int = 1, max_compute_ratio: float = 1.5,
+        approval_mode: str = &quot;human&quot;,   # &quot;human&quot; | &quot;auto&quot; -- ValueError otherwise
+    ): ...
+
+    def evaluate(self, candidate_id: str, *, train_task_envs: List[str],
+                 held_out_task_envs: List[str]) -&gt; PromotionVerdict:
+        &quot;&quot;&quot;Six criteria: beats_baseline_margin, repeats_across_seeds,
+        generalizes_held_out, meets_compute_constraints, reproducible,
+        human_reviewed. In approval_mode=&quot;human&quot; (default), human_reviewed
+        can only become True via a prior, separate store.approve_strategy()
+        call -- evaluate() never calls it. In approval_mode=&quot;auto&quot;, if the
+        other five all pass, evaluate() calls approve_strategy() itself
+        with reviewer=&quot;auto:PromotionPolicy&quot; -- always traceable, never silent.&quot;&quot;&quot;
+
+@dataclass
+class PromotionVerdict:
+    candidate_id: str
+    approved: bool
+    criteria: Dict[str, bool]
+    rationale: str
+
+@dataclass
+class StrategyScope:
+    task_envs: List[str]
+    held_out_task_envs: List[str]
+    algorithms: List[str]          # exact strings tested, never &quot;all&quot;
+    frameworks: List[str]
+    budget_range_episodes: Tuple[int, int]
+    n_seeds_per_task: int
+    excluded_agents: List[str]
+    confound_notes: str
+
+def record_candidate_scope(store, candidate, *, train_task_envs, held_out_task_envs,
+                            algorithms, frameworks, budget_range_episodes,
+                            n_seeds_per_task, excluded_agents=None, confound_notes=&quot;&quot;) -&gt; StrategyScope: ...
+</code></pre>
+<h2 id="6-live-adaptive-runtime-tensor_optixruntime">6. Live adaptive runtime (<code>tensor_optix.runtime</code>)</h2>
+<pre><code class="language-python">def establish_baseline(
+    store: ExperimentStore, *, agent_factory, pipeline_factory, evaluator,
+    task_env: str, algorithm: str, study_id: str, trial_steps: int,
+    seed: int = 0, checkpoint_dir: Optional[str] = None,
+) -&gt; str:
+    &quot;&quot;&quot;Trains directly (no LoopController/strategy-op), records one
+    ExperimentRecord with config['role']='deployed_baseline' and the
+    real weights_path. Returns the experiment_id.&quot;&quot;&quot;
+
+def get_current_baseline_experiment_id(store, *, task_env, algorithm, study_id) -&gt; Optional[str]:
+    &quot;&quot;&quot;Live lookup, never cached -- the deployed baseline can change at
+    any time via promote.py's separate human-invoked path.&quot;&quot;&quot;
+
+def run_reevaluation(store, *, baseline_experiment_id, agent_factory, evaluator,
+                      task_env, algorithm, study_id, eval_episodes: int = 5) -&gt; float:
+    &quot;&quot;&quot;Loads the baseline's weights into a fresh agent, runs a real,
+    inference-only rollout (no learn() calls), records one
+    deployed_baseline_eval row, returns the real score.&quot;&quot;&quot;
+</code></pre>
+<pre><code class="language-python">class DeploymentObserver:
+    def __init__(self, store, *, task_env, algorithm, study_id, scheduler: Optional[BackoffScheduler] = None):
+        &quot;&quot;&quot;Wraps BackoffScheduler (reused as-is, store-free, numpy-only --
+        not reimplemented) with a per-re-evaluation-cycle calling
+        convention instead of per-episode.&quot;&quot;&quot;
+
+    def observe(self, score: float) -&gt; ObservationResult: ...
+    def score_history(self, *, limit: int = 100) -&gt; List[float]: ...
+    def replay_history(self) -&gt; None:
+        &quot;&quot;&quot;Reconstructs ledger-backed history and replays it through the
+        scheduler -- makes Observer state durable across process restarts
+        with zero new persistence code.&quot;&quot;&quot;
+
+@dataclass
+class ObservationResult:
+    cycle: int
+    score: float
+    state: LoopState
+    is_degrading: bool
+    degradation_fired: bool
+    best_score: Optional[float]
+</code></pre>
+<pre><code class="language-python">def propose_and_run(store, *, agent_factory, pipeline_factory, task_env, algorithm,
+                     solve_threshold, source_task_envs, budget, trial_steps, seeds,
+                     trial_timeout_s: float = 180.0) -&gt; List[Tuple[StrategyCandidate, List[Dict]]]:
+    &quot;&quot;&quot;Ranks a fixed, agent-appropriate shortlist of StrategyOps via
+    NanonetsSelector.propose() (never invents a new op), runs whichever
+    receive nonzero allocation through StrategyTrialRunner.&quot;&quot;&quot;
+
+def evaluate_and_recommend(store, candidate, trial_results, *, task_env, algorithm,
+                            trial_steps, seeds) -&gt; PromotionVerdict:
+    &quot;&quot;&quot;Records scope, evaluates via a hardcoded approval_mode=&quot;human&quot;
+    PromotionPolicy, issues a durable recommendation event. Never calls
+    approve_strategy.&quot;&quot;&quot;
+
+def issue_recommendation(store, candidate, verdict, *, experiment_id) -&gt; None:
+    &quot;&quot;&quot;Appends one EventRecord(event_type=&quot;recommendation_issued&quot;) --
+    an auditable record, not a vanishing print line.&quot;&quot;&quot;
+</code></pre>
+<pre><code class="language-python">@dataclass
+class RuntimeConfig:
+    task_env: str = &quot;CartPole-v1&quot;
+    algorithm: str = &quot;PPO&quot;
+    study_id: str = &quot;live_runtime_cartpole_v1&quot;
+    solve_threshold: float = 475.0
+    eval_episodes: int = 5
+    cycle_sleep_s: float = 1.0
+    research_cycle_every: int = 3
+    experiment_budget_trials: int = 2
+    experiment_trial_steps: int = 3_000
+    experiment_seeds: Tuple[int, ...] = (0, 1, 2)
+    max_cycles: int = 6
+    source_task_envs: Tuple[str, ...] = ()
+    # Deliberately NO approval_mode field -- no parameter path reaches
+    # PromotionPolicy's approval_mode from here.
+
+class LiveAdaptiveRuntime:
+    def __init__(self, store: ExperimentStore, config: RuntimeConfig, *,
+                 agent_factory, pipeline_factory): ...
+
+    def run(self) -&gt; Tuple[List[ObservationResult], List[CycleRecommendation]]:
+        &quot;&quot;&quot;Single-threaded sequential loop, bounded by max_cycles. Each
+        cycle: re-evaluate -&gt; observe -&gt; maybe propose_and_run -&gt;
+        evaluate_and_recommend -&gt; sleep. Raises RuntimeError if no
+        deployed baseline exists yet (call establish_baseline first).&quot;&quot;&quot;
+
+@dataclass
+class CycleRecommendation:
+    cycle: int
+    candidate_id: str
+    op_name: str
+    automatable_criteria_passed: bool
+    rationale: str
+</code></pre>
+<pre><code class="language-python">def promote_candidate_to_baseline(
+    store: ExperimentStore, candidate_id: str, *, reviewer: str,
+    task_env: str, algorithm: str, study_id: str,
+) -&gt; str:
+    &quot;&quot;&quot;The ONLY function that can change the deployed baseline. Raises
+    ValueError unless the candidate's registry status is already
+    APPROVED -- refuses to act on anything not already human-reviewed.
+    Never imported by live_runtime.py, experiment_stage.py, observer.py,
+    or baseline.py. Picks the candidate's best-scoring recorded
+    weights_path and writes a new deployed_baseline ExperimentRecord.&quot;&quot;&quot;
+</code></pre>
+<p>See the guide for the full end-to-end wiring: <a href="../../guides/learning-to-learn/">Learning-to-Learn Engine guide</a>.</p>
+<h2 id="behaviour-notes">Behaviour notes</h2>
+<ul>
+<li><strong>Method evidence.</strong> <code>StrategySelector</code> and <code>NanonetsSelector</code> count a ledger experiment as evidence for a method when <code>config["sampler"] == method</code> (trial-search runs) or <code>config["op_name"] == method</code> with <code>is_baseline</code> false (strategy-candidate runs). The live runtime's proposals over strategy ops therefore learn from earlier strategy trials. Untried methods are ranked last.</li>
+<li><strong><code>CycleRecommendation.automatable_criteria_passed</code></strong> is <code>True</code> when every evidence-based criterion passed, ignoring <code>human_reviewed</code> (which the recommend-only loop never sets).</li>
+<li><strong>Trial workers</strong> (<code>ConcurrentTrialScheduler</code>, <code>StrategyTrialRunner</code>) seed <code>torch</code>, <code>numpy</code> and <code>random</code> from the trial seed.</li>
+<li><strong><code>CheckpointRollbackOp</code></strong> in a strategy trial rolls back to the run's current best checkpoint (it shares the run's <code>CheckpointRegistry</code>).</li>
+<li><strong><code>OptimizationMethodChoiceOp</code></strong> switches at most once per stall; after the run improves again, the next stall advances to the next entry of <code>candidate_methods</code>.</li>
+<li><strong><code>run_reevaluation</code></strong> evaluates epsilon-greedy agents greedily (<code>epsilon = 0</code>).</li>
+</ul>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../../guides/learning-to-learn/" class="btn btn-neutral float-left" title="Guide"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../" class="btn btn-neutral float-right" title="Overview">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../../guides/learning-to-learn/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

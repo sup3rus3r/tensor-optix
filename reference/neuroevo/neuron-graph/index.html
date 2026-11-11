@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -133,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
@@ -143,7 +158,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
                   </li>
@@ -166,6 +183,8 @@
     <li class="toctree-l4"><a class="reference internal" href="#dales-law">Dale's Law</a>
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#other-properties-and-methods">Other properties and methods</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#in-place-restore-and-forward-hooks">In-place restore and forward hooks</a>
     </li>
         </ul>
     </li>
@@ -365,6 +384,12 @@ def all_edges(self) -&gt; List[Edge]: ...
 def all_neuron_ids(self) -&gt; List[str]: ...
 </code></pre>
 <p><code>_topological_order()</code> uses Kahn's algorithm over feedforward (<code>d=0</code>) edges only - recurrent edges always read from history, so they impose no within-timestep ordering constraint.</p>
+<h3 id="in-place-restore-and-forward-hooks">In-place restore and forward hooks</h3>
+<pre><code class="language-python">def restore_from_dict(self, d: dict) -&gt; &quot;NeuronGraph&quot;:
+    &quot;&quot;&quot;Rebuild THIS graph object in place from a to_dict() topology.
+    Parameters are re-created; follow with load_state_dict().&quot;&quot;&quot;
+</code></pre>
+<p>Use this (not <code>from_dict</code>) when other objects hold a reference to the graph. <code>graph._post_forward_hooks</code> is a list of zero-argument callables run after every <code>forward()</code>; <code>HebbianHook</code> uses it to sample activations.</p>
               
             </div>
           </div><footer>

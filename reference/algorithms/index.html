@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -147,6 +158,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
@@ -157,7 +172,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -271,7 +288,7 @@
 <h2 id="base-adapters">Base adapters</h2>
 <p>Each framework has a thin <code>*Agent</code>/<code>*Evaluator</code> pair that the algorithm-specific classes build on:</p>
 <ul>
-<li><strong><code>TorchAgent</code></strong> / <strong><code>TorchEvaluator</code></strong> - base PyTorch agent (generic policy-gradient <code>learn()</code>, A2C advantage baseline when <code>values</code> are present, REINFORCE fallback otherwise) and the default evaluator (mean episode return, falling back to mean per-step reward when no episode completes in the window).</li>
+<li><strong><code>TorchAgent</code></strong> / <strong><code>TorchEvaluator</code></strong> - base PyTorch agent (generic policy-gradient <code>learn()</code>, A2C advantage baseline when <code>values</code> are present, REINFORCE fallback otherwise) and the default evaluator (mean return of the episodes that completed in the window - split per env for <code>VectorBatchPipeline</code> windows - falling back to mean per-step reward when no episode completes in the window).</li>
 <li><strong><code>TFAgent</code></strong> / <strong><code>TFEvaluator</code></strong> - same role for TensorFlow, using <code>tf.GradientTape</code>.</li>
 <li><strong><code>FlaxAgent</code></strong> / <strong><code>FlaxEvaluator</code></strong> - same role for Flax NNX models. Weights are serialized via <code>flax.nnx.to_pure_dict(nnx.state(model))</code> (a plain nested dict of numpy arrays) rather than raw pickling, since JAX arrays aren't reliably pickle-safe across JAX/XLA versions.</li>
 </ul>
@@ -279,9 +296,11 @@
 <h2 id="notable-implementation-details">Notable implementation details</h2>
 <ul>
 <li><strong><code>TorchRainbowDQNAgent</code></strong> combines all six Rainbow improvements: <code>NoisyLinear</code> layers (see <a href="../core/noisy_linear/">NoisyLinear</a>) replace ε-greedy exploration, a distributional (categorical) value head, <code>PrioritizedReplayBuffer</code>, n-step returns, dueling architecture, and double-DQN target computation.</li>
-<li><strong><code>TorchRecurrentPPOAgent</code></strong> carries hidden state across steps within an episode (<code>EpisodeData.hidden_states</code>) and trains with truncated BPTT, analogous to neuroevo's <code>RecurrentGraphAgent</code>.</li>
-<li><strong><code>TorchTD3Agent</code></strong> implements the standard TD3 fixes: target policy smoothing (<code>target_noise</code>/<code>target_noise_clip</code>), delayed policy updates (<code>policy_delay</code>), and twin critics with the min-of-two target - its <code>_soft_update</code> does Polyak averaging <code>θ_target ← τ·θ_source + (1−τ)·θ_target</code>, and target networks are only updated on steps where the actor is also updated.</li>
+<li><strong><code>TorchRecurrentPPOAgent</code></strong> carries GRU/LSTM hidden state across <code>act()</code> calls, caches the pre-step hidden state of every step, and trains with truncated BPTT (<code>bptt_len</code>), analogous to neuroevo's <code>RecurrentGraphAgent</code>. <code>BatchPipeline</code> calls its <code>reset_hidden()</code> at every episode boundary; when a window ends mid-episode the value target is bootstrapped from the critic on <code>final_obs</code> using the live hidden state. It holds a single hidden state, so use it with <code>BatchPipeline</code>, not <code>VectorBatchPipeline</code>.</li>
+<li><strong><code>TorchTD3Agent</code></strong> implements the standard TD3 fixes: target policy smoothing (<code>target_noise</code>/<code>target_noise_clip</code>), delayed policy updates (<code>policy_delay</code>), and twin critics with the min-of-two target - its <code>_soft_update</code> does Polyak averaging <code>θ_target ← τ·θ_source + (1−τ)·θ_target</code>; critic targets are updated every gradient step, the actor target only on the delayed steps where the actor itself is updated. <code>act()</code> is deterministic by default; set the <code>exploration_noise</code> hyperparameter (e.g. <code>0.1</code>, as in the TD3 paper) to add clipped Gaussian noise to collected actions, and set it back to <code>0</code> for evaluation/deployment. The same applies to <code>TFTDDAgent</code>.</li>
 <li><strong><code>export_onnx</code></strong> is implemented on all Torch agents (continuous agents apply <code>tanh</code> internally and export actions clipped to <code>(-1, 1)</code> - rescale at deployment) - see <a href="../../guides/onnx-export/">Export to ONNX</a>.</li>
+<li><strong>Parallel envs</strong>: every built-in agent except <code>TorchRecurrentPPOAgent</code> accepts <code>VectorBatchPipeline</code> windows - PPO agents run GAE per env, off-policy agents build replay transitions per env (see <a href="../pipelines/#vectorbatchpipeline">Pipelines</a>).</li>
+<li><strong>Replay transitions</strong>: off-policy agents store <code>(s_t, a_t, r_t, s_{t+1}, done_t)</code> for consecutive steps inside a window; the last step of each env in a window has no in-window successor and is not stored. <code>done</code> is <code>terminated OR truncated</code>.</li>
 <li><strong><code>is_on_policy</code></strong>: <code>True</code> for the PPO family (default), <code>False</code> for DQN/Rainbow/SAC/TD3 - see <a href="../core/base_agent/">BaseAgent</a> for why this matters to rollback.</li>
 </ul>
 <h2 id="auto-selection">Auto-selection</h2>

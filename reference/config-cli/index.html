@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -77,6 +81,13 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/custom-agent/">Write a custom agent</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Reference</a>
                   </li>
               </ul>
               <p class="caption"><span class="caption-text">API Reference</span></p>
@@ -133,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
@@ -146,12 +161,18 @@
     <li class="toctree-l2"><a class="reference internal" href="#trainconfig">TrainConfig</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#functions">Functions</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#algorithm-resolution">Algorithm resolution</a>
+    </li>
+        </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#cli">CLI</a>
     </li>
     </ul>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -254,12 +275,22 @@ def config_to_dict(cfg: TrainConfig) -&gt; dict:
 def build_agent_from_config(cfg: TrainConfig):
     &quot;&quot;&quot;
     Build the agent and its HyperparamSet from a TrainConfig.
-    Uses make_agent() for automatic network construction.
+    Uses make_agent() for automatic network construction, routed to the
+    algorithm family named by cfg.algorithm (PPO / DQN / SAC / TD3).
     Returns (agent, hyperparams).
+
+    Raises ValueError when the factory cannot build exactly cfg.algorithm
+    for this env/framework (see &quot;Algorithm resolution&quot; below).
     &quot;&quot;&quot;
 
 def build_pipeline_from_config(cfg: TrainConfig):
-    &quot;&quot;&quot;Build BatchPipeline or LivePipeline from a TrainConfig.&quot;&quot;&quot;
+    &quot;&quot;&quot;
+    Build the pipeline from a TrainConfig.
+
+    &quot;BatchPipeline&quot; wraps gym.make(cfg.env) with cfg.window_size.
+    &quot;LivePipeline&quot; raises ValueError for a plain Gymnasium env: it needs a
+    data source exposing stream(), which only Python code can provide.
+    &quot;&quot;&quot;
 
 def build_optimizer_from_config(cfg: TrainConfig, agent, pipeline):
     &quot;&quot;&quot;
@@ -269,12 +300,56 @@ def build_optimizer_from_config(cfg: TrainConfig, agent, pipeline):
     &quot;&quot;&quot;
 </code></pre>
 <p>Precedence order: <code>defaults &lt; config file &lt; CLI overrides</code>.</p>
+<h3 id="algorithm-resolution">Algorithm resolution</h3>
+<p><code>algorithm</code> is honoured, not just validated. The class name selects the <code>make_agent()</code> family and the built agent's class must match it exactly, otherwise <code>build_agent_from_config()</code> raises <code>ValueError</code> naming what it <em>could</em> build:</p>
+<table>
+<thead>
+<tr>
+<th><code>algorithm</code></th>
+<th>Works with</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TorchPPOAgent</code> / <code>TFPPOAgent</code></td>
+<td>Discrete actions</td>
+<td></td>
+</tr>
+<tr>
+<td><code>TorchGaussianPPOAgent</code> / <code>TFGaussianPPOAgent</code></td>
+<td>Continuous (Box) actions</td>
+<td></td>
+</tr>
+<tr>
+<td><code>TorchDQNAgent</code></td>
+<td>Discrete actions</td>
+<td></td>
+</tr>
+<tr>
+<td><code>TorchSACAgent</code> / <code>TFSACAgent</code></td>
+<td>Continuous actions</td>
+<td></td>
+</tr>
+<tr>
+<td><code>TorchTD3Agent</code> / <code>TFTDDAgent</code></td>
+<td>Continuous actions</td>
+<td><code>deterministic: true</code> is implied</td>
+</tr>
+<tr>
+<td><code>TFDQNAgent</code>, <code>TorchRecurrentPPOAgent</code></td>
+<td>-</td>
+<td>accepted by <code>validate</code>, but <code>make_agent()</code> has no builder for them: <code>train</code> exits with a build error. Construct these agents in Python.</td>
+</tr>
+</tbody>
+</table>
+<p>A mismatch such as <code>algorithm: TorchPPOAgent</code> on a continuous-action env is an error rather than a silent substitution.</p>
 <h2 id="cli">CLI</h2>
 <p>Registered as the <code>tensor-optix</code> console script:</p>
 <pre><code class="language-bash">tensor-optix train config.yaml [key=value ...]
 tensor-optix validate config.yaml [key=value ...]
 </code></pre>
-<p><code>train</code> loads the config, seeds <code>random</code>/<code>numpy</code>/<code>torch</code> (and CUDA, if available) from <code>cfg.seed</code>, builds agent/pipeline/optimizer via the functions above, and calls <code>optimizer.run()</code>. Exits <code>1</code> with a printed error on a config or build failure rather than a raw traceback.</p>
+<p><code>train</code> loads the config, seeds <code>random</code>/<code>numpy</code>/<code>torch</code> (and CUDA, if available; TensorFlow too when it is already imported) from <code>cfg.seed</code>, builds agent/pipeline/optimizer via the functions above, and calls <code>optimizer.run()</code>. Exits <code>1</code> with a printed error on a config or build failure rather than a raw traceback.</p>
 <p><code>validate</code> parses and validates the config (same error handling) without building or running anything - prints the resolved <code>env</code>, <code>algorithm</code>, <code>framework</code>, <code>seed</code>, and any <code>agent</code>/<code>optimizer</code> sub-dicts. Exits <code>0</code> on success, <code>1</code> on error - suitable for a CI gate.</p>
 <p>See <a href="../../guides/cli-config/">Configure via YAML / CLI</a> for the full schema and a worked example.</p>
               
@@ -282,7 +357,7 @@ tensor-optix validate config.yaml [key=value ...]
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
         <a href="../orchestrator/" class="btn btn-neutral float-left" title="Trial search (TrialOrchestrator)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
-        <a href="../ml/" class="btn btn-neutral float-right" title="ML mode">Next <span class="icon icon-circle-arrow-right"></span></a>
+        <a href="../ml-core/" class="btn btn-neutral float-right" title="ml_core (BaseMLModel / Trainer / metrics)">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
   <hr/>
@@ -312,7 +387,7 @@ tensor-optix validate config.yaml [key=value ...]
       <span><a href="../orchestrator/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <span><a href="../ml/" style="color: #fcfcfc">Next &raquo;</a></span>
+      <span><a href="../ml-core/" style="color: #fcfcfc">Next &raquo;</a></span>
     
   </span>
 </div>
