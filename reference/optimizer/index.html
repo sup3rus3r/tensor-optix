@@ -154,6 +154,8 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#console-output">Console output</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#finished-episode-accounting">Finished-episode accounting</a>
+    </li>
     </ul>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../factory/">make_agent (factory)</a>
@@ -423,6 +425,8 @@ def best_snapshot(self) -&gt; Optional[PolicySnapshot]:
 <p>When <code>agent_factory</code> + <code>pipeline_factory</code> + <code>param_space</code> are given, <code>run()</code> first runs a <code>TrialOrchestrator</code> search. Each trial trains for <code>max(1, int(max_episodes * trial_steps_fraction))</code> windows (30 windows when <code>max_episodes</code> is <code>None</code>). <code>RLOptimizer</code> converts that to environment steps using the pipeline's step hint (<code>steps_per_episode</code>, i.e. <code>window_size</code> for <code>BatchPipeline</code> and <code>window_size * n_envs</code> for <code>VectorBatchPipeline</code>) before handing it to the orchestrator, whose <code>trial_steps</code> argument is in environment steps.</p>
 <h2 id="console-output">Console output</h2>
 <p><code>verbose=True</code> output and the trial-search progress lines are written with an encoding-safe printer: on a stream that cannot represent the box-drawing/arrow glyphs (Windows cp1252 console, redirected stdout) they degrade to <code>?</code> instead of raising <code>UnicodeEncodeError</code>.</p>
+<h2 id="finished-episode-accounting">Finished-episode accounting</h2>
+<p><code>RLOptimizer(min_completed_episodes_before_dormant=10)</code> is forwarded to <code>LoopController</code> (also accepted under <code>optimizer:</code> in YAML configs). Windows in which no episode finished are trained on but not evaluated, and the loop cannot plateau before the minimum number of episodes has finished - see <a href="../core/loop_controller/#scores-are-finished-episode-returns">LoopController</a>. This is independent of <code>min_episodes_before_dormant</code>, which counts <em>windows</em>.</p>
               
             </div>
           </div><footer>

@@ -150,6 +150,8 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#vectorbatchpipeline">VectorBatchPipeline</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#episode-returns-across-windows">Episode returns across windows</a>
+    </li>
     </ul>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
@@ -366,6 +368,15 @@
 <li><strong>Not supported:</strong> <code>TorchRecurrentPPOAgent</code> keeps a single hidden state and must be used with <code>BatchPipeline</code>.</li>
 </ul>
 <p>See <a href="../../guides/train-rl-agent/">Train an RL agent</a> for the <code>optimal_window_size()</code> helper that picks a sensible <code>window_size</code> automatically.</p>
+<h2 id="episode-returns-across-windows">Episode returns across windows</h2>
+<p><code>BatchPipeline</code> and <code>VectorBatchPipeline</code> set <code>EpisodeData.metadata["episode_returns"]</code> to the full returns of the episodes that finished in the window (an empty list when none did), carrying partial returns from earlier windows. Evaluators read it through <code>tensor_optix.core.reward_shape.completed_episode_returns()</code>. A custom pipeline can do the same with <code>EpisodeReturnTracker</code>:</p>
+<pre><code class="language-python">from tensor_optix.core.reward_shape import EpisodeReturnTracker, EPISODE_RETURNS_KEY
+
+tracker = EpisodeReturnTracker(n_envs=1)          # keep it for the pipeline's lifetime
+returns = tracker.update(rewards, dones)          # per window
+episode_data.metadata[EPISODE_RETURNS_KEY] = returns
+</code></pre>
+<p>Pipelines that do not publish it (<code>LivePipeline</code>, custom ones) are scored from the rewards inside each window, as before. <code>RNDPipeline</code> adds its intrinsic bonus to <code>rewards</code> after the wrapped pipeline has computed <code>episode_returns</code>, so scores stay extrinsic.</p>
               
             </div>
           </div><footer>

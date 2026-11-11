@@ -316,6 +316,7 @@
         plateau_threshold: int = 5,
         dormant_threshold: int = 20,
         min_windows_before_dormant: int = 0,
+        min_completed_episodes_before_converged: int = 10,
         noise_k: float = 2.0,
         score_window: int = 20,
         trend_window: int = 8,
@@ -344,6 +345,7 @@
 <li><strong>Convergence.</strong> The score feeds the seat's own <code>BackoffScheduler</code>. A seat whose score trend stays flat for <code>plateau_threshold</code> consecutive windows is <code>COOLING</code>; after <code>dormant_threshold</code> it is <code>DORMANT</code>, i.e. converged. A later upward trend puts it back to <code>ACTIVE</code>. Every window is evaluated (no eval-interval backoff).</li>
 </ol>
 <p>A seat with no turn in a window is skipped entirely - not learned, not scored, and not counted toward its plateau counter.</p>
+<p><strong>Scores are finished-episode returns.</strong> The pipelines track each seat's return across windows. A window in which a seat finished no episode still trains that seat but is not scored (no checkpoint, no plateau count). Until a seat's first episode finishes its windows are scored by mean per-step reward; when it does, that seat's best score and trend are reset because the scale changes. A seat cannot plateau or converge before <code>min_completed_episodes_before_converged</code> (default <code>10</code>) episodes have finished - set it to <code>0</code> for environments whose episodes never end. <code>SeatResult.completed_episodes</code> reports the count.</p>
 <p><strong>When the run stops</strong></p>
 <table>
 <thead>
@@ -386,6 +388,7 @@ class SeatResult:
     state: LoopState
     converged: bool
     windows_scored: int
+    completed_episodes: int
     best_score: Optional[float]
     last_score: Optional[float]
     best_snapshot: Optional[PolicySnapshot]

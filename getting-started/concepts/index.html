@@ -279,7 +279,7 @@
 </code></pre>
 <ul>
 <li><strong>ACTIVE</strong> - the score is improving or it's early in training.</li>
-<li><strong>COOLING</strong> - <code>plateau_threshold</code> consecutive non-improving evals.</li>
+<li><strong>COOLING</strong> - <code>plateau_threshold</code> consecutive non-improving evals. Only windows in which at least one episode finished count as evals, and nothing counts until <code>min_completed_episodes_before_dormant</code> (default 10) episodes have finished.</li>
 <li><strong>DORMANT</strong> - <code>dormant_threshold</code> consecutive non-improving evals. By default the loop stops here and restores the best checkpoint. With a <code>PolicyManagerCallback</code> attached, <code>DORMANT</code> instead triggers a spawn/prune/stop decision.</li>
 </ul>
 <p>Transitions are <strong>not</strong> point-to-point score comparisons. <code>BackoffScheduler</code> fits a linear trend over the most recent <code>trend_window</code> scores and compares the slope against an adaptive floor (<code>noise_k ×</code> the standard deviation of the recent scores around their own linear trend, capped at 50% of <code>|best_score|</code>) - the noise estimate is detrended so that steady improvement is not mistaken for noise. A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.</p>
