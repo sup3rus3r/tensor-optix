@@ -76,7 +76,9 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#turn-based-games-aec-api">Turn-based games (AEC API)</a>
     </li>
-    <li class="toctree-l2"><a class="reference internal" href="#what-you-get-and-what-you-dont">What you get - and what you don't</a>
+    <li class="toctree-l2"><a class="reference internal" href="#convergence-and-checkpoints">Convergence and checkpoints</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#what-you-dont-get">What you don't get</a>
     </li>
     </ul>
                   </li>
@@ -261,8 +263,33 @@ MultiAgentRunner(pipeline, agents).run(max_windows=500)
 </code></pre>
 <p><code>window_size</code> here counts <strong>total</strong> <code>env.step()</code> calls across all seats. Rewards are credited to the action that earned them: in AEC games the result of a move (including the win/loss delivered on a seat's final turn) only becomes visible on that seat's <em>next</em> turn, and the pipeline writes it back onto the step that caused it - see <a href="../../reference/multi-agent/#aecmultiagentpipeline">the reference</a> for the exact contract and its one window-boundary limitation.</p>
 <p><strong>Action masks.</strong> Board games such as <code>tictactoe_v3</code> or <code>connect_four_v3</code> return a dict observation with an <code>action_mask</code>. The built-in agents do not apply masks; wrap the env (or the agent's <code>act()</code>) so illegal moves are never selected.</p>
-<h2 id="what-you-get-and-what-you-dont">What you get - and what you don't</h2>
-<p><code>MultiAgentRunner</code> only alternates <em>collect → learn</em> for every seat. It does not provide checkpointing, online hyperparameter tuning, or convergence detection - those live in <code>LoopController</code>, which is single-agent. Self-play schedules, league training, and centralized critics are out of scope.</p>
+<h2 id="convergence-and-checkpoints">Convergence and checkpoints</h2>
+<p><code>MultiAgentRunner</code> tracks every seat separately: it scores each seat's window, checkpoints a seat whenever it beats its own best score, and detects per-seat convergence with the same trend-based <code>BackoffScheduler</code> the single-agent loop uses.</p>
+<pre><code class="language-python">runner = MultiAgentRunner(
+    pipeline, agents,
+    checkpoint_dir=&quot;./checkpoints&quot;,   # one sub-directory per seat
+    dormant_threshold=20,             # flat windows before a seat counts as converged
+    stop_when=&quot;all&quot;,                  # stop when every seat has converged (&quot;any&quot;: the first)
+)
+result = runner.run(max_windows=2000)
+
+print(result.stop_reason)             # &quot;converged&quot; | &quot;max_windows&quot; | &quot;stopped&quot; | &quot;pipeline_exhausted&quot;
+for aid, seat in result.seats.items():
+    print(aid, seat.state.name, seat.best_score, seat.best_snapshot.weights_path)
+</code></pre>
+<p>When the run ends each seat is restored to its best checkpoint. In a competitive game a seat's best score was earned against its opponents as they were at that moment, so the restored seats may come from different points in training - pass <code>restore_best=False</code> to keep the final, jointly trained weights instead (the best snapshots stay on disk).</p>
+<p>Without <code>checkpoint_dir</code> the runner still detects convergence and reports best scores, but saves and restores nothing. <code>MultiAgentRunner(pipeline, agents).run(max_windows=N)</code> therefore behaves as before, except that it can stop early once every seat has converged (<code>stop_on_convergence=False</code> turns that off).</p>
+<p>Hook into the run with a callback:</p>
+<pre><code class="language-python">class Log:
+    def on_improvement(self, agent_id, snapshot, score):
+        print(f&quot;{agent_id}: new best {score:.2f}&quot;)
+    def on_converged(self, agent_id, window_id):
+        print(f&quot;{agent_id} converged at window {window_id}&quot;)
+
+runner.add_callback(Log())
+</code></pre>
+<h2 id="what-you-dont-get">What you don't get</h2>
+<p>Online hyperparameter tuning, degradation rollback during training, and policy spawning remain single-agent (<code>LoopController</code>) features. Self-play schedules, league training, and centralized critics are out of scope.</p>
               
             </div>
           </div><footer>

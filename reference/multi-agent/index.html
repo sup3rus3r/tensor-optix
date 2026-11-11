@@ -153,6 +153,10 @@
     <li class="toctree-l2"><a class="reference internal" href="#aecmultiagentpipeline">AECMultiAgentPipeline</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#multiagentrunner">MultiAgentRunner</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#multiagentcallback">MultiAgentCallback</a>
+    </li>
+        </ul>
     </li>
     </ul>
                   </li>
@@ -296,14 +300,107 @@
 <h2 id="multiagentrunner">MultiAgentRunner</h2>
 <pre><code class="language-python">class MultiAgentRunner:
     &quot;&quot;&quot;
-    Minimal training driver: for each window, call learn() on every seat's
-    agent with that seat's EpisodeData (empty seats skipped).
+    Trains every seat and applies, per seat, the convergence and
+    checkpoint machinery of the single-agent loop.
     &quot;&quot;&quot;
 
-    def __init__(self, pipeline, agents: Dict[Hashable, Any]): ...
-    def run(self, max_windows: Optional[int] = None) -&gt; None: ...
+    def __init__(
+        self,
+        pipeline,
+        agents: Dict[Hashable, Any],
+        *,
+        evaluator=None,                    # BaseEvaluator, or {agent_id: BaseEvaluator}
+        checkpoint_dir: Optional[str] = None,
+        max_snapshots: int = 10,
+        improvement_margin: float = 0.0,
+        plateau_threshold: int = 5,
+        dormant_threshold: int = 20,
+        min_windows_before_dormant: int = 0,
+        noise_k: float = 2.0,
+        score_window: int = 20,
+        trend_window: int = 8,
+        stop_when: str = &quot;all&quot;,            # &quot;all&quot; | &quot;any&quot;
+        stop_on_convergence: bool = True,
+        restore_best: bool = True,
+        callbacks: Optional[List[Any]] = None,
+    ): ...
+
+    def run(self, max_windows: Optional[int] = None) -&gt; MultiAgentRunResult: ...
+    def stop(self) -&gt; None: ...
+    def add_callback(self, callback) -&gt; None: ...
+
+    @property
+    def states(self) -&gt; Dict[Hashable, LoopState]: ...
+    @property
+    def best_scores(self) -&gt; Dict[Hashable, Optional[float]]: ...
+    @property
+    def best_snapshots(self) -&gt; Dict[Hashable, Optional[PolicySnapshot]]: ...
 </code></pre>
-<p><code>MultiAgentRunner</code> is deliberately small - it does not run the <code>LoopController</code> state machine (no checkpointing, hyperparameter tuning, or convergence detection). To get those for one seat, wrap that seat in your own <code>BasePipeline</code> and use <code>RLOptimizer</code>.</p>
+<p>Each window, for every seat that took at least one step:</p>
+<ol>
+<li><code>agent.learn(episode_data)</code>.</li>
+<li>The window is scored by <code>evaluator</code> (default: mean return of the episodes that completed in the window - the same default the single-agent loop uses).</li>
+<li><strong>Checkpoint.</strong> If the score beats the seat's best by more than <code>improvement_margin</code>, the seat is saved to its own <code>CheckpointRegistry</code> under <code>&lt;checkpoint_dir&gt;/&lt;agent_id&gt;</code>. With <code>checkpoint_dir=None</code> best scores are still tracked but nothing is written or restored.</li>
+<li><strong>Convergence.</strong> The score feeds the seat's own <code>BackoffScheduler</code>. A seat whose score trend stays flat for <code>plateau_threshold</code> consecutive windows is <code>COOLING</code>; after <code>dormant_threshold</code> it is <code>DORMANT</code>, i.e. converged. A later upward trend puts it back to <code>ACTIVE</code>. Every window is evaluated (no eval-interval backoff).</li>
+</ol>
+<p>A seat with no turn in a window is skipped entirely - not learned, not scored, and not counted toward its plateau counter.</p>
+<p><strong>When the run stops</strong></p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th><code>stop_reason</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>every seat converged (<code>stop_when="all"</code>, default) or the first seat converged (<code>stop_when="any"</code>)</td>
+<td><code>"converged"</code></td>
+</tr>
+<tr>
+<td><code>max_windows</code> reached</td>
+<td><code>"max_windows"</code></td>
+</tr>
+<tr>
+<td><code>stop()</code> called (e.g. from a callback)</td>
+<td><code>"stopped"</code></td>
+</tr>
+<tr>
+<td>the pipeline's generator ended</td>
+<td><code>"pipeline_exhausted"</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>stop_on_convergence=False</code> disables the first row. The default is <code>"all"</code> because in a competitive game one seat plateauing while its opponent still improves is not convergence.</p>
+<p><strong>Best-weight restore.</strong> When the run ends (including on an exception) and <code>restore_best=True</code>, every seat with a checkpoint is restored to its best snapshot. In competitive games each seat's best score was achieved against the opponents <em>as they were at that time</em>, so restored seats can come from different stages of training; pass <code>restore_best=False</code> to keep the final, jointly trained weights - the best snapshots remain on disk and in the result.</p>
+<pre><code class="language-python">@dataclass
+class MultiAgentRunResult:
+    windows_run: int
+    stop_reason: str
+    seats: Dict[Hashable, SeatResult]
+    converged: bool                    # property: stop_reason == &quot;converged&quot;
+
+@dataclass
+class SeatResult:
+    agent_id: Hashable
+    state: LoopState
+    converged: bool
+    windows_scored: int
+    best_score: Optional[float]
+    last_score: Optional[float]
+    best_snapshot: Optional[PolicySnapshot]
+</code></pre>
+<h3 id="multiagentcallback">MultiAgentCallback</h3>
+<pre><code class="language-python">class MultiAgentCallback:
+    def on_run_start(self) -&gt; None: ...
+    def on_window_end(self, window_id: int, metrics: Dict[Hashable, EvalMetrics]) -&gt; None: ...
+    def on_improvement(self, agent_id, snapshot: Optional[PolicySnapshot], score: float) -&gt; None: ...
+    def on_plateau(self, agent_id, window_id: int) -&gt; None: ...
+    def on_converged(self, agent_id, window_id: int) -&gt; None: ...
+    def on_run_stop(self, reason: str) -&gt; None: ...
+</code></pre>
+<p>Subclassing is optional - any object defining some of these methods works. An exception raised by a callback is logged and does not stop training.</p>
+<p><strong>Not provided</strong> (single-agent <code>LoopController</code> features without an agreed multi-agent meaning): online hyperparameter tuning, degradation rollback during training, and policy spawning.</p>
 <p>See <a href="../../guides/multi-agent/">Multi-agent training</a> for a worked example.</p>
               
             </div>
