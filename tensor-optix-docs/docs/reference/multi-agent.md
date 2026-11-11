@@ -104,6 +104,7 @@ class MultiAgentRunner:
         plateau_threshold: int = 5,
         dormant_threshold: int = 20,
         min_windows_before_dormant: int = 0,
+        min_completed_episodes_before_converged: int = 10,
         noise_k: float = 2.0,
         score_window: int = 20,
         trend_window: int = 8,
@@ -134,6 +135,8 @@ Each window, for every seat that took at least one step:
 
 A seat with no turn in a window is skipped entirely - not learned, not scored, and not counted toward its plateau counter.
 
+**Scores are finished-episode returns.** The pipelines track each seat's return across windows. A window in which a seat finished no episode still trains that seat but is not scored (no checkpoint, no plateau count). Until a seat's first episode finishes its windows are scored by mean per-step reward; when it does, that seat's best score and trend are reset because the scale changes. A seat cannot plateau or converge before `min_completed_episodes_before_converged` (default `10`) episodes have finished - set it to `0` for environments whose episodes never end. `SeatResult.completed_episodes` reports the count.
+
 **When the run stops**
 
 | Condition | `stop_reason` |
@@ -161,6 +164,7 @@ class SeatResult:
     state: LoopState
     converged: bool
     windows_scored: int
+    completed_episodes: int
     best_score: Optional[float]
     last_score: Optional[float]
     best_snapshot: Optional[PolicySnapshot]

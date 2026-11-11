@@ -5,6 +5,7 @@ logger = logging.getLogger(__name__)
 from typing import Any, Generator, Optional
 from tensor_optix.core.base_pipeline import BasePipeline, EpisodeBoundaryFn
 from tensor_optix.core.types import EpisodeData
+from tensor_optix.core.reward_shape import EPISODE_RETURNS_KEY, EpisodeReturnTracker
 
 
 class BatchPipeline(BasePipeline):
@@ -53,6 +54,7 @@ class BatchPipeline(BasePipeline):
         self._agent = agent
         self._window_size = window_size
         self._window_counter = 0
+        self._return_tracker = EpisodeReturnTracker()
         self._obs = None
         self._needs_reset = True
 
@@ -122,6 +124,11 @@ class BatchPipeline(BasePipeline):
                     self._obs = next_obs
 
             last_done = terminated_flags[-1] or truncated_flags[-1]
+            # Full returns of the episodes that finished in this window,
+            # including the part of them collected in earlier windows.
+            episode_returns = self._return_tracker.update(
+                rewards, [t or tr for t, tr in zip(terminated_flags, truncated_flags)]
+            )
             yield EpisodeData(
                 observations=np.array(observations),
                 actions=np.array(actions),
@@ -132,6 +139,7 @@ class BatchPipeline(BasePipeline):
                 episode_id=self._window_counter,
                 episode_starts=episode_start_indices,
                 final_obs=None if last_done else self._obs,
+                metadata={EPISODE_RETURNS_KEY: episode_returns},
             )
             self._window_counter += 1
 

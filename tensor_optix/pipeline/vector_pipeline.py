@@ -3,6 +3,7 @@ from typing import Any, Callable, Generator, List, Optional
 
 from tensor_optix.core.base_pipeline import BasePipeline
 from tensor_optix.core.types import EpisodeData
+from tensor_optix.core.reward_shape import EPISODE_RETURNS_KEY, EpisodeReturnTracker
 
 
 class VectorBatchPipeline(BasePipeline):
@@ -78,6 +79,7 @@ class VectorBatchPipeline(BasePipeline):
         self._async_envs  = async_envs
         self._vec_env     = None
         self._window_counter = 0
+        self._return_tracker = EpisodeReturnTracker(self._n_envs)
 
     def set_agent(self, agent) -> None:
         self._agent = agent
@@ -180,7 +182,14 @@ class VectorBatchPipeline(BasePipeline):
                 infos=all_infos,
                 episode_id=self._window_counter,
                 final_obs=final_obs_vec,
-                metadata={"n_envs": self._n_envs},
+                metadata={
+                    "n_envs": self._n_envs,
+                    # Full per-env returns of episodes that finished this window.
+                    EPISODE_RETURNS_KEY: self._return_tracker.update(
+                        all_rewards,
+                        [t or tr for t, tr in zip(all_terminated, all_truncated)],
+                    ),
+                },
             )
             self._window_counter += 1
 

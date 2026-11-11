@@ -16,6 +16,7 @@ from typing import Any, Dict, Generator, Hashable, Optional
 import numpy as np
 
 from tensor_optix.core.types import EpisodeData
+from tensor_optix.core.reward_shape import EPISODE_RETURNS_KEY, EpisodeReturnTracker
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ class ParallelMultiAgentPipeline:
         self._agents = agents
         self._window_size = window_size
         self._window_counter = 0
+        # One cross-window episode-return tracker per seat.
+        self._return_trackers: Dict[Hashable, EpisodeReturnTracker] = {}
         self._obs: Optional[Dict[Hashable, Any]] = None
         self._needs_reset = True
         # Optional Dict[AgentID, SeatEnvView] -- when given, each seat's raw
@@ -132,6 +135,14 @@ class ParallelMultiAgentPipeline:
                     truncated=data["truncated"],
                     infos=data["infos"],
                     episode_id=self._window_counter,
+                    metadata={
+                        EPISODE_RETURNS_KEY: self._return_trackers.setdefault(
+                            aid, EpisodeReturnTracker()
+                        ).update(
+                            data["rewards"],
+                            [t or tr for t, tr in zip(data["terminated"], data["truncated"])],
+                        ),
+                    },
                     final_obs=None if last_done else self._encode(aid, self._obs.get(aid)) if aid in self._obs else None,
                 )
             yield window

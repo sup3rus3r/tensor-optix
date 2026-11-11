@@ -31,6 +31,61 @@ from typing import Deque, List
 import numpy as np
 
 
+class EpisodeReturnTracker:
+    """
+    Accumulates per-episode returns ACROSS windows.
+
+    A pipeline yields fixed-size windows, so an episode usually starts in one
+    window and ends in a later one. Summing rewards inside a single window
+    only ever sees the tail of such an episode (and nothing at all when the
+    episode is longer than the window). The tracker keeps one running sum per
+    environment between calls, so every return it reports is the full return
+    of an episode, however many windows it spanned.
+
+    update() returns the returns of the episodes that FINISHED in this
+    window — an empty list when none did.
+    """
+
+    def __init__(self, n_envs: int = 1) -> None:
+        self._n_envs = max(1, int(n_envs))
+        self._running = [0.0] * self._n_envs
+
+    def update(self, rewards, dones) -> List[float]:
+        finished: List[float] = []
+        n = self._n_envs
+        for t in range(len(rewards)):
+            env_i = t % n
+            self._running[env_i] += float(rewards[t])
+            if dones[t]:
+                finished.append(self._running[env_i])
+                self._running[env_i] = 0.0
+        return finished
+
+    def reset(self) -> None:
+        self._running = [0.0] * self._n_envs
+
+
+EPISODE_RETURNS_KEY = "episode_returns"
+
+
+def completed_episode_returns(episode_data, n_envs: int = 1):
+    """
+    Returns of the episodes that finished in this window.
+
+    Pipelines that track episodes across windows publish them in
+    EpisodeData.metadata["episode_returns"] (full returns, possibly an empty
+    list). For any other pipeline this falls back to window-local sums.
+    """
+    metadata = getattr(episode_data, "metadata", None) or {}
+    tracked = metadata.get(EPISODE_RETURNS_KEY)
+    if tracked is not None:
+        return [float(r) for r in tracked]
+    return [
+        float(np.sum(seg))
+        for seg in split_episode_returns(episode_data.rewards, episode_data.dones, n_envs)
+    ]
+
+
 def split_episode_returns(values: List[float], dones: List[bool], n_envs: int = 1) -> List[List[float]]:
     """
     Split a window of per-step values into per-completed-episode segments,

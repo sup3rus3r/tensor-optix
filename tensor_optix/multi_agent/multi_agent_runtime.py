@@ -54,6 +54,7 @@ class SeatResult:
     state: LoopState
     converged: bool
     windows_scored: int
+    completed_episodes: int
     best_score: Optional[float]
     last_score: Optional[float]
     best_snapshot: Optional[PolicySnapshot]
@@ -82,6 +83,9 @@ class _Seat:
         self.best_snapshot: Optional[PolicySnapshot] = None
         self.windows_scored = 0
         self.converged = False
+        self.completed_episodes = 0
+        self.reports_episodes = False
+        self.scored_before_first_episode = False
 
 
 class MultiAgentRunner:
@@ -116,6 +120,13 @@ class MultiAgentRunner:
     is skipped for that window — not learned, not scored, and it does not
     count toward that seat's plateau counter.
 
+    Scores are full episode returns, tracked across windows by the
+    pipeline. A window in which a seat finished no episode still trains
+    that seat but is not scored (no checkpoint, no plateau count). Until a
+    seat's first episode finishes, windows are scored by mean per-step
+    reward; when it does, that seat's best score and trend are reset
+    because the scale changes.
+
     Args:
         pipeline, agents:      as before.
         evaluator:             a BaseEvaluator, or {agent_id: BaseEvaluator}.
@@ -125,6 +136,9 @@ class MultiAgentRunner:
         max_snapshots:         snapshots kept per seat.
         improvement_margin:    minimum score gain over the seat's best for
                                a new checkpoint.
+        min_completed_episodes_before_converged:
+                               a seat cannot plateau/converge before it has
+                               finished this many episodes (default 10).
         plateau_threshold / dormant_threshold / min_windows_before_dormant /
         noise_k / score_window / trend_window:
                                per-seat BackoffScheduler settings (same
@@ -148,6 +162,7 @@ class MultiAgentRunner:
         plateau_threshold: int = 5,
         dormant_threshold: int = 20,
         min_windows_before_dormant: int = 0,
+        min_completed_episodes_before_converged: int = 10,
         noise_k: float = 2.0,
         score_window: int = 20,
         trend_window: int = 8,
@@ -161,6 +176,7 @@ class MultiAgentRunner:
         self._pipeline = pipeline
         self._agents = agents
         self._improvement_margin = improvement_margin
+        self._min_completed_episodes = max(0, int(min_completed_episodes_before_converged))
         self._stop_when = stop_when
         self._stop_on_convergence = stop_on_convergence
         self._restore_best = restore_best
@@ -240,6 +256,10 @@ class MultiAgentRunner:
                     diagnostics = seat.agent.learn(episode_data) or {}
                     metrics = self._evaluators[aid].score(episode_data, diagnostics)
                     metrics.episode_id = windows_run
+                    if not self._account_episodes(seat, metrics):
+                        # No episode finished for this seat in this window:
+                        # it trained, but there is no return to score.
+                        continue
                     window_metrics[aid] = metrics
                     self._update_seat(seat, metrics, windows_run)
 
@@ -276,6 +296,7 @@ class MultiAgentRunner:
                     state=seat.scheduler.current_state,
                     converged=seat.converged,
                     windows_scored=seat.windows_scored,
+                    completed_episodes=seat.completed_episodes,
                     best_score=seat.best_score,
                     last_score=seat.last_score,
                     best_snapshot=seat.best_snapshot,
@@ -287,6 +308,30 @@ class MultiAgentRunner:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _account_episodes(self, seat: _Seat, metrics: EvalMetrics) -> bool:
+        """
+        Same rule as LoopController._account_episodes, per seat: a window in
+        which no episode finished is not an evaluation (once the seat has
+        finished at least one episode), and the first finished episode after
+        per-step-scored windows resets the seat's best score and trend.
+        Evaluators that do not report "episodes_completed" are always used.
+        """
+        completed = (metrics.metrics or {}).get("episodes_completed")
+        if completed is None:
+            return True
+        completed = int(completed)
+        seat.reports_episodes = True
+        if completed == 0:
+            if seat.completed_episodes > 0:
+                return False
+            seat.scored_before_first_episode = True
+            return True
+        if seat.completed_episodes == 0 and seat.scored_before_first_episode:
+            seat.best_score = None
+            seat.scheduler.reset_scale()
+        seat.completed_episodes += completed
+        return True
 
     def _update_seat(self, seat: _Seat, metrics: EvalMetrics, window_id: int) -> None:
         score = float(metrics.primary_score)
@@ -310,6 +355,9 @@ class MultiAgentRunner:
             sched.record_improvement(score, append=False)
             seat.converged = False
             return
+
+        if seat.reports_episodes and seat.completed_episodes < self._min_completed_episodes:
+            return  # too few finished episodes to call anything a plateau
 
         prev_state = sched.current_state
         sched.record_non_improvement()

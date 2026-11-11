@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Callable, Optional
 from tensor_optix.core.base_evaluator import BaseEvaluator
-from tensor_optix.core.reward_shape import split_episode_returns
+from tensor_optix.core.reward_shape import completed_episode_returns, split_episode_returns
 from tensor_optix.core.types import EpisodeData, EvalMetrics
 
 
@@ -41,7 +41,13 @@ class TorchEvaluator(BaseEvaluator):
             primary = float(self._primary_score_fn(episode_data, train_diagnostics))
         else:
             n_envs = int((episode_data.metadata or {}).get("n_envs", 1))
-            primary = self._mean_episode_return(rewards, dones, n_envs)
+            # Full returns of the episodes that finished in this window
+            # (tracked across windows by the pipeline when it supports it).
+            episode_returns = completed_episode_returns(episode_data, n_envs)
+            primary = (
+                float(np.mean(episode_returns)) if episode_returns
+                else float(rewards.mean()) if len(rewards) else 0.0
+            )
 
         metrics = {
             "primary_score":  primary,
@@ -50,6 +56,11 @@ class TorchEvaluator(BaseEvaluator):
             "reward_std":     float(rewards.std()) if len(rewards) > 1 else 0.0,
             "episode_length": episode_data.length,
         }
+        if self._primary_score_fn is None:
+            # How many finished episodes the score is based on. 0 means the
+            # score above is only the per-step fallback: the training loops
+            # use this to avoid treating such a window as an evaluation.
+            metrics["episodes_completed"] = len(episode_returns)
         metrics.update({k: float(v) for k, v in train_diagnostics.items()
                         if isinstance(v, (int, float))})
         return EvalMetrics(primary_score=primary, metrics=metrics,

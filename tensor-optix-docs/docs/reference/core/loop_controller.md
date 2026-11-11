@@ -83,6 +83,7 @@ def __init__(
     checkpoint_confirmation: bool = False,
     checkpoint_confirm_window: int = 3,
     checkpoint_noise_k: float = 2.0,
+    min_completed_episodes_before_dormant: int = 10,
 )
 ```
 
@@ -202,3 +203,15 @@ This is a no-op (zero cost) for pipelines that don't implement `set_eta`. See [E
 ## Verbose output
 
 `verbose=True` prints a per-eval diagnostic block (score, trend, state machine, optimizer step). Output goes through `tensor_optix.utils.console.safe_print`, which replaces glyphs the output stream cannot encode (e.g. box-drawing characters on a Windows cp1252 console or a redirected stdout) with `?` instead of raising `UnicodeEncodeError`. Pass `verbose_log_file=` to write the same output to a UTF-8 file.
+
+## Scores are finished-episode returns
+
+A window is a fixed number of steps, not an episode, so the loop keeps track of which windows actually contain something to score.
+
+- **Returns are tracked across windows.** `BatchPipeline`, `VectorBatchPipeline` and the multi-agent pipelines keep a running return per environment (or seat) between windows and publish the full returns of the episodes that *finished* in a window as `EpisodeData.metadata["episode_returns"]`. An episode that spans five windows is scored once, with its whole return, in the window where it ends.
+- **The default evaluators** (`TorchEvaluator` / `TFEvaluator`) use the mean of those returns as `primary_score` and report `metrics["episodes_completed"]`. With a custom `primary_score_fn` the count is not reported and none of the rules below apply.
+- **A window in which no episode finished is not an evaluation.** The agent still learns from it, but there is no checkpoint decision, no trend update, no plateau count and no hyperparameter step; `on_episode_end` fires with `eval_metrics=None`, exactly as for windows skipped by the eval interval.
+- **Before the first episode ever finishes** there is nothing better to score with, so windows are scored by mean per-step reward. When the first episode finishes the scale changes from per-step reward to episode return, so the best score, the trend window and the metrics history are reset at that point - otherwise a per-step best such as `-1.0` could never be beaten by a return such as `-200`.
+- **`min_completed_episodes_before_dormant`** (default `10`): non-improving evals do not count toward `COOLING`/`DORMANT` until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to `0`.
+
+With a validation pipeline the same rules are applied to the validation windows (`val_episodes_completed`), since the validation score is what drives the loop.

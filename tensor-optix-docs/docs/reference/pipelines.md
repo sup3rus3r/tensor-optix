@@ -152,3 +152,17 @@ Window layout and how the rest of the library consumes it:
 - **Not supported:** `TorchRecurrentPPOAgent` keeps a single hidden state and must be used with `BatchPipeline`.
 
 See [Train an RL agent](../guides/train-rl-agent.md) for the `optimal_window_size()` helper that picks a sensible `window_size` automatically.
+
+## Episode returns across windows
+
+`BatchPipeline` and `VectorBatchPipeline` set `EpisodeData.metadata["episode_returns"]` to the full returns of the episodes that finished in the window (an empty list when none did), carrying partial returns from earlier windows. Evaluators read it through `tensor_optix.core.reward_shape.completed_episode_returns()`. A custom pipeline can do the same with `EpisodeReturnTracker`:
+
+```python
+from tensor_optix.core.reward_shape import EpisodeReturnTracker, EPISODE_RETURNS_KEY
+
+tracker = EpisodeReturnTracker(n_envs=1)          # keep it for the pipeline's lifetime
+returns = tracker.update(rewards, dones)          # per window
+episode_data.metadata[EPISODE_RETURNS_KEY] = returns
+```
+
+Pipelines that do not publish it (`LivePipeline`, custom ones) are scored from the rewards inside each window, as before. `RNDPipeline` adds its intrinsic bonus to `rewards` after the wrapped pipeline has computed `episode_returns`, so scores stay extrinsic.

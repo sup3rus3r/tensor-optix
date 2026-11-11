@@ -88,6 +88,7 @@ class LoopController:
         checkpoint_confirmation: bool = False,
         checkpoint_confirm_window: int = 3,
         checkpoint_noise_k: float = 2.0,
+        min_completed_episodes_before_dormant: int = 10,
     ):
         self._agent = agent
         self._evaluator = evaluator
@@ -139,6 +140,15 @@ class LoopController:
         self._best_raw: Optional[float] = None
         self._min_consecutive_degradations = min_consecutive_degradations
         self._consecutive_degradation_count: int = 0
+
+        # Finished-episode accounting (see _account_episodes). Only active
+        # when the evaluator reports "episodes_completed".
+        self._min_completed_episodes_before_dormant = max(0, int(min_completed_episodes_before_dormant))
+        self._total_completed_episodes: int = 0
+        self._evaluator_reports_episodes: bool = False
+        self._checkpoint_confirm_args = dict(
+            noise_k=checkpoint_noise_k, confirm_window=checkpoint_confirm_window,
+        )
 
         # Checkpoint measurement/acceptance — off by default (bit-identical
         # to legacy raw-point comparison unless explicitly opted into).
@@ -225,6 +235,8 @@ class LoopController:
         if breadths:
             self._breadth_history.append(breadths[-1])
 
+        self._account_episodes(eval_metrics)
+
         if self._checkpoint_score_fn is not None:
             ckpt_score = self._checkpoint_score_fn(self._agent)
         elif self._checkpoint_confirmation_enabled:
@@ -301,6 +313,16 @@ class LoopController:
                     )
                 else:
                     eval_metrics = train_metrics
+
+                if not self._account_episodes(eval_metrics):
+                    # No episode finished in this window, so there is no
+                    # return to score — only the per-step fallback, which is
+                    # on a different scale. Train on the window, but do not
+                    # treat it as an evaluation: no checkpoint decision, no
+                    # trend update, no plateau count, no optimizer step.
+                    self._fire("on_episode_end", episode_id, None)
+                    episode_id += 1
+                    continue
 
                 self._metrics_history.append(eval_metrics)
 
@@ -504,8 +526,58 @@ class LoopController:
             self._fire("on_episode_end", episode_id, eval_metrics)
             episode_id += 1
 
+    def _account_episodes(self, eval_metrics: EvalMetrics) -> bool:
+        """
+        Track finished episodes and decide whether this window is a usable
+        evaluation. Returns False when it should be skipped.
+
+        The default evaluators report metrics["episodes_completed"] (or
+        "val_episodes_completed" when a validation pipeline drives the
+        score): how many finished episodes the score is the mean return of.
+        An evaluator that does not report it is always treated as usable.
+
+          - completed > 0: usable. If this is the first finished episode
+            after windows scored by the per-step fallback, the score scale
+            just changed, so everything measured so far is discarded.
+          - completed == 0, and an episode has finished before: skip.
+          - completed == 0, and none ever has: usable (per-step fallback) —
+            an env whose episodes never end must still be trainable.
+        """
+        metrics = eval_metrics.metrics or {}
+        completed = metrics.get("val_episodes_completed", metrics.get("episodes_completed"))
+        if completed is None:
+            return True
+        completed = int(completed)
+        self._evaluator_reports_episodes = True
+        if completed == 0:
+            return self._total_completed_episodes == 0
+        if self._total_completed_episodes == 0 and self._metrics_history:
+            logger.info(
+                "First finished episode — score scale changes from per-step reward "
+                "to episode return; resetting best score and trend window."
+            )
+            self._reset_score_scale()
+        self._total_completed_episodes += completed
+        return True
+
+    def _reset_score_scale(self) -> None:
+        self._score_window.clear()
+        self._best_smoothed = None
+        self._best_raw = None
+        self._metrics_history.clear()
+        self._consecutive_degradation_count = 0
+        self._consecutive_above_target = 0
+        self._confirmation = CheckpointConfirmationTracker(**self._checkpoint_confirm_args)
+        self._scheduler.reset_scale()
+
     def _record_plateau(self, episode_id: int) -> None:
         """Advance the scheduler on a non-improving eval and act on the new state."""
+        if (
+            self._evaluator_reports_episodes
+            and self._total_completed_episodes < self._min_completed_episodes_before_dormant
+        ):
+            # Too few finished episodes to call anything a plateau yet.
+            return
         self._scheduler.record_non_improvement()
         state = self._scheduler.current_state
         if state == LoopState.COOLING:

@@ -232,6 +232,21 @@ class BackoffScheduler:
         """
         self._state = LoopState.ACTIVE
 
+    def reset_scale(self) -> None:
+        """
+        Forget everything measured so far, including best_score.
+
+        For when the SCORE SCALE itself changes — e.g. the first finished
+        episode arrives after windows that could only be scored by per-step
+        reward. Scores before and after are not comparable, so neither the
+        trend window nor the best score may carry over.
+        """
+        self._score_window.clear()
+        self._best_score = None
+        self._consecutive_non_improvements = 0
+        self._current_interval = self._base_interval
+        self._state = LoopState.ACTIVE
+
     def record_restart(self) -> None:
         """
         Called after DORMANT fires and PolicyManager has acted.

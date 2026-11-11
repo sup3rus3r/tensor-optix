@@ -98,6 +98,7 @@ class RLOptimizer:
         checkpoint_confirmation: bool = False,
         checkpoint_confirm_window: int = 3,
         checkpoint_noise_k: float = 2.0,
+        min_completed_episodes_before_dormant: int = 10,
         # ── Trial-level search (TrialOrchestrator) ────────────────────────
         agent_factory: Optional[Callable[[Dict[str, Any]], BaseAgent]] = None,
         pipeline_factory: Optional[Callable[[], BasePipeline]] = None,
@@ -152,6 +153,7 @@ class RLOptimizer:
             checkpoint_confirmation=checkpoint_confirmation,
             checkpoint_confirm_window=checkpoint_confirm_window,
             checkpoint_noise_k=checkpoint_noise_k,
+            min_completed_episodes_before_dormant=min_completed_episodes_before_dormant,
             checkpoint_dir=checkpoint_dir,
             max_snapshots=max_snapshots,
             rollback_on_degradation=rollback_on_degradation,
@@ -280,6 +282,7 @@ class RLOptimizer:
             checkpoint_confirmation=kw["checkpoint_confirmation"],
             checkpoint_confirm_window=kw["checkpoint_confirm_window"],
             checkpoint_noise_k=kw["checkpoint_noise_k"],
+            min_completed_episodes_before_dormant=kw["min_completed_episodes_before_dormant"],
         )
         return controller
 

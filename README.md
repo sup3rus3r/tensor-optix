@@ -266,6 +266,7 @@ opt.best_snapshot   # -> PolicySnapshot: best weights + EvalMetrics + Hyperparam
 
 Loop state transitions: `ACTIVE` -> `COOLING` -> `DORMANT` -> watchdog shutdown or policy spawn.
 
+- Scores are full episode returns, tracked across windows. A window in which no episode finished trains the agent but is not evaluated, and the loop cannot plateau before `min_completed_episodes_before_dormant` (default 10) episodes have finished (`0` for continuing tasks).
 - Every non-improving eval counts toward `COOLING`/`DORMANT`, for on-policy and off-policy agents alike. While the score is flat the eval interval backs off (`backoff_factor`, default 2.0); set `backoff_factor=1.0` to evaluate every window.
 - At `DORMANT` the loop stops by default. A `PolicyManagerCallback` with spawn budget remaining spawns a variant instead and training continues.
 - `rollback_on_degradation=True` restores the best checkpoint when a degradation is confirmed (`min_consecutive_degradations` consecutive evals below `degradation_threshold x best`), for on-policy agents only - off-policy agents keep their weights because their replay buffer would immediately pull a restored policy back.

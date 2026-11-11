@@ -211,3 +211,7 @@ When `agent_factory` + `pipeline_factory` + `param_space` are given, `run()` fir
 ## Console output
 
 `verbose=True` output and the trial-search progress lines are written with an encoding-safe printer: on a stream that cannot represent the box-drawing/arrow glyphs (Windows cp1252 console, redirected stdout) they degrade to `?` instead of raising `UnicodeEncodeError`.
+
+## Finished-episode accounting
+
+`RLOptimizer(min_completed_episodes_before_dormant=10)` is forwarded to `LoopController` (also accepted under `optimizer:` in YAML configs). Windows in which no episode finished are trained on but not evaluated, and the loop cannot plateau before the minimum number of episodes has finished - see [LoopController](core/loop_controller.md#scores-are-finished-episode-returns). This is independent of `min_episodes_before_dormant`, which counts *windows*.

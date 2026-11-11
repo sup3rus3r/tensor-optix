@@ -320,6 +320,7 @@ def build_optimizer_from_config(cfg: TrainConfig, agent, pipeline):
         "backoff_factor", "max_interval_episodes", "plateau_threshold",
         "dormant_threshold", "degradation_threshold", "min_degradation_drop",
         "noise_k", "score_window", "trend_window", "min_episodes_before_dormant",
+        "min_completed_episodes_before_dormant",
         "min_episodes_before_degradation", "score_smoothing", "verbose",
         "verbose_log_file", "diag_loss_spike_factor", "diag_entropy_floor",
         "diag_target_kl", "diag_epsilon_patience", "diag_epsilon_reset_value",

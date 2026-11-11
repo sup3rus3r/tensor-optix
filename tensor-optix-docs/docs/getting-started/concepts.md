@@ -27,7 +27,7 @@ ACTIVE → COOLING → DORMANT → (watchdog shutdown | policy spawn)
 ```
 
 - **ACTIVE** - the score is improving or it's early in training.
-- **COOLING** - `plateau_threshold` consecutive non-improving evals.
+- **COOLING** - `plateau_threshold` consecutive non-improving evals. Only windows in which at least one episode finished count as evals, and nothing counts until `min_completed_episodes_before_dormant` (default 10) episodes have finished.
 - **DORMANT** - `dormant_threshold` consecutive non-improving evals. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
 
 Transitions are **not** point-to-point score comparisons. `BackoffScheduler` fits a linear trend over the most recent `trend_window` scores and compares the slope against an adaptive floor (`noise_k ×` the standard deviation of the recent scores around their own linear trend, capped at 50% of `|best_score|`) - the noise estimate is detrended so that steady improvement is not mistaken for noise. A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.

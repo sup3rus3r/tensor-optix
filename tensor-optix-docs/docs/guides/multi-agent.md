@@ -68,6 +68,8 @@ When the run ends each seat is restored to its best checkpoint. In a competitive
 
 Without `checkpoint_dir` the runner still detects convergence and reports best scores, but saves and restores nothing. `MultiAgentRunner(pipeline, agents).run(max_windows=N)` therefore behaves as before, except that it can stop early once every seat has converged (`stop_on_convergence=False` turns that off).
 
+**Long episodes.** A window is a fixed number of steps (`window_size`, counted across all seats for AEC). In games whose episodes run for thousands of steps most windows contain no finished episode; those windows train the agents but are not scored, and a seat is not considered converged until it has finished `min_completed_episodes_before_converged` episodes (default 10). Pick a `window_size` large enough to hold a few episodes where you can - the trend test needs scored windows to work with.
+
 Hook into the run with a callback:
 
 ```python
