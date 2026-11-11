@@ -18,13 +18,13 @@ With no `agent_factory`, `DORMANT` rolls back to the best checkpoint and otherwi
 
 ```python
 pm = PolicyManager(registry, max_spawns=4)
-cb = pm.as_callback(agent, agent_factory=make_agent)
+cb = pm.as_callback(agent, agent_factory=lambda: make_agent(env))   # zero-argument factory
 cb.set_stop_fn(opt.stop)
 opt.add_callback(cb)
 opt.run()
 ```
 
-`set_stop_fn` is required when spawning is enabled - when the spawn budget is exhausted, `PolicyManagerCallback` calls it to terminate the loop cleanly with the best-known weights already restored.
+Each `DORMANT` event with budget remaining spawns a variant (best checkpoint weights + perturbed hyperparameters and weights), the scheduler is reset to `ACTIVE`, and training continues. `set_stop_fn` should be set when spawning is enabled - when the spawn budget is exhausted, `PolicyManagerCallback` calls it to terminate the loop cleanly with the best-known weights already restored. With `max_spawns=4` the run therefore passes through `DORMANT` five times: four spawns, then the stop.
 
 ## Letting MetaController decide
 
@@ -34,7 +34,7 @@ Without a `MetaController`, `PolicyManagerCallback` spawns whenever budget allow
 from tensor_optix import MetaController
 
 mc = MetaController(gap_threshold=0.2, gap_slope_threshold=0.02, improvement_threshold=0.01)
-cb = pm.as_callback(agent, agent_factory=make_agent, meta_controller=mc)
+cb = pm.as_callback(agent, agent_factory=lambda: make_agent(env), meta_controller=mc)
 cb.set_stop_fn(opt.stop)
 ```
 
@@ -52,6 +52,8 @@ ensemble = EnsembleAgent(pm, primary_agent=agent_a)
 pipeline.set_agent(ensemble)
 opt = RLOptimizer(agent=ensemble, pipeline=pipeline, ...)
 ```
+
+With several members, `EnsembleAgent.act()` returns the combined output of `PolicyManager.ensemble_action()` - for discrete PPO members that is an averaged probability vector to sample/`argmax`, not an action index - so a multi-member ensemble is primarily an inference-time construct (see the [reference](../reference/core/ensemble_agent.md#limitations)).
 
 `EnsembleAgent.learn()` trains **every** registered agent on the same episode data - this is mathematically necessary; non-primary agents that don't update will drift away from the primary's action distribution as training progresses, degrading the ensemble. `get_hyperparams`/`set_hyperparams`/`save_weights`/`load_weights` all delegate to the primary agent only - it's the authoritative agent for checkpointing.
 

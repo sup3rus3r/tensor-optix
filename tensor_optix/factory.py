@@ -41,6 +41,7 @@ network architectures.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple
 
 from tensor_optix.core.types import HyperparamSet
@@ -454,6 +455,16 @@ def _make_rainbow(obs_dim, n_actions, hyperparams, device, obs_space=None):
         "v_max":              500.0,
         "n_atoms":            51,
     }, episode_id=0)
+    if hyperparams is None:
+        # The categorical support must cover the env's discounted returns;
+        # anything outside [v_min, v_max] is clamped, so an env with negative
+        # or larger returns (Acrobot, LunarLander, Atari...) cannot be learned
+        # with this CartPole-shaped default.
+        logger.warning(
+            "make_agent('RAINBOW'): using the default value support "
+            "[v_min=0, v_max=500], which only suits CartPole-like returns. "
+            "Pass hyperparams with v_min/v_max covering your env's return range."
+        )
 
     # Same single-network constraint as DQN above: the buffer stores raw
     # observations and RainbowQNetwork's dueling/noisy/distributional head
@@ -925,6 +936,7 @@ def _make_neuroevo_feature_extractor(
     else:
         _proj = _proj / (_proj.norm(dim=0, keepdim=True) + 1e-8)
     _proj_np = _proj.numpy()
+    _proj_cell = {"np": _proj_np}  # mutable: load_weights() restores it
 
     # Build graph
     graph = NeuronGraph()
@@ -954,7 +966,7 @@ def _make_neuroevo_feature_extractor(
     graph.to(_device)
 
     def _project(obs: np.ndarray) -> np.ndarray:
-        return (obs @ _proj_np).astype(np.float32)
+        return (obs @ _proj_cell["np"]).astype(np.float32)
 
     def _graph_features(obs: np.ndarray) -> np.ndarray:
         x = torch.tensor(_project(obs), device=_device)
@@ -1002,17 +1014,32 @@ def _make_neuroevo_feature_extractor(
         default_log_params = ["learning_rate", "tau"]
 
         def act(self, observation):
-            return super().act(_augment(np.asarray(observation, dtype=np.float32)))
+            aug = _augment(np.asarray(observation, dtype=np.float32))
+            # The graph is recurrent (GRU/LSTM cells, delayed edges): its
+            # output depends on its running state. Keep the features the
+            # policy actually acted on so learn() trains on exactly those,
+            # instead of re-running the graph over the window a second time
+            # (different state -> different features, and the graph's state
+            # would be advanced twice per env step).
+            self._aug_cache.append(aug)
+            return super().act(aug)
 
         def learn(self, episode_data):
-            aug = np.array(
-                [_augment(np.asarray(o, dtype=np.float32)) for o in episode_data.observations],
-                dtype=np.float32,
-            )
-            final = (
-                _augment(np.asarray(episode_data.final_obs, dtype=np.float32))
-                if episode_data.final_obs is not None else None
-            )
+            T = len(episode_data.rewards)
+            if len(self._aug_cache) >= T:
+                aug = np.array(self._aug_cache[:T], dtype=np.float32)
+                del self._aug_cache[:T]
+            else:
+                # Window not produced by this agent's act() (e.g. offline
+                # data): fall back to recomputing the features.
+                self._aug_cache.clear()
+                aug = np.array(
+                    [_augment(np.asarray(o, dtype=np.float32)) for o in episode_data.observations],
+                    dtype=np.float32,
+                )
+            # SAC is off-policy and never bootstraps from final_obs; running
+            # the graph on it would only advance the recurrent state.
+            final = None
             ep = _ED(
                 observations=aug,
                 actions=episode_data.actions,
@@ -1023,8 +1050,33 @@ def _make_neuroevo_feature_extractor(
                 episode_id=episode_data.episode_id,
                 episode_starts=episode_data.episode_starts,
                 final_obs=final,
+                metadata=dict(episode_data.metadata or {}),
             )
             return super().learn(ep)
+
+        def reset_cache(self):
+            self._aug_cache.clear()
+
+        # The SAC networks are trained on [obs, graph features]: a checkpoint
+        # is only meaningful together with the graph (which evolves) and the
+        # fixed random projection that produced those features.
+        def save_weights(self, path):
+            super().save_weights(path)
+            torch.save(
+                {"topology": graph.to_dict(), "graph": graph.state_dict(), "proj": _proj_cell["np"]},
+                os.path.join(path, "neuro_graph.pt"),
+            )
+
+        def load_weights(self, path):
+            super().load_weights(path)
+            graph_path = os.path.join(path, "neuro_graph.pt")
+            if os.path.exists(graph_path):
+                state = torch.load(graph_path, map_location=_device, weights_only=False)
+                graph.restore_from_dict(state["topology"])  # in place: callbacks keep their reference
+                graph.to(_device)
+                graph.load_state_dict(state["graph"])
+                _proj_cell["np"] = np.asarray(state["proj"], dtype=np.float32)
+            self._aug_cache.clear()
 
     agent = _NeuroSACAgent(
         actor=actor,
@@ -1039,6 +1091,8 @@ def _make_neuroevo_feature_extractor(
         hyperparams=hp,
         device=device,
     )
+
+    agent._aug_cache = []
 
     hebbian = HebbianHook(graph, hebbian_lr=hebbian_lr)
     ctrl    = TopologyController.for_graph(graph, grow_cooldown=grow_cooldown)

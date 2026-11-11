@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -101,6 +105,10 @@
     <li class="toctree-l4"><a class="reference internal" href="#abstract-methods">Abstract methods</a>
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#optional-overrides">Optional overrides</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#full-state-checkpoints-resumable-training">Full-state checkpoints (resumable training)</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#optional-hooks-recognised-by-pipelines-and-the-loop">Optional hooks recognised by pipelines and the loop</a>
     </li>
         </ul>
     </li>
@@ -150,6 +158,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
@@ -160,7 +172,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
                   </li>
@@ -363,6 +377,66 @@ def teardown(self) -&gt; None:
     to CPU and free CUDA memory.  Default: no-op.
     &quot;&quot;&quot;
 </code></pre>
+<h3 id="full-state-checkpoints-resumable-training">Full-state checkpoints (resumable training)</h3>
+<pre><code class="language-python">@property
+def resumable_components(self) -&gt; frozenset:
+    &quot;&quot;&quot;
+    Which pieces of training state save_full_state() captures beyond
+    weights, e.g. frozenset({&quot;model&quot;, &quot;optimizer&quot;, &quot;rng&quot;}).
+    Default: empty - save_full_state()/load_full_state() are then
+    equivalent to save_weights()/load_weights().
+    &quot;&quot;&quot;
+
+def save_full_state(self, path: str) -&gt; None: ...
+def load_full_state(self, path: str) -&gt; None: ...
+</code></pre>
+<p><code>CheckpointRegistry</code> saves through <code>save_full_state()</code>, restores through <code>load_full_state()</code>, and records <code>resumable_components</code> in each snapshot's metadata, so a checkpoint is honestly labelled exact, partial, or weights-only. <code>TorchAgent</code>, <code>TorchPPOAgent</code> and <code>TorchSACAgent</code> report <code>{"model", "optimizer", "rng"}</code>; every other built-in agent is weights-only. <code>TorchSACAgent</code> deliberately does <strong>not</strong> list <code>"replay_buffer"</code> - resuming it starts with an empty buffer.</p>
+<p>Torch agents implement this with <code>tensor_optix.core.resume_state</code>:</p>
+<pre><code class="language-python">def save_torch_resume_state(path: str, **named_stateful) -&gt; None:
+    &quot;&quot;&quot;Save state_dict() of every passed object (optimizers, schedulers,
+    modules) plus torch/numpy/CUDA RNG state into &lt;path&gt;/resume_state.pt.&quot;&quot;&quot;
+
+def load_torch_resume_state(path: str, **named_stateful) -&gt; bool:
+    &quot;&quot;&quot;Restore what save_torch_resume_state() wrote. Returns False when
+    the checkpoint has no resume file (weights-only checkpoint).&quot;&quot;&quot;
+</code></pre>
+<h3 id="optional-hooks-recognised-by-pipelines-and-the-loop">Optional hooks recognised by pipelines and the loop</h3>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Used by</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reset_cache()</code></td>
+<td><code>LoopController</code></td>
+<td>clear on-policy rollout caches after validation rollouts</td>
+</tr>
+<tr>
+<td><code>reset_hidden()</code></td>
+<td><code>BatchPipeline</code></td>
+<td>reset recurrent state at each episode boundary</td>
+</tr>
+<tr>
+<td><code>action_probs(obs)</code></td>
+<td><code>PolicyManager.ensemble_action()</code></td>
+<td>probability-space ensemble averaging for discrete policies</td>
+</tr>
+<tr>
+<td><code>default_param_bounds</code>, <code>default_log_params</code></td>
+<td><code>RLOptimizer</code>, <code>ConcurrentTrialScheduler</code></td>
+<td>default search space for online tuning / trial search</td>
+</tr>
+<tr>
+<td><code>default_min_episodes_before_dormant</code></td>
+<td><code>RLOptimizer</code></td>
+<td>off-policy warm-up before <code>DORMANT</code> can fire</td>
+</tr>
+</tbody>
+</table>
               
             </div>
           </div><footer>

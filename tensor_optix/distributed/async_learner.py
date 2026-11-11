@@ -322,6 +322,15 @@ class AsyncActorLearner:
                 try:
                     traj = traj_queue.get(timeout=1.0)
                 except Exception:
+                    # Timeout. If every actor process has died (env_factory
+                    # raised, unpicklable model, ...) no trajectory will ever
+                    # arrive — fail loudly instead of spinning forever.
+                    if not any(p.is_alive() for p in self._actor_procs):
+                        raise RuntimeError(
+                            "AsyncActorLearner: all actor processes exited before "
+                            f"max_steps was reached ({steps_so_far}/{max_steps} steps). "
+                            "Check env_factory / the actor process output for the failure."
+                        )
                     continue  # timeout — re-check max_steps
 
                 obs     = torch.as_tensor(traj["observations"],        dtype=torch.float32)

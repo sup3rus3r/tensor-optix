@@ -1,7 +1,10 @@
+import logging
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from tensor_optix.core.base_optimizer import BaseOptimizer
 from tensor_optix.core.types import EvalMetrics, HyperparamSet
+
+logger = logging.getLogger(__name__)
 
 
 class SPSAOptimizer(BaseOptimizer):
@@ -82,6 +85,10 @@ class SPSAOptimizer(BaseOptimizer):
         self._x_base: Optional[np.ndarray] = None    # normalized current values
         self._x_plus: Optional[np.ndarray] = None    # normalized plus-probe values
         self._f_plus: Optional[float] = None         # score after plus probe
+        # Base point of a cycle that on_plateau() interrupted. The agent still
+        # holds the probe values at that moment, so the next cycle must restart
+        # from this base rather than from the (unevaluated) probe point.
+        self._interrupted_base: Optional[np.ndarray] = None
         self._step: int = 0                           # Adam-style iteration counter
 
     # ------------------------------------------------------------------
@@ -156,8 +163,12 @@ class SPSAOptimizer(BaseOptimizer):
 
         if self._phase == self._PHASE_IDLE:
             # Start new cycle: sample Δ, apply +c·Δ probe
-            raw = self._current_raw(current_hyperparams)
-            self._x_base = self._normalize(raw)
+            if self._interrupted_base is not None:
+                self._x_base = self._interrupted_base
+                self._interrupted_base = None
+            else:
+                raw = self._current_raw(current_hyperparams)
+                self._x_base = self._normalize(raw)
             c = max(self._c, self._min_c)
 
             # Rademacher vector: each entry independently ±1 with equal prob
@@ -225,6 +236,10 @@ class SPSAOptimizer(BaseOptimizer):
     def on_plateau(self, metrics_history: List[EvalMetrics]) -> None:
         # Stuck — widen probes to explore the param space more aggressively.
         self._c = min(self._c * 2.0, 0.2)
-        # Reset to idle so next suggest() starts a fresh cycle
+        # Reset to idle so next suggest() starts a fresh cycle. If a probe
+        # cycle is in flight the agent currently holds x ± c·Δ, not x — keep
+        # the true base so the fresh cycle does not drift onto the probe point.
+        if self._phase != self._PHASE_IDLE and self._x_base is not None:
+            self._interrupted_base = self._x_base
         self._phase = self._PHASE_IDLE
         self._currently_probing = False

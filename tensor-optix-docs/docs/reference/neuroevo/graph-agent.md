@@ -97,3 +97,12 @@ class RecurrentGraphAgent(GraphAgent):
 `RecurrentGraphAgent.learn()` falls back to standard shuffled-minibatch PPO automatically when no recurrent neurons are present in the graph - it's safe to use in place of `GraphAgent` even for non-recurrent topologies.
 
 See [Build a neuroevo agent](../../guides/neuroevo.md) for usage, including save/load and checkpoint round-tripping.
+
+## Training forward, log-probabilities and bootstrap
+
+- **One function for acting and learning.** `act()` resets the graph state and runs one `graph(obs)` step. `learn()` evaluates the same function in batch (`_batch_forward`): it uses each edge's *effective* (post-Dale) weight, skips delayed edges (their history is zero after the per-step reset), and evaluates GRU/LSTM neurons from a zero state. The policy that is optimised is therefore exactly the policy that collected the data, for every neuron type and both `dale_mode`s.
+- **Old log-probabilities.** Pipelines do not record `EpisodeData.log_probs`. When a window carries none, `learn()` evaluates the collected actions under the pre-update policy and uses that as `log pi_old` - no gradient step has happened since collection, so it is the behaviour policy. Supply `log_probs` yourself only if the data came from a different policy.
+- **Bootstrap.** When a window ends mid-episode and the pipeline provides `final_obs`, the GAE target is bootstrapped from the value output on it.
+- **Checkpoint restore is in place.** `load_weights()` rebuilds the existing `NeuronGraph` object (`graph.restore_from_dict()`) instead of replacing it, so a `TopologyController`, `HebbianHook` or `BrainNetwork` holding that graph keeps following it across rollbacks and best-weight restores.
+
+`RecurrentGraphAgent` limitation: `act()` is the stateless path above, while `learn()` optimises the unrolled recurrent forward. The two agree only where recurrent state carries no information. Treat the recurrent training path as experimental; `GraphAgent` is the consistent choice.

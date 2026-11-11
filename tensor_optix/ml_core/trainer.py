@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
+import numpy as np
+
 from tensor_optix.core.backoff_scheduler import BackoffScheduler
 from tensor_optix.core.checkpoint_registry import CheckpointRegistry
 from tensor_optix.core.types import HyperparamSet
@@ -189,11 +191,42 @@ class Trainer:
     def _run_train_epoch(self, train_data) -> float:
         total_loss = 0.0
         n_batches = 0
-        for batch in self._iter_batches(train_data):
+        for batch in self._iter_batches(self._shuffled(train_data)):
             loss = self._model.train_step(batch)
             total_loss += float(loss)
             n_batches += 1
         return total_loss / max(n_batches, 1)
+
+    @staticmethod
+    def _shuffled(data):
+        """
+        Re-order a raw (X, y) pair with a fresh random permutation each epoch.
+
+        The adapters' iter_batches() walk (X, y) in storage order, so without
+        this every epoch sees identical minibatches — and data stored sorted
+        by class would train on single-class batches. Native datasets
+        (DataLoader / tf.data.Dataset) are passed through untouched: they
+        carry their own shuffle configuration.
+        """
+        if not (isinstance(data, (tuple, list)) and len(data) == 2):
+            return data
+        X, y = data
+        try:
+            n = len(X)
+            if n != len(y) or n < 2:
+                return data
+        except TypeError:
+            return data
+        perm = np.random.permutation(n)
+
+        def _take(a):
+            if isinstance(a, np.ndarray):
+                return a[perm]
+            if type(a).__module__.split(".")[0] == "torch":
+                return a[perm]  # torch tensors accept an int64 ndarray index
+            return np.asarray(a)[perm]
+
+        return (_take(X), _take(y))
 
     def _iter_batches(self, data):
         """

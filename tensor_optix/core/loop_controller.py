@@ -12,6 +12,7 @@ from .checkpoint_confirmation import CheckpointConfirmationTracker
 from .reward_shape import episode_breadth
 from .types import LoopState, EvalMetrics, PolicySnapshot
 from .diagnostic_controller import DiagnosticController
+from tensor_optix.utils.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,10 @@ class LoopController:
         eval_metrics = self._evaluator.score(episode_data, train_diagnostics)
         eval_metrics.episode_id = 0
 
-        breadths = episode_breadth(episode_data.rewards, episode_data.dones)
+        breadths = episode_breadth(
+            episode_data.rewards, episode_data.dones,
+            int((episode_data.metadata or {}).get("n_envs", 1)),
+        )
         if breadths:
             self._breadth_history.append(breadths[-1])
 
@@ -325,7 +329,10 @@ class LoopController:
                 # Track this episode's reward-magnitude-concentration shape
                 # regardless of mode, so breadth_typicality() always has a
                 # warmed-up history by the time criteria_mode="auto" needs it.
-                breadths = episode_breadth(episode_data.rewards, episode_data.dones)
+                breadths = episode_breadth(
+                    episode_data.rewards, episode_data.dones,
+                    int((episode_data.metadata or {}).get("n_envs", 1)),
+                )
                 if breadths:
                     self._breadth_history.append(breadths[-1])
 
@@ -414,7 +421,7 @@ class LoopController:
                     self._best_smoothed = smoothed
                     self._consecutive_degradation_count = 0
                     self._consecutive_converged = 0
-                    self._scheduler.record_improvement(smoothed)
+                    self._scheduler.record_improvement(smoothed, append=False)
                     self._optimizer.on_improvement(eval_metrics)
                     self._update_rnd_eta("improvement")
                 elif not trend_improving:
@@ -435,54 +442,23 @@ class LoopController:
                     # the scheduler state and triggers unnecessary rollback/recovery.
                     optimizer_is_probing = getattr(self._optimizer, "is_probing", False)
                     agent_is_on_policy = getattr(self._agent, "is_on_policy", True)
+                    degradation_fired = False
                     if agent_is_on_policy and not optimizer_is_probing:
                         if self._scheduler.check_degradation(smoothed):
                             self._consecutive_degradation_count += 1
                             if self._consecutive_degradation_count >= self._min_consecutive_degradations:
                                 self._consecutive_degradation_count = 0
                                 self._handle_degradation(episode_id, eval_metrics)
+                                degradation_fired = True
                         else:
                             self._consecutive_degradation_count = 0
-                    elif not agent_is_on_policy:
-                        # Off-policy: skip degradation. Score already recorded
-                        # above via record_score(raw) — do not record again.
-                        self._scheduler.record_non_improvement()
-                        state = self._scheduler.current_state
-                        if state == LoopState.COOLING:
-                            self._update_rnd_eta("plateau")
-                            self._fire("on_plateau", episode_id, state)
-                        elif state == LoopState.DORMANT:
-                            self._update_rnd_eta("dormant")
-                            self._optimizer.on_plateau(self._metrics_history)
-                            self._fire("on_dormant", episode_id)
-                            if not self._stop_requested:
-                                logger.info(
-                                    "Episode %d: DORMANT — no callback stopped the loop,"
-                                    " stopping by default",
-                                    episode_id,
-                                )
-                                self._stop_requested = True
-                            self._update_rnd_eta("restart")
-                            self._scheduler.record_restart()
-                    else:
-                        self._scheduler.record_non_improvement()
-                        state = self._scheduler.current_state
-                        if state == LoopState.COOLING:
-                            self._update_rnd_eta("plateau")
-                            self._fire("on_plateau", episode_id, state)
-                        elif state == LoopState.DORMANT:
-                            self._update_rnd_eta("dormant")
-                            self._optimizer.on_plateau(self._metrics_history)
-                            self._fire("on_dormant", episode_id)
-                            if not self._stop_requested:
-                                logger.info(
-                                    "Episode %d: DORMANT — no callback stopped the loop,"
-                                    " stopping by default",
-                                    episode_id,
-                                )
-                                self._stop_requested = True
-                            self._update_rnd_eta("restart")
-                            self._scheduler.record_restart()
+                    if not degradation_fired:
+                        # Every non-improving eval advances the plateau counter,
+                        # for on-policy and off-policy agents alike. (A confirmed
+                        # degradation is the one exception: it resets the state
+                        # to ACTIVE via record_degradation instead.) The score
+                        # was already recorded above via record_score(raw).
+                        self._record_plateau(episode_id)
                     logger.debug(
                         "Episode %d: score=%.4f smoothed=%.4f (no improvement) state=%s interval=%d",
                         episode_id, raw, smoothed,
@@ -528,6 +504,36 @@ class LoopController:
             self._fire("on_episode_end", episode_id, eval_metrics)
             episode_id += 1
 
+    def _record_plateau(self, episode_id: int) -> None:
+        """Advance the scheduler on a non-improving eval and act on the new state."""
+        self._scheduler.record_non_improvement()
+        state = self._scheduler.current_state
+        if state == LoopState.COOLING:
+            self._update_rnd_eta("plateau")
+            self._fire("on_plateau", episode_id, state)
+        elif state == LoopState.DORMANT:
+            self._update_rnd_eta("dormant")
+            self._optimizer.on_plateau(self._metrics_history)
+            self._fire("on_dormant", episode_id)
+            # A callback that acted on DORMANT in a way that warrants more
+            # training (PolicyManagerCallback spawning / pruning a variant)
+            # says so via consume_dormant_resume(). Poll every callback —
+            # the flag is one-shot and must be cleared on each of them.
+            resume = [
+                bool(getattr(cb, "consume_dormant_resume")())
+                for cb in self._callbacks
+                if callable(getattr(cb, "consume_dormant_resume", None))
+            ]
+            if not self._stop_requested and not any(resume):
+                logger.info(
+                    "Episode %d: DORMANT — no callback resumed the loop,"
+                    " stopping by default",
+                    episode_id,
+                )
+                self._stop_requested = True
+            self._update_rnd_eta("restart")
+            self._scheduler.record_restart()
+
     def _handle_degradation(self, episode_id: int, eval_metrics: EvalMetrics) -> None:
         """
         Called when watchdog detects performance drop.
@@ -551,7 +557,6 @@ class LoopController:
             self._rollback_on_degradation
             and agent_supports_rollback
             and self._best_snapshot is not None
-            and self._scheduler.current_state == LoopState.DORMANT
         ):
             self._registry.load_best(self._agent)
             logger.info("Rolled back to best snapshot (episode %d)", self._best_snapshot.episode_id)
@@ -571,9 +576,9 @@ class LoopController:
         """Print to log file when configured, otherwise stdout."""
         kwargs.pop("flush", None)
         if self._log_file is not None:
-            print(*args, file=self._log_file)
+            safe_print(*args, file=self._log_file)
         else:
-            print(*args, flush=True)
+            safe_print(*args, flush=True)
 
     def _verbose_header(self, episode_id: int, raw: float, smoothed: float) -> None:
         """Print score line at start of each eval block."""
@@ -649,8 +654,12 @@ class LoopController:
             dormant     → eta = 0      (converged, stop injecting noise)
             restart     → eta = base   (reset after dormant restart)
         """
-        pipeline = self._val_pipeline or self._pipeline
+        # Exploration bonus lives on the training pipeline; fall back to the
+        # validation pipeline only if that is the one exposing set_eta.
+        pipeline = self._pipeline
         if not hasattr(pipeline, "set_eta"):
+            pipeline = self._val_pipeline
+        if pipeline is None or not hasattr(pipeline, "set_eta"):
             return
 
         if self._rnd_eta_base is None:

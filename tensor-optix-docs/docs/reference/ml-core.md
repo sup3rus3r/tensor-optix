@@ -97,6 +97,9 @@ class Trainer:
 
     Per epoch:
       1. Iterate train_data in batches, call model.train_step() on each.
+         A raw (X, y) pair is re-shuffled with a fresh random permutation
+         every epoch (numpy global RNG); native Dataset / DataLoader /
+         tf.data.Dataset inputs are passed through untouched.
       2. If val_data given, call model.evaluate(val_data) -> MLMetrics.
       3. Compare MLMetrics.primary_score against the best score seen this
          run. On improvement: reset the early-stopping counter, record the
@@ -267,6 +270,8 @@ class FlaxMLModel(BaseMLModel):
     """
 ```
 
+Shuffling: the adapters' `iter_batches()` walk a raw `(X, y)` pair in storage order - `Trainer` permutes the pair once per epoch before handing it over, so training batches differ between epochs while `evaluate()` stays deterministic. Seed with `np.random.seed(...)` for reproducible runs. A `DataLoader` / `tf.data.Dataset` keeps whatever shuffle configuration you built it with.
+
 All three adapters' `iter_batches()` accept a raw `(X, y)` array pair, or a native `Dataset`/`DataLoader` (Torch) / `tf.data.Dataset` (TF), auto-detected by type. `FlaxMLModel` accepts only the raw `(X, y)` form -- there is no Dataset/DataLoader equivalent in this codebase's JAX dependency set.
 
 ## lr_schedules
@@ -324,3 +329,12 @@ def load_pretrained_backbone(
 ```
 
 See [Train an ML model](../guides/ml-core.md) for the full guide.
+
+## Classification metrics and single-output heads
+
+`resolve_metrics(..., "classification")` works on flat arrays of class indices. Two shapes are normalised before the confusion matrix is built:
+
+- targets of shape `(N, 1)` are flattened;
+- a single-output binary head, whose per-sample output is a raw logit or probability rather than a class index, is thresholded - at `0.5` when every value lies in `[0, 1]` (probabilities), at `0` otherwise (logits).
+
+Multi-class heads are already reduced with `argmax` by the adapters' `evaluate()`.

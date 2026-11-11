@@ -178,9 +178,15 @@ class BackoffScheduler:
     # State machine
     # ------------------------------------------------------------------
 
-    def record_improvement(self, score: float) -> None:
-        """Called when a new best score is recorded. Resets backoff and state."""
-        self._score_window.append(score)
+    def record_improvement(self, score: float, append: bool = True) -> None:
+        """Called when a new best score is recorded. Resets backoff and state.
+
+        Pass append=False when this eval's score was already fed into the
+        trend window via record_score() — appending again would count the
+        same eval twice and bias the slope / std estimates.
+        """
+        if append:
+            self._score_window.append(score)
         if self._best_score is None or len(self._score_window) >= 5:
             self._best_score = score
         self._consecutive_non_improvements = 0

@@ -161,10 +161,22 @@ class NeuromodulatorSignal(LoopCallback):
 
         self._current_regime: str = "ranging"  # neutral default
         self._step_count: int = 0
+        self._metrics_history: list = []
 
     # ------------------------------------------------------------------
     # Main interface
     # ------------------------------------------------------------------
+
+    def on_episode_end(self, episode_id, eval_metrics) -> None:
+        """LoopCallback wiring: with callbacks=[signal] the regime is
+        re-detected and the modulation re-applied after every evaluated
+        episode, with no manual step() calls."""
+        if eval_metrics is None:
+            return
+        self._metrics_history.append(eval_metrics)
+        if len(self._metrics_history) > 200:
+            del self._metrics_history[:-200]
+        self.step(self._metrics_history)
 
     def step(self, metrics_history: "List[EvalMetrics]") -> str:
         """

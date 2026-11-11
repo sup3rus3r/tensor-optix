@@ -146,11 +146,24 @@ class HebbianHook(LoopCallback):
                     if not samples:
                         continue
                     mean_coact = sum(samples) / len(samples)
-                    delta = self.hebbian_lr * mean_coact - self.weight_decay * edge.weight.item()
-                    edge.weight.add_(delta)
-
+                    # The rule is defined on the EFFECTIVE weight. In
+                    # dale_mode="softplus" the stored parameter is a raw
+                    # theta (effective = +/-softplus(theta)); decaying or
+                    # clipping theta directly would, e.g., GROW a near-zero
+                    # excitatory edge (theta << 0) instead of shrinking it.
+                    w = graph.effective_weight(edge.edge_id)
+                    new_w = w + self.hebbian_lr * mean_coact - self.weight_decay * w
                     if self.clip_weight is not None:
-                        edge.weight.clamp_(-self.clip_weight, self.clip_weight)
+                        new_w = max(-self.clip_weight, min(self.clip_weight, new_w))
+                    if graph._dale_mode == "softplus":
+                        ct = graph.get_neuron(edge.src).cell_type
+                        if ct == "excitatory":
+                            new_w = max(new_w, 0.0)
+                        elif ct == "inhibitory":
+                            new_w = min(new_w, 0.0)
+                        edge.weight.fill_(graph._softplus_init(edge.src, new_w))
+                    else:
+                        edge.weight.fill_(new_w)
 
             if self.respect_dale:
                 graph.enforce_dale()
@@ -164,6 +177,34 @@ class HebbianHook(LoopCallback):
     # ------------------------------------------------------------------
     # Convenience: apply + reset in one call
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # LoopCallback wiring — makes callbacks=[hook] fully automatic
+    # ------------------------------------------------------------------
+
+    def on_loop_start(self) -> None:
+        """Record co-activations after every graph forward for the run."""
+        for graph in self.graphs:
+            if self.record_graph_step not in graph._post_forward_hooks:
+                graph._post_forward_hooks.append(self.record_graph_step)
+
+    def on_loop_stop(self) -> None:
+        for graph in self.graphs:
+            if self.record_graph_step in graph._post_forward_hooks:
+                graph._post_forward_hooks.remove(self.record_graph_step)
+
+    def on_episode_end(self, episode_id, eval_metrics) -> None:
+        """Runs after agent.learn() for the window: apply the Hebbian update
+        on top of the gradient step, then clear the accumulators."""
+        self.apply_and_reset()
+
+    def record_graph_step(self) -> None:
+        """Post-forward hook target. With several graphs each forward fires
+        once per graph; count one step per full sweep."""
+        self._hook_calls = getattr(self, "_hook_calls", 0) + 1
+        if self._hook_calls >= len(self.graphs):
+            self._hook_calls = 0
+            self.record()
 
     def apply_and_reset(self) -> None:
         """Apply the Hebbian update then immediately clear accumulators."""

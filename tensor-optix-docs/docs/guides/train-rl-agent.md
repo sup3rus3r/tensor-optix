@@ -28,6 +28,8 @@ pipeline = VectorBatchPipeline(
 )
 ```
 
+`VectorBatchPipeline` works with every built-in agent except `TorchRecurrentPPOAgent` (which keeps a single hidden state): PPO agents compute GAE per env and the off-policy agents build replay transitions per env. For PettingZoo environments see [Multi-agent training](multi-agent.md).
+
 `BatchPipeline` does **not** reset the environment per window - it steps continuously and resets automatically only on `terminated`/`truncated`. `window_size` is the unit of training, not an environment episode. See [Pipelines](../reference/pipelines.md) for the full reference, including the `gym.Env` method-name collision warning (don't name an env attribute `close`, `step`, `reset`, `render`, or `seed`).
 
 `optimal_window_size(env, algorithm)` computes the formula `Optimizer` uses internally: `clip(k * mean_episode_steps, 512, 8192)`, with `k=4.0` for on-policy (PPO) and `k=1.0` for off-policy (SAC/TD3/DQN).
@@ -62,7 +64,7 @@ opt.run()
 opt.best_snapshot   # -> PolicySnapshot: best weights + EvalMetrics + HyperparamSet
 ```
 
-Loop states: `ACTIVE → COOLING → DORMANT → watchdog shutdown or policy spawn`. On shutdown the loop restores best-known weights, not the final checkpoint. See [Concepts](../getting-started/concepts.md) for why, and [Loop controller reference](../reference/core/loop_controller.md) for the full constructor and degradation-handling details.
+Loop states: `ACTIVE → COOLING → DORMANT → watchdog shutdown or policy spawn`. Every non-improving eval counts toward `COOLING`/`DORMANT` (on-policy and off-policy alike), and the eval interval backs off while the score is flat - set `backoff_factor=1.0` to evaluate every window. `rollback_on_degradation=True` restores the best checkpoint when a degradation is confirmed over `min_consecutive_degradations` evals (on-policy agents only). On shutdown the loop restores best-known weights, not the final checkpoint. See [Concepts](../getting-started/concepts.md) for why, and [Loop controller reference](../reference/core/loop_controller.md) for the full constructor and degradation-handling details.
 
 ## Avoiding unicorn checkpoints
 

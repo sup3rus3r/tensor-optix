@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -120,9 +124,15 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#degradation-handling">Degradation handling</a>
     </li>
+    <li class="toctree-l3"><a class="reference internal" href="#plateau-accounting">Plateau accounting</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#what-happens-at-dormant">What happens at DORMANT</a>
+    </li>
     <li class="toctree-l3"><a class="reference internal" href="#degradation-suppression-during-optimizer-probes">Degradation suppression during optimizer probes</a>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#rnd-eta-scheduling">RND eta scheduling</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#verbose-output">Verbose output</a>
     </li>
     </ul>
                 </li>
@@ -162,6 +172,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
@@ -172,7 +186,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
                   </li>
@@ -374,17 +390,32 @@ weights without clearing the buffer produces corrupted Bellman targets
 that immediately drag the policy back down. Their buffers naturally
 smooth through degradations without rollback.
 </code></pre>
-<p>Rollback fires only when all of: <code>rollback_on_degradation=True</code>, the agent is on-policy, a best snapshot exists, and the scheduler is currently in <code>DORMANT</code>.</p>
+<p>Rollback fires when all of: <code>rollback_on_degradation=True</code>, the agent is on-policy, and a best snapshot exists. Degradation itself must first be <em>confirmed</em>: the smoothed score has to sit below <code>best × degradation_threshold</code> for <code>min_consecutive_degradations</code> (default 3) consecutive non-probe evals before <code>_handle_degradation()</code> runs, <code>on_degradation</code> fires, and the scheduler returns to <code>ACTIVE</code>.</p>
+<h2 id="plateau-accounting">Plateau accounting</h2>
+<p>Every eval whose trend is not improving advances the scheduler's non-improvement counter (<code>BackoffScheduler.record_non_improvement()</code>), for on-policy and off-policy agents alike and whether or not the optimizer is probing. The single exception is the eval on which a degradation is confirmed. Consequences:</p>
+<ul>
+<li>The eval interval backs off (<code>backoff_factor</code>) while the score is flat, so not every window is evaluated. Use <code>backoff_factor=1.0</code> to evaluate every window.</li>
+<li><code>ACTIVE → COOLING</code> fires <code>on_plateau</code>; <code>COOLING → DORMANT</code> calls <code>optimizer.on_plateau()</code>, fires <code>on_dormant</code>, and then applies the DORMANT rule below.</li>
+</ul>
+<h2 id="what-happens-at-dormant">What happens at DORMANT</h2>
+<p>After <code>on_dormant</code> callbacks have run, the loop stops unless a callback asks for more training:</p>
+<ul>
+<li>A callback may expose <code>consume_dormant_resume() -&gt; bool</code>. It is polled once per DORMANT event on every callback; if any returns <code>True</code> (and no callback called <code>stop()</code>), the scheduler is restarted (<code>record_restart()</code>) and training continues.</li>
+<li><code>PolicyManagerCallback</code> returns <code>True</code> when that DORMANT event spawned or pruned a variant. Budget exhausted, a <code>MetaController</code> <code>STOP</code>/<code>NO_OP</code>, or passive mode (no <code>agent_factory</code>) leave the default in place.</li>
+<li>Otherwise the loop stops and the best checkpoint is restored.</li>
+</ul>
 <h2 id="degradation-suppression-during-optimizer-probes">Degradation suppression during optimizer probes</h2>
 <p>When an online optimizer (SPSA, Backoff) applies a finite-difference probe perturbation, the resulting score drop is self-inflicted, not a genuine policy collapse. The main loop checks <code>optimizer.is_probing</code> and <code>agent.is_on_policy</code> before firing degradation handling - probes and off-policy noise are both excluded from the degradation path.</p>
 <h2 id="rnd-eta-scheduling">RND eta scheduling</h2>
-<p><code>_update_rnd_eta(event)</code> adjusts <code>RNDPipeline</code>'s intrinsic-reward scale at loop state transitions, when the active pipeline exposes <code>set_eta</code>:</p>
+<p><code>_update_rnd_eta(event)</code> adjusts <code>RNDPipeline</code>'s intrinsic-reward scale at loop state transitions, when the <strong>training</strong> pipeline exposes <code>set_eta</code> (the validation pipeline is only consulted if the training pipeline does not):</p>
 <pre><code>improvement → eta *= 0.9   (getting better, pull back exploration)
 plateau     → eta *= 1.5   (stuck, push exploration; capped at 4x base)
 dormant     → eta = 0      (converged, stop injecting noise)
 restart     → eta = base   (reset after dormant restart)
 </code></pre>
 <p>This is a no-op (zero cost) for pipelines that don't implement <code>set_eta</code>. See <a href="../../exploration/">Exploration (RND)</a>.</p>
+<h2 id="verbose-output">Verbose output</h2>
+<p><code>verbose=True</code> prints a per-eval diagnostic block (score, trend, state machine, optimizer step). Output goes through <code>tensor_optix.utils.console.safe_print</code>, which replaces glyphs the output stream cannot encode (e.g. box-drawing characters on a Windows cp1252 console or a redirected stdout) with <code>?</code> instead of raising <code>UnicodeEncodeError</code>. Pass <code>verbose_log_file=</code> to write the same output to a UTF-8 file.</p>
               
             </div>
           </div><footer>

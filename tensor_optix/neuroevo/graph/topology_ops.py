@@ -28,6 +28,32 @@ from .neuron_graph import NeuronGraph
 # Grow operations
 # ---------------------------------------------------------------------------
 
+def _eff(graph: NeuronGraph, edge) -> float:
+    """Effective (post-Dale) weight of an edge.
+
+    In dale_mode="softplus" an edge's stored parameter is a raw value theta
+    whose effective weight is +/-softplus(theta). Every function-preserving
+    identity below is a statement about EFFECTIVE weights, so the ops must
+    read and write those, never the raw parameter."""
+    return graph.effective_weight(edge.edge_id)
+
+
+def _set_eff(graph: NeuronGraph, edge, w: float) -> None:
+    """Set an edge's effective weight to w (inverse of _eff)."""
+    with torch.no_grad():
+        edge.weight.fill_(graph._softplus_init(edge.src, w))
+
+
+def _sign_allowed(graph: NeuronGraph, src: str, w: float) -> bool:
+    """Can an edge leaving `src` carry effective weight w under Dale's law?"""
+    ct = graph.get_neuron(src).cell_type
+    if ct == "excitatory":
+        return w >= 0.0
+    if ct == "inhibitory":
+        return w <= 0.0
+    return True
+
+
 def insert_neuron_on_edge(
     graph: NeuronGraph,
     edge_id: str,
@@ -49,7 +75,7 @@ def insert_neuron_on_edge(
     """
     edge = graph.get_edge(edge_id)
     src, dst = edge.src, edge.dst
-    w = edge.weight.item()
+    w = _eff(graph, edge)
     d = edge.delay
 
     d1 = d // 2
@@ -71,8 +97,16 @@ def insert_neuron_on_edge(
         new_neuron.init_history_from_buffer(new_history)
 
     graph.remove_edge(edge_id)
-    graph.add_edge(src=src, dst=new_id, weight=1.0, delay=d1)
-    graph.add_edge(src=new_id, dst=dst, weight=w, delay=d2)
+    if src_neuron.cell_type == "inhibitory":
+        # An inhibitory source can only emit non-positive weights, so the
+        # identity edge src->relay must be -1 (the relay carries -x). The relay
+        # is made excitatory so relay->dst can carry -w >= 0: (-w)*(-x) = w*x.
+        new_neuron.cell_type = "excitatory"
+        graph.add_edge(src=src, dst=new_id, weight=-1.0, delay=d1)
+        graph.add_edge(src=new_id, dst=dst, weight=-w, delay=d2)
+    else:
+        graph.add_edge(src=src, dst=new_id, weight=1.0, delay=d1)
+        graph.add_edge(src=new_id, dst=dst, weight=w, delay=d2)
 
     return new_id
 
@@ -113,13 +147,12 @@ def split_neuron(
 
     # Replicate incoming edges onto new neuron (full weight)
     for e in in_edges:
-        graph.add_edge(src=e.src, dst=new_id, weight=e.weight.item(), delay=e.delay)
+        graph.add_edge(src=e.src, dst=new_id, weight=_eff(graph, e), delay=e.delay)
 
     # Halve outgoing weights on original; add halved copy from new neuron
     for e in out_edges:
-        w = e.weight.item()
-        with torch.no_grad():
-            e.weight.fill_(w / 2)
+        w = _eff(graph, e)
+        _set_eff(graph, e, w / 2)
         graph.add_edge(src=new_id, dst=e.dst, weight=w / 2, delay=e.delay)
 
     return neuron_id, new_id
@@ -203,10 +236,13 @@ def prune_neuron(
         out_edges = graph.edges_from(neuron_id)
         for ie in in_edges:
             for oe in out_edges:
-                combined_w = ie.weight.item() * oe.weight.item()
+                combined_w = _eff(graph, ie) * _eff(graph, oe)
                 combined_d = ie.delay + oe.delay
-                # Only add if non-trivial
-                if abs(combined_w) > 1e-9:
+                # Only add if non-trivial — and only if the source's cell type
+                # can emit that sign (excitatory -> pruned inhibitory -> dst
+                # yields a negative bypass an excitatory source cannot carry;
+                # dropping it beats adding it with the opposite sign).
+                if abs(combined_w) > 1e-9 and _sign_allowed(graph, ie.src, combined_w):
                     graph.add_edge(
                         src=ie.src,
                         dst=oe.dst,
@@ -262,7 +298,7 @@ def merge_neurons(
         else:
             new_eid = graph.add_edge(
                 src=e.src, dst=neuron_id_a,
-                weight=e.weight.item(), delay=e.delay,
+                weight=_eff(graph, e), delay=e.delay,
             )
             a_in_index[key] = new_eid
 
@@ -275,12 +311,11 @@ def merge_neurons(
         key = (e.dst, e.delay)
         if key in a_out_index:
             existing = graph.get_edge(a_out_index[key])
-            with torch.no_grad():
-                existing.weight.add_(e.weight)
+            _set_eff(graph, existing, _eff(graph, existing) + _eff(graph, e))
         else:
             new_eid = graph.add_edge(
                 src=neuron_id_a, dst=e.dst,
-                weight=e.weight.item(), delay=e.delay,
+                weight=_eff(graph, e), delay=e.delay,
             )
             a_out_index[key] = new_eid
 
@@ -303,7 +338,7 @@ def neuron_importance(graph: NeuronGraph, neuron_id: str) -> float:
     """
     neuron = graph.get_neuron(neuron_id)
     total_w = sum(
-        abs(e.weight.item())
+        abs(_eff(graph, e))
         for e in graph.edges_into(neuron_id) + graph.edges_from(neuron_id)
     )
     return neuron.importance(total_w)
@@ -311,7 +346,7 @@ def neuron_importance(graph: NeuronGraph, neuron_id: str) -> float:
 
 def edge_importance(graph: NeuronGraph, edge_id: str) -> float:
     """Simple |w| magnitude."""
-    return abs(graph.get_edge(edge_id).weight.item())
+    return abs(graph.effective_weight(edge_id))
 
 
 def cosine_similarity_neurons(

@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -140,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
@@ -150,7 +158,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
                   </li>
@@ -171,6 +181,8 @@
     <li class="toctree-l3"><a class="reference internal" href="#graphagent_1">GraphAgent</a>
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#recurrentgraphagent">RecurrentGraphAgent</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#training-forward-log-probabilities-and-bootstrap">Training forward, log-probabilities and bootstrap</a>
     </li>
     </ul>
                 </li>
@@ -303,6 +315,14 @@ TopologyController, which holds a reference to the graph.
 </code></pre>
 <p><code>RecurrentGraphAgent.learn()</code> falls back to standard shuffled-minibatch PPO automatically when no recurrent neurons are present in the graph - it's safe to use in place of <code>GraphAgent</code> even for non-recurrent topologies.</p>
 <p>See <a href="../../../guides/neuroevo/">Build a neuroevo agent</a> for usage, including save/load and checkpoint round-tripping.</p>
+<h2 id="training-forward-log-probabilities-and-bootstrap">Training forward, log-probabilities and bootstrap</h2>
+<ul>
+<li><strong>One function for acting and learning.</strong> <code>act()</code> resets the graph state and runs one <code>graph(obs)</code> step. <code>learn()</code> evaluates the same function in batch (<code>_batch_forward</code>): it uses each edge's <em>effective</em> (post-Dale) weight, skips delayed edges (their history is zero after the per-step reset), and evaluates GRU/LSTM neurons from a zero state. The policy that is optimised is therefore exactly the policy that collected the data, for every neuron type and both <code>dale_mode</code>s.</li>
+<li><strong>Old log-probabilities.</strong> Pipelines do not record <code>EpisodeData.log_probs</code>. When a window carries none, <code>learn()</code> evaluates the collected actions under the pre-update policy and uses that as <code>log pi_old</code> - no gradient step has happened since collection, so it is the behaviour policy. Supply <code>log_probs</code> yourself only if the data came from a different policy.</li>
+<li><strong>Bootstrap.</strong> When a window ends mid-episode and the pipeline provides <code>final_obs</code>, the GAE target is bootstrapped from the value output on it.</li>
+<li><strong>Checkpoint restore is in place.</strong> <code>load_weights()</code> rebuilds the existing <code>NeuronGraph</code> object (<code>graph.restore_from_dict()</code>) instead of replacing it, so a <code>TopologyController</code>, <code>HebbianHook</code> or <code>BrainNetwork</code> holding that graph keeps following it across rollbacks and best-weight restores.</li>
+</ul>
+<p><code>RecurrentGraphAgent</code> limitation: <code>act()</code> is the stateless path above, while <code>learn()</code> optimises the unrolled recurrent forward. The two agree only where recurrent state carries no information. Treat the recurrent training path as experimental; <code>GraphAgent</code> is the consistent choice.</p>
               
             </div>
           </div><footer>

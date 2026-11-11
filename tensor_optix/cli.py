@@ -88,6 +88,14 @@ def _seed_all(seed: int) -> None:
             torch.cuda.manual_seed_all(seed)
     except ImportError:
         pass
+    # Only seed TensorFlow if the run already imported it — importing it here
+    # just to seed would add seconds of start-up to every torch-only run.
+    tf = sys.modules.get("tensorflow")
+    if tf is not None:
+        try:
+            tf.random.set_seed(seed)
+        except Exception:
+            pass
 
 
 def _build_parser() -> argparse.ArgumentParser:

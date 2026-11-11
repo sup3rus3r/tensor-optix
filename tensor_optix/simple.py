@@ -107,6 +107,7 @@ class Optimizer:
         # ------------------------------------------------------------------
         # Compute window_size
         # ------------------------------------------------------------------
+        _ref_env = None
         if window_size is None:
             _ref_env = env() if callable(env) else env
             window_size = optimal_window_size(_ref_env, algorithm=alg_name)
@@ -118,7 +119,12 @@ class Optimizer:
         # Build pipeline
         # ------------------------------------------------------------------
         if n_envs == 1:
-            _env = env() if callable(env) else env
+            # Reuse the env already built for window sizing instead of
+            # constructing (and leaking) a second one from the factory.
+            if _ref_env is not None:
+                _env = _ref_env
+            else:
+                _env = env() if callable(env) else env
             pipeline = BatchPipeline(env=_env, agent=agent, window_size=window_size)
         else:
             if callable(env) and not isinstance(env, list):
@@ -137,6 +143,10 @@ class Optimizer:
             pipeline = VectorBatchPipeline(
                 env_fns=env_fns, agent=agent, window_size=window_size
             )
+            # The probe env built from a factory for window sizing is not used
+            # by the vector pipeline (it builds its own) — release it.
+            if _ref_env is not None and callable(env) and hasattr(_ref_env, "close"):
+                _ref_env.close()
 
         # ------------------------------------------------------------------
         # Collect callbacks

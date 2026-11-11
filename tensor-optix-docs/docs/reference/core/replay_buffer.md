@@ -70,4 +70,35 @@ class PrioritizedReplayBuffer:
 
 Internally backed by a binary `_SumTree` for O(log N) priority sampling when `alpha > 0`; an ordinary `deque` is used when `alpha == 0` for zero overhead on the common case.
 
+New transitions enter the tree at the current maximum leaf priority (Schaul et al. 2016), so every transition is replayed at least once before its TD error is known. Leaves store `p^alpha` directly; `update_priorities()` writes `(|td_error| + eps)^alpha`.
+
+`flush_episode()` discards any partially accumulated n-step entries; agents call it at the end of each env's slice of a window so n-step returns never span two windows or two environments.
+
+## Window helpers
+
+```python
+def episode_n_envs(episode_data) -> int:
+    """Number of interleaved parallel envs in a window
+    (EpisodeData.metadata["n_envs"], 1 for single-env pipelines)."""
+
+def window_transition_pairs(T: int, n_envs: int = 1):
+    """
+    Yield, per environment, the list of (t, t_next) index pairs of
+    temporally consecutive steps in a flat window of T entries.
+
+    n_envs == 1 -> one list [(0, 1), ..., (T-2, T-1)].
+    n_envs  > 1 -> env i's steps are n_envs apart ([t * n_envs + i] layout).
+    The final step of each env has no in-window successor and is not paired.
+    """
+```
+
+All built-in off-policy agents use these to fill the buffer, which is what makes them correct on `VectorBatchPipeline` windows. Use the same pattern in a custom off-policy agent:
+
+```python
+for env_pairs in window_transition_pairs(T, episode_n_envs(episode_data)):
+    for t, t_next in env_pairs:
+        buffer.push(obs[t], actions[t], rewards[t], obs[t_next], dones[t])
+    buffer.flush_episode()
+```
+
 See also [HERReplayBuffer](her_buffer.md), which wraps this buffer with goal relabeling.

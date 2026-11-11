@@ -233,15 +233,45 @@ def build_agent_from_config(cfg: TrainConfig):
     env = gym.make(cfg.env)
     hp  = HyperparamSet(params=dict(cfg.agent), episode_id=0)
 
-    agent = make_agent(
-        env,
-        framework=cfg.framework,
-        deterministic=cfg.deterministic,
-        hidden_sizes=tuple(cfg.hidden_sizes),
-        hyperparams=hp if cfg.agent else None,
-    )
-    env.close()
+    # Route make_agent() to the algorithm the config names. Without this the
+    # factory picks purely from the action space (PPO for Discrete, SAC for
+    # Box) and e.g. ``algorithm: TorchDQNAgent`` would silently train PPO.
+    family = _algorithm_family(cfg.algorithm)
+    try:
+        agent = make_agent(
+            env,
+            algorithm=family,
+            framework=cfg.framework,
+            deterministic=cfg.deterministic or family == "TD3",
+            hidden_sizes=tuple(cfg.hidden_sizes),
+            hyperparams=hp if cfg.agent else None,
+        )
+    finally:
+        env.close()
+
+    built = type(agent).__name__
+    if built != cfg.algorithm:
+        raise ValueError(
+            f"Config requests algorithm {cfg.algorithm!r} but the agent factory "
+            f"can only build {built!r} for env {cfg.env!r} with "
+            f"framework={cfg.framework!r}. Use a compatible env/framework, "
+            f"set algorithm: {built}, or construct the agent in Python."
+        )
     return agent, hp
+
+
+def _algorithm_family(algorithm: str) -> Optional[str]:
+    """Map a config algorithm class name to make_agent()'s algorithm selector."""
+    name = algorithm.upper()
+    if "DQN" in name:
+        return "DQN"
+    if "TD3" in name or "TDD" in name:
+        return "TD3"
+    if "SAC" in name:
+        return "SAC"
+    if "PPO" in name:
+        return "PPO"
+    return None
 
 
 def build_pipeline_from_config(cfg: TrainConfig):
@@ -254,6 +284,18 @@ def build_pipeline_from_config(cfg: TrainConfig):
     if cfg.pipeline == "BatchPipeline":
         return BatchPipeline(env, window_size=cfg.window_size)
     elif cfg.pipeline == "LivePipeline":
+        # LivePipeline consumes data_source.stream(); a plain Gymnasium env
+        # has no such method, and wrapping one would start a producer thread
+        # that fails and reconnects forever while the loop waits on an empty
+        # queue. Fail at build time with an actionable message instead.
+        if not callable(getattr(env, "stream", None)):
+            env.close()
+            raise ValueError(
+                f"pipeline: LivePipeline requires a data source exposing "
+                f"stream(), which the Gymnasium env {cfg.env!r} does not "
+                f"provide. Use pipeline: BatchPipeline for Gymnasium envs, or "
+                f"construct LivePipeline(data_source) in Python."
+            )
         return LivePipeline(env)
     else:
         raise ValueError(

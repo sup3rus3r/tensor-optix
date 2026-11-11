@@ -219,10 +219,28 @@ class TorchRecurrentPPOAgent(BaseAgent):
         self._cache_lp     = self._cache_lp[T:]
         self._cache_values = self._cache_values[T:]
         self._cache_hidden = self._cache_hidden[T:]
+
+        # Bootstrap V(s_T) when the window ended mid-episode (BatchPipeline
+        # yields fixed-size windows, not whole episodes). self._h is the
+        # hidden state after the window's last step — exactly the context the
+        # critic needs for the post-window observation. Zero when terminal.
+        last_value = 0.0
+        final_obs = getattr(episode_data, "final_obs", None)
+        if (
+            T > 0 and not dones[-1] and self._h is not None
+            and final_obs is not None and not isinstance(final_obs, (list, tuple))
+        ):
+            with torch.no_grad():
+                fo = torch.as_tensor(
+                    np.atleast_2d(final_obs), dtype=torch.float32
+                ).unsqueeze(0).to(self._device)
+                out, _ = self._rnn(fo, self._h)
+                last_value = float(self._critic_head(out.squeeze(0)).squeeze().item())
+
         self._h = None   # reset for next episode
 
         # GAE advantage estimation
-        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, 0.0)
+        advantages, returns = compute_gae(rewards, val_arr, dones, gamma, gae_lambda, last_value)
         if T > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 

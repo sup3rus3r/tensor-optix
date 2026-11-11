@@ -291,8 +291,43 @@ class ConcurrentTrialScheduler:
             try:
                 result = active.result_queue.get_nowait()
             except Exception:
-                continue
+                if active.process.is_alive():
+                    continue
+                # The worker process is gone. Give a result it may have posted
+                # just before exiting one last chance to arrive, then treat it
+                # as a crash (OOM-kill, segfault, ...). Without this a dead
+                # worker stays "active" forever and run() never returns
+                # unless trial_timeout_s happens to be set.
+                try:
+                    result = active.result_queue.get(timeout=1.0)
+                except Exception:
+                    self._handle_crash(ctx, trial_number, active)
+                    continue
             self._handle_result(ctx, trial_number, active, result)
+
+    def _handle_crash(self, ctx, trial_number: int, active: _ActiveTrial) -> None:
+        """Worker exited without reporting a result — retry (transient) or fail."""
+        exitcode, _ = self._shutdown_worker(active.process)
+        decision = classify_retry(
+            result_received=False, status=None,
+            max_retries=self._max_retries, attempt=active.attempt,
+        )
+        del self._active[trial_number]
+        if decision.should_retry:
+            logger.warning(
+                "Trial %d worker died (exitcode=%s) without a result — retrying (attempt %d)",
+                trial_number, exitcode, active.attempt + 1,
+            )
+            self._dispatch_trial(ctx, active.trial, active.params, attempt=active.attempt + 1)
+            return
+        self._finalize_trial(
+            trial_number, active, result=None,
+            state=ExperimentState.FAILED,
+            evaluation_status=EvaluationStatus.INCONCLUSIVE,
+            score=None,
+            error=f"worker process exited without a result (exitcode={exitcode})",
+        )
+        self._told_count += 1
 
     def _enforce_timeouts(self, ctx) -> None:
         for trial_number, active in list(self._active.items()):

@@ -25,7 +25,7 @@ optimizer:
 
 Required keys: `env` (a Gymnasium env ID string) and `algorithm` (one of `TorchPPOAgent`, `TorchSACAgent`, `TorchTD3Agent`, `TorchDQNAgent`, `TorchGaussianPPOAgent`, `TorchRecurrentPPOAgent`, `TFPPOAgent`, `TFSACAgent`, `TFTDDAgent`, `TFDQNAgent`, `TFGaussianPPOAgent`).
 
-Optional keys: `framework` (inferred from the algorithm name prefix if omitted), `deterministic`, `pipeline` (`"BatchPipeline"` or `"LivePipeline"`), `window_size`, `hidden_sizes`. The `agent` and `optimizer` sub-dicts are forwarded **verbatim** - every YAML key maps 1:1 to a constructor kwarg, with no hidden defaults.
+Optional keys: `framework` (inferred from the algorithm name prefix if omitted), `deterministic`, `pipeline` (`"BatchPipeline"`; `"LivePipeline"` is only usable when the env object exposes a `stream()` data source, which Gymnasium envs do not - build live pipelines in Python), `window_size`, `hidden_sizes`. `algorithm` must be buildable for the env's action space - see [Algorithm resolution](../reference/config-cli.md#algorithm-resolution). The `agent` and `optimizer` sub-dicts are forwarded **verbatim** - every YAML key maps 1:1 to a constructor kwarg, with no hidden defaults.
 
 ## Running from the CLI
 

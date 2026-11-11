@@ -108,10 +108,20 @@ class VectorBatchPipeline(BasePipeline):
             if unpicklable:
                 self._async_envs = False
 
+        # gymnasium >= 1.0 defaults to NEXT_STEP autoreset: the step *after* a
+        # terminal step ignores the action and just returns the reset obs with
+        # reward 0. Recording that as a transition feeds one junk sample per
+        # episode into training. SAME_STEP (gymnasium >= 1.1) resets inside the
+        # terminal step, so next_obs is already the new episode's first obs —
+        # exactly what episodes() assumes.
+        kwargs = {}
+        autoreset_mode = getattr(gym.vector, "AutoresetMode", None)
+        if autoreset_mode is not None:
+            kwargs["autoreset_mode"] = autoreset_mode.SAME_STEP
         if self._async_envs:
-            self._vec_env = gym.vector.AsyncVectorEnv(self._env_fns)
+            self._vec_env = gym.vector.AsyncVectorEnv(self._env_fns, **kwargs)
         else:
-            self._vec_env = gym.vector.SyncVectorEnv(self._env_fns)
+            self._vec_env = gym.vector.SyncVectorEnv(self._env_fns, **kwargs)
 
     def episodes(self) -> Generator[EpisodeData, None, None]:
         """
@@ -185,3 +195,10 @@ class VectorBatchPipeline(BasePipeline):
     @property
     def n_envs(self) -> int:
         return self._n_envs
+
+    @property
+    def steps_per_episode(self) -> int:
+        """Env steps per yielded window (window_size per env × n_envs) — lets
+        TrialOrchestrator convert a trial_steps budget into a window count,
+        same contract as BatchPipeline.steps_per_episode."""
+        return self._window_size * self._n_envs

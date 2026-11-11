@@ -6,7 +6,7 @@ import tensorflow as tf
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer
+from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer, episode_n_envs, window_transition_pairs
 from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf
 
 
@@ -175,15 +175,19 @@ class TFSACAgent(BaseAgent):
         done_arr = episode_data.dones
         T = len(rew_arr)
 
-        for t in range(T - 1):
-            self._buffer.push(
-                obs_arr[t],
-                act_arr[t],
-                float(rew_arr[t]),
-                obs_arr[t + 1],
-                float(done_arr[t]),
-            )
-        self._buffer.flush_episode()
+        # Pair each step with the NEXT step of the same environment. With a
+        # VectorBatchPipeline window the flat arrays interleave n_envs envs
+        # ([t * n_envs + i]), so index t + 1 belongs to a different env.
+        for env_pairs in window_transition_pairs(T, episode_n_envs(episode_data)):
+            for t, t_next in env_pairs:
+                self._buffer.push(
+                    obs_arr[t],
+                    act_arr[t],
+                    float(rew_arr[t]),
+                    obs_arr[t_next],
+                    float(done_arr[t]),
+                )
+            self._buffer.flush_episode()
 
         if len(self._buffer) < batch_size:
             return {

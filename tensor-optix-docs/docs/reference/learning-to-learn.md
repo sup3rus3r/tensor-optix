@@ -90,6 +90,44 @@ class ExperimentStore:
     def get_strategy_scope(self, candidate_id: str) -> Optional[Dict[str, Any]]: ...
 ```
 
+### ExperimentLedgerCallback
+
+```python
+class ExperimentLedgerCallback(LoopCallback):
+    def __init__(
+        self, store: ExperimentStore, *, task_env: str, algorithm: str,
+        framework: str = "torch", seed: int = 0, checkpoint_dir: str,
+        solve_threshold: Optional[float] = None, config: Optional[Dict[str, Any]] = None,
+        parent_experiment_id: Optional[str] = None, study_id: Optional[str] = None,
+        experiment_id: Optional[str] = None, checkpoint_registry: Optional[Any] = None,
+    ): ...
+
+    @property
+    def experiment_id(self) -> str: ...
+
+    def mark_failed(self, exc: Exception) -> None:
+        """Finalize the experiment as FAILED / INCONCLUSIVE (idempotent)."""
+```
+
+Attach it to any `RLOptimizer` / `LoopController` run to record that run in the ledger: the
+experiment row (with provenance: tensor-optix version, git revision, library versions, hostname),
+one event per loop hook, a progress update and an `ArtifactRef` (with a SHA-256 of the weights)
+per improvement.
+
+Terminal state is decided in `on_loop_stop`, which the loop fires from `run()`'s `finally`:
+
+| How the run ended | `state` | `evaluation_status` |
+|---|---|---|
+| returned normally | `COMPLETED` | `PRELIMINARY` |
+| an exception is propagating | `FAILED` (with `error_message`) | `INCONCLUSIVE` |
+| `KeyboardInterrupt` | `CANCELLED` | `INCONCLUSIVE` |
+
+So a crashed run is recorded as failed without any caller-side handling; calling
+`mark_failed(exc)` yourself afterwards is harmless (finalization is idempotent).
+
+Library versions are read from package metadata; frameworks that the run has not imported
+(e.g. TensorFlow in a torch-only run) are not imported just to stamp the row.
+
 Schema version 3. Tables: `experiments`, `events`, `artifacts`, `strategy_candidates`,
 `strategy_evaluations`, `strategy_registry`. Migrations are version-gated in
 `tensor_optix/ledger/schema.py::_migrate()` — one `if from_version == N:` branch per real,
@@ -129,6 +167,17 @@ class ConcurrentTrialScheduler:
 Workers never touch the Optuna `Study` or the `ExperimentStore` directly — they receive a
 plain sampled-params dict and report scores back over a queue; all ledger/study writes happen
 in the parent process.
+
+Failure handling:
+
+- A worker that **raises** reports `status="failed"`; that is a property of the trial, not of
+  the infrastructure, so it is not retried - the trial is told to Optuna as `FAIL` and
+  finalized `FAILED` in the ledger.
+- A worker process that **dies without reporting** (OOM-kill, segfault, external kill) is
+  detected by the parent on the next poll. It is treated as transient and re-dispatched with
+  a new seed up to `max_retries` times, then finalized `FAILED` with the exit code in
+  `error_message`. `run()` therefore always terminates, with or without `trial_timeout_s`.
+- A trial exceeding `trial_timeout_s` is cancelled and finalized `TIMED_OUT`.
 
 ## 3. Baseline selection (`tensor_optix.selection`)
 
@@ -459,3 +508,12 @@ def promote_candidate_to_baseline(
 ```
 
 See the guide for the full end-to-end wiring: [Learning-to-Learn Engine guide](../guides/learning-to-learn.md).
+
+## Behaviour notes
+
+- **Method evidence.** `StrategySelector` and `NanonetsSelector` count a ledger experiment as evidence for a method when `config["sampler"] == method` (trial-search runs) or `config["op_name"] == method` with `is_baseline` false (strategy-candidate runs). The live runtime's proposals over strategy ops therefore learn from earlier strategy trials. Untried methods are ranked last.
+- **`CycleRecommendation.automatable_criteria_passed`** is `True` when every evidence-based criterion passed, ignoring `human_reviewed` (which the recommend-only loop never sets).
+- **Trial workers** (`ConcurrentTrialScheduler`, `StrategyTrialRunner`) seed `torch`, `numpy` and `random` from the trial seed.
+- **`CheckpointRollbackOp`** in a strategy trial rolls back to the run's current best checkpoint (it shares the run's `CheckpointRegistry`).
+- **`OptimizationMethodChoiceOp`** switches at most once per stall; after the run improves again, the next stall advances to the next entry of `candidate_methods`.
+- **`run_reevaluation`** evaluates epsilon-greedy agents greedily (`epsilon = 0`).

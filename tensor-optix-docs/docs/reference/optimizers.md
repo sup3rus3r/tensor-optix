@@ -41,7 +41,7 @@ class SPSAOptimizer:
     """
 ```
 
-Constructor accepts `param_bounds: dict[str, (lo, hi)]` and `log_params: set[str]` (params normalized in log space - use for learning rates and anything spanning orders of magnitude). On improvement, probes shrink (avoid disrupting active learning); on plateau, probes widen (explore more aggressively).
+Constructor accepts `param_bounds: dict[str, (lo, hi)]` and `log_params: set[str]` (params normalized in log space - use for learning rates and anything spanning orders of magnitude). On improvement, probes shrink (avoid disrupting active learning); on plateau, probes widen (explore more aggressively) and the cycle restarts. If `on_plateau()` interrupts a cycle mid-probe, the next cycle starts from the interrupted cycle's base point `x`, not from the probe point `x ± c·Δ` the agent happens to hold at that moment - an unevaluated probe is never silently adopted as the new baseline.
 
 ## MomentumOptimizer
 
@@ -92,11 +92,14 @@ class BackoffOptimizer:
     round-robin. With N bounded params, a full cycle takes 2N episodes
     (probe + commit per param).
 
-    Phase 1 - PROBE: x + δ, record base_score.
-    Phase 2 - COMMIT: gradient = (probe_score - base_score) / δ
-        gradient > 0 → keep probe value
-        gradient < 0 → apply x - δ (reflected step)
-        gradient ≈ 0 → keep current value
+    Phase 1 - PROBE: x + δ (x - δ when x is already at the upper bound),
+                     record base_score.
+    Phase 2 - COMMIT: improvement = probe_score - base_score
+        improvement > 0 → keep the probe value
+        improvement < 0 → step the other way from x (reflected step,
+                          clipped to the bounds - so a failed downward
+                          probe at the upper bound returns to x)
+        improvement ≈ 0 → restore the pre-probe value x
 
     On improvement: increase perturbation_scale. On plateau: increase further,
     reset cycle.

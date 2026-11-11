@@ -91,7 +91,7 @@ pip install tensor-optix[torch]
 pip install tensor-optix[all]
 ```
 
-Environment extras: `[box2d]`, `[atari]`, `[mujoco]`  
+Environment extras: `[box2d]`, `[atari]`, `[mujoco]`, `[pettingzoo]` (multi-agent)  
 Logging extras: `[wandb]`, `[tensorboard]`  
 Export: `[onnx]`
 
@@ -123,7 +123,7 @@ All agents implement `BaseAgent` and are interchangeable with `RLOptimizer`.
 
 ### Auto-selection
 
-`make_agent` inspects the environment action space and returns a fully constructed agent. Pass an algorithm name as the first argument, or let it be inferred.
+`make_agent` inspects the environment action space and returns a fully constructed agent. Pass an algorithm name as the first argument, or let it be inferred. Observations may be a flat `Box`, an image `Box` `(H, W, C)` (CNN encoder), or a `Dict` of those (see [Encoders](https://sup3rus3r.github.io/tensor-optix/reference/encoders/)).
 
 ```python
 from tensor_optix import make_agent
@@ -209,6 +209,32 @@ pipeline = VectorBatchPipeline(
 )
 ```
 
+Notes:
+
+- `VectorBatchPipeline` works with every built-in agent except `TorchRecurrentPPOAgent`: PPO agents compute GAE per env, and the off-policy agents (DQN, Rainbow, SAC, TD3) build replay transitions per env. Envs are created with Gymnasium's `SAME_STEP` autoreset so no action-ignored "reset" transitions enter the training data.
+- `BatchPipeline` resets a recurrent agent's hidden state (`reset_hidden()`) at every episode boundary.
+- `LivePipeline` applies backpressure: when the consumer is slower than the source, the producer waits instead of dropping samples or restarting the stream.
+
+### Multi-agent (PettingZoo)
+
+`pip install tensor-optix[torch,pettingzoo]` adds pipelines for PettingZoo's Parallel and AEC (turn-based) APIs. Each seat is an ordinary agent; a window yields one `EpisodeData` per seat.
+
+```python
+from pettingzoo.classic import rps_v2
+from tensor_optix import make_agent
+from tensor_optix.multi_agent import SeatEnvView, AECMultiAgentPipeline, MultiAgentRunner
+
+env = rps_v2.env()
+env.reset(seed=0)
+views  = {aid: SeatEnvView(env, aid) for aid in env.possible_agents}
+agents = {aid: make_agent(views[aid]) for aid in env.possible_agents}
+
+pipeline = AECMultiAgentPipeline(env, agents, window_size=400, views=views)
+MultiAgentRunner(pipeline, agents).run(max_windows=500)
+```
+
+In turn-based games each reward (including the terminal win/loss) is credited to the action that earned it. `MultiAgentRunner` is a minimal collect/learn driver - it does not run the convergence/checkpoint state machine. See [Multi-agent training](https://sup3rus3r.github.io/tensor-optix/guides/multi-agent/).
+
 ---
 
 ## The loop
@@ -238,7 +264,20 @@ opt.best_snapshot   # -> PolicySnapshot: best weights + EvalMetrics + Hyperparam
 
 Loop state transitions: `ACTIVE` -> `COOLING` -> `DORMANT` -> watchdog shutdown or policy spawn.
 
-On shutdown the loop restores best-known weights, not the final checkpoint.
+- Every non-improving eval counts toward `COOLING`/`DORMANT`, for on-policy and off-policy agents alike. While the score is flat the eval interval backs off (`backoff_factor`, default 2.0); set `backoff_factor=1.0` to evaluate every window.
+- At `DORMANT` the loop stops by default. A `PolicyManagerCallback` with spawn budget remaining spawns a variant instead and training continues.
+- `rollback_on_degradation=True` restores the best checkpoint when a degradation is confirmed (`min_consecutive_degradations` consecutive evals below `degradation_threshold x best`), for on-policy agents only - off-policy agents keep their weights because their replay buffer would immediately pull a restored policy back.
+- On shutdown the loop restores best-known weights, not the final checkpoint.
+- `verbose=True` prints a per-eval diagnostic block; it is safe on consoles that cannot render the box-drawing glyphs (they degrade to `?`).
+
+### YAML / CLI
+
+```bash
+tensor-optix validate config.yaml
+tensor-optix train config.yaml agent.learning_rate=1e-3 optimizer.max_episodes=200
+```
+
+The `algorithm` key selects the agent class and must be buildable for the env (e.g. `TorchDQNAgent` needs a discrete action space; a mismatch is a build error, not a silent substitution). See [Configure via YAML / CLI](https://sup3rus3r.github.io/tensor-optix/guides/cli-config/).
 
 ---
 
@@ -301,11 +340,13 @@ best_config = orch.run()
 from tensor_optix import PolicyManager
 
 pm = PolicyManager(registry, max_spawns=4)
-cb = pm.as_callback(agent, agent_factory=make_agent)
+cb = pm.as_callback(agent, agent_factory=lambda: make_agent(env))  # zero-argument factory
 cb.set_stop_fn(opt.stop)
 opt.add_callback(cb)
 opt.run()
 ```
+
+Each `DORMANT` event with budget remaining spawns a variant and training continues; once the budget is exhausted the callback stops the loop with the best weights restored. A multi-member `EnsembleAgent` combines policies at inference time - for discrete PPO members `act()` returns the averaged probability vector, which you sample or `argmax`.
 
 ---
 
@@ -717,6 +758,8 @@ store.finalize_experiment(record.experiment_id, state=ExperimentState.COMPLETED)
 
 Writes are idempotent on `experiment_id`, and every method opens a short, single-statement transaction — nothing here ever holds a lock for the duration of training.
 
+To record an ordinary training run, attach `ExperimentLedgerCallback(store, task_env=..., algorithm=..., checkpoint_dir=...)` (from `tensor_optix.ledger.callback`) to `RLOptimizer`. A run that raises is finalized `FAILED` automatically; an interrupted one `CANCELLED`.
+
 ### Concurrent trial scheduler
 
 `ConcurrentTrialScheduler` runs multiple Optuna trials as real OS processes, with the parent process as sole owner of the Optuna study and the ledger.
@@ -732,6 +775,8 @@ scheduler = ConcurrentTrialScheduler(
 )
 best_params, best_score = scheduler.run()
 ```
+
+A worker that dies without reporting (OOM-kill, crash) is detected, retried up to `max_retries` times, and then recorded as `FAILED` - the scheduler never waits on a dead process.
 
 ### Cross-task transfer (Nanonets)
 

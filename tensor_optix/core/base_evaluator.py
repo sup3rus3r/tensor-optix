@@ -148,7 +148,10 @@ class BaseEvaluator(ABC):
 
         auto_fraction = None
         if criteria_mode in ("auto", "both"):
-            breadths = episode_breadth(episode_data.rewards, episode_data.dones)
+            breadths = episode_breadth(
+                episode_data.rewards, episode_data.dones,
+                int((episode_data.metadata or {}).get("n_envs", 1)),
+            )
             current_breadth = breadths[-1] if breadths else 1.0
             auto_fraction = breadth_typicality(current_breadth, breadth_history)
 

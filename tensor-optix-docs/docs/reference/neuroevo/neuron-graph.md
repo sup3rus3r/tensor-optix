@@ -167,3 +167,13 @@ def all_neuron_ids(self) -> List[str]: ...
 ```
 
 `_topological_order()` uses Kahn's algorithm over feedforward (`d=0`) edges only - recurrent edges always read from history, so they impose no within-timestep ordering constraint.
+
+### In-place restore and forward hooks
+
+```python
+def restore_from_dict(self, d: dict) -> "NeuronGraph":
+    """Rebuild THIS graph object in place from a to_dict() topology.
+    Parameters are re-created; follow with load_state_dict()."""
+```
+
+Use this (not `from_dict`) when other objects hold a reference to the graph. `graph._post_forward_hooks` is a list of zero-argument callables run after every `forward()`; `HebbianHook` uses it to sample activations.

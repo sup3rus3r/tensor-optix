@@ -73,6 +73,7 @@ def establish_baseline(
             )
         if i + 1 >= max_windows:
             break
+    pipeline.teardown()
 
     weights_path = best_snapshot.weights_path if best_snapshot is not None else None
 
@@ -135,6 +136,13 @@ def run_reevaluation(
 
     agent = agent_factory({})
     agent.load_weights(weights_path)
+    # A freshly built epsilon-greedy agent starts at its initial exploration
+    # rate (typically 1.0 = fully random); load_weights() does not restore
+    # hyperparameters. Evaluate the deployed policy greedily.
+    hp = agent.get_hyperparams()
+    if "epsilon" in hp.params:
+        hp.params["epsilon"] = 0.0
+        agent.set_hyperparams(hp)
 
     import gymnasium as gym
 

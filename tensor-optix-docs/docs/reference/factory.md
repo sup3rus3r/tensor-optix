@@ -93,7 +93,7 @@ agent = make_agent("SAC", env)     # algorithm explicit
 | `Dict` / `Tuple` | - | `NotImplementedError` - requires a custom policy architecture |
 | `MultiBinary` | - | `NotImplementedError` - requires a multi-label Bernoulli policy |
 
-Observation space **must** be a flat 1-D `Box` for all non-neuroevo paths - image or structured observations require building the agent manually.
+Observation spaces: the standard (non-neuroevo) path accepts a flat 1-D `Box`, an image `Box` of shape `(H, W, C)` with `C ∈ {1, 3, 4}` (CNN encoder), or a `Dict` of those (per-key encoders, concatenated) - see [Encoders](encoders.md). `Discrete`, `MultiDiscrete`, `MultiBinary`, `Tuple`, nested `Dict` and other `Box` ranks raise `NotImplementedError`; for PettingZoo seats with `Discrete` observations use [`SeatEnvView`](multi-agent.md#seatenvview). The neuroevo path requires a flat 1-D `Box`.
 
 ### Neuroevo path
 
@@ -113,3 +113,7 @@ When `neuroevo=True`:
 | TD3 | `learning_rate=3e-4, gamma=0.99, tau=0.005, batch_size=256, policy_delay=2, target_noise=0.2, target_noise_clip=0.5` |
 
 See [Algorithms](algorithms.md) for the agent classes themselves.
+
+### Rainbow value support
+
+`make_agent("RAINBOW", env)` defaults to a categorical support of `[v_min=0, v_max=500]`, which fits CartPole-like returns only (a warning is logged when the default is used). Returns outside the support are clamped, so pass `hyperparams` with `v_min` / `v_max` covering your env's discounted-return range for anything else.

@@ -139,10 +139,16 @@ class GraphAgent(BaseAgent):
             device=self.device,
         )
         rew_t = torch.tensor(episode_data.rewards, dtype=torch.float32, device=self.device)
-        old_lp = torch.tensor(
-            episode_data.log_probs if episode_data.log_probs else [0.0] * len(episode_data.rewards),
-            dtype=torch.float32, device=self.device,
-        )
+        # log pi_old(a_t|s_t). Pipelines do not record log-probs, so when the
+        # window carries none, evaluate the actions under the current policy
+        # before any update: no gradient step has happened since collection,
+        # so this IS the behaviour policy. (Falling back to zeros would turn
+        # the PPO ratio exp(new - old) into the raw action probability.)
+        if episode_data.log_probs:
+            old_lp = torch.tensor(episode_data.log_probs, dtype=torch.float32, device=self.device)
+        else:
+            with torch.no_grad():
+                old_lp, _, _ = self._evaluate_actions(self._batch_forward(obs_t), act_t)
 
         # Compute values and advantages
         with torch.no_grad():
@@ -153,6 +159,7 @@ class GraphAgent(BaseAgent):
             dones=episode_data.dones,
             gamma=hp["gamma"],
             gae_lambda=hp["gae_lambda"],
+            last_value=self._bootstrap_value(episode_data),
         )
         adv_t = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         ret_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
@@ -234,8 +241,10 @@ class GraphAgent(BaseAgent):
         if "topology" in state:
             # Reconstruct topology so state_dict keys match exactly — handles
             # evolved graphs where neurons were added or pruned since construction.
-            from ..graph.neuron_graph import NeuronGraph
-            self.graph = NeuronGraph.from_dict(state["topology"]).to(self.device)
+            # Rebuilt IN PLACE: TopologyController / HebbianHook hold references
+            # to this graph object and must keep following it after a restore.
+            self.graph.restore_from_dict(state["topology"])
+            self.graph.to(self.device)
         self.graph.load_state_dict(state["graph"])
         self._episode_count = state.get("episode", 0)
         if self.continuous and "log_std" in state:
@@ -378,11 +387,49 @@ class GraphAgent(BaseAgent):
             for eid in graph._in_edges.get(nid, []):
                 edge = graph._edges[eid]
                 src = edge.src
-                if src in act:
-                    pre = pre + edge.weight * act[src]
-            act[nid] = neuron._activation_fn(pre + neuron.bias.squeeze(0))
+                # Delayed edges read the source's history, which is all zeros
+                # after the per-step reset_state() in act() — no contribution.
+                if edge.delay == 0 and src in act:
+                    pre = pre + graph._effective_rec_weight(edge) * act[src]
+            act[nid] = self._stateless_neuron_out(neuron, pre)
 
         return torch.stack([act[nid] for nid in graph.output_ids], dim=1)  # [B, n_outputs]
+
+    @staticmethod
+    def _stateless_neuron_out(neuron, pre: torch.Tensor) -> torch.Tensor:
+        """
+        Output of `neuron` for pre-activation `pre` starting from a zero
+        internal state — exactly what neuron.step() produces right after
+        reset_state(), which is how act() drives the graph. Keeps the
+        training forward identical to the acting forward for every neuron
+        type, not just point neurons.
+        """
+        from ..graph.neuron import GRUNeuron, LSTMNeuron
+        if isinstance(neuron, GRUNeuron):
+            # h = 0  =>  h' = z * n   (the reset gate multiplies h and vanishes)
+            z = torch.sigmoid(neuron.uz * pre + neuron.bz)
+            n = torch.tanh(neuron.un * pre + neuron.bn)
+            return z * n
+        if isinstance(neuron, LSTMNeuron):
+            # h = c = 0  =>  c' = i * g,  h' = o * tanh(c')
+            i = torch.sigmoid(neuron.ui * pre + neuron.bi)
+            g = torch.tanh(neuron.ug * pre + neuron.bg)
+            o = torch.sigmoid(neuron.uo * pre + neuron.bo)
+            return o * torch.tanh(i * g)
+        return neuron._activation_fn(pre + neuron.bias.squeeze(0))
+
+    def _bootstrap_value(self, episode_data: EpisodeData) -> float:
+        """V(s_T) for a window that ended mid-episode; 0.0 when it ended on a
+        terminal step or the pipeline supplied no single final observation."""
+        final_obs = getattr(episode_data, "final_obs", None)
+        dones = episode_data.dones
+        if final_obs is None or isinstance(final_obs, (list, tuple)) or not len(dones) or dones[-1]:
+            return 0.0
+        with torch.no_grad():
+            obs = self._to_tensor(final_obs).unsqueeze(0)
+            if obs.shape[1] != len(self.graph.input_ids):
+                return 0.0
+            return float(self._batch_values(obs)[0].item())
 
     def _batch_values(self, obs_batch: torch.Tensor) -> torch.Tensor:
         out = self._batch_forward(obs_batch)
@@ -428,6 +475,13 @@ class RecurrentGraphAgent(GraphAgent):
     from the default shuffled-minibatch PPO to sequential chunk-based training
     (truncated BPTT). Inference via act() is unchanged — it still calls the
     parent step() path with detached hidden states.
+
+    Known limitation: act() resets the graph state before every step, so the
+    policy that collects data is memoryless, while learn() optimises the
+    unrolled recurrent forward. The two coincide only where recurrent state
+    carries no information; treat the recurrent path as experimental and
+    prefer GraphAgent (whose training forward matches act() exactly) unless
+    you drive the unrolled forward yourself via recurrent_forward().
 
     Extra hyperparams:
       chunk_len (int, default 64): BPTT truncation length in timesteps.
@@ -514,12 +568,12 @@ class RecurrentGraphAgent(GraphAgent):
                 edge = graph._edges[eid]
                 src = edge.src
                 if src in act:
-                    pre = pre + edge.weight * act[src]
+                    pre = pre + graph._effective_rec_weight(edge) * act[src]
 
             if getattr(neuron, "is_recurrent", False):
                 act[nid] = neuron.recurrent_step(pre)
             else:
-                act[nid] = neuron._activation_fn(pre + neuron.bias.squeeze(0))
+                act[nid] = self._stateless_neuron_out(neuron, pre)
 
         return torch.stack([act[nid] for nid in graph.output_ids]).squeeze(-1)  # [n_outputs]
 
@@ -537,10 +591,15 @@ class RecurrentGraphAgent(GraphAgent):
             device=self.device,
         )
         rew_t = torch.tensor(episode_data.rewards, dtype=torch.float32, device=self.device)
-        old_lp = torch.tensor(
-            episode_data.log_probs if episode_data.log_probs else [0.0] * len(episode_data.rewards),
-            dtype=torch.float32, device=self.device,
-        )
+        # See GraphAgent.learn(): without recorded log-probs, evaluate the
+        # collected actions under the pre-update BEHAVIOUR policy. act() drives
+        # the graph statelessly (reset_state() every step), so that is the
+        # stateless forward — not the unrolled one the update below trains.
+        if episode_data.log_probs:
+            old_lp = torch.tensor(episode_data.log_probs, dtype=torch.float32, device=self.device)
+        else:
+            with torch.no_grad():
+                old_lp, _, _ = self._evaluate_actions(self._batch_forward(obs_t), act_t)
 
         # Compute values with detached inference pass
         with torch.no_grad():

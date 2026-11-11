@@ -91,3 +91,5 @@ opt.run()
 ```
 
 `NeuromodulatorSignal` is itself a `LoopCallback` and can be passed directly to `Optimizer`/`RLOptimizer` via `callbacks=`.
+
+When used as a callback, `on_episode_end` appends each evaluated episode's `EvalMetrics` to an internal history (last 200) and calls `step()` on it. `TopologyController.grow_gap_threshold` is an alias (property) of `grow_grad_threshold`, so the topology modulation changes the threshold the grow test actually reads.

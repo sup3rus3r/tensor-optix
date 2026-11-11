@@ -40,6 +40,7 @@ from typing import Optional
 import numpy as np
 
 from .base_agent import BaseAgent
+from tensor_optix.utils.console import safe_print
 
 
 class DiagnosticController:
@@ -201,7 +202,7 @@ class DiagnosticController:
 
         if fired and self._verbose:
             for rule, action in fired:
-                print(f"  DIAG     [{rule}] {action}", flush=True)
+                safe_print(f"  DIAG     [{rule}] {action}", flush=True)
 
         self.firings.extend([(episode_id, r, a) for r, a in fired])
         return fired

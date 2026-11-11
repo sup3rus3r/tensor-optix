@@ -9,6 +9,7 @@ from .base_agent import BaseAgent
 from .checkpoint_registry import CheckpointRegistry
 from .loop_controller import LoopCallback
 from .types import EvalMetrics, PolicySnapshot
+from tensor_optix.utils.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -499,10 +500,16 @@ class PolicyManager:
         hp = snapshot.hyperparams.copy()
         rng = np.random.default_rng()
         for key, val in list(hp.params.items()):
+            if isinstance(val, bool):
+                # bool is a subclass of int — flags are not tunable magnitudes.
+                continue
             if isinstance(val, float):
                 hp.params[key] = float(val * (1.0 + rng.normal(0.0, noise_scale)))
             elif isinstance(val, int):
-                hp.params[key] = max(1, round(val * (1.0 + rng.normal(0.0, noise_scale))))
+                perturbed = round(val * (1.0 + rng.normal(0.0, noise_scale)))
+                # Positive counts stay >= 1; zero / negative ints keep their sign
+                # (multiplicative noise cannot move 0, and must not turn it into 1).
+                hp.params[key] = max(1, perturbed) if val >= 1 else perturbed
         agent_shell.set_hyperparams(hp)
 
         if mutation_fn is not None:
@@ -619,6 +626,16 @@ class PolicyManagerCallback(LoopCallback):
         self._stop_fn: Optional[Callable[[], None]] = None
         self._metrics_history: List[EvalMetrics] = []
         self._reported: bool = False
+        self._resume_after_dormant: bool = False
+
+    def consume_dormant_resume(self) -> bool:
+        """
+        One-shot flag read by LoopController right after on_dormant():
+        True when this DORMANT event spawned or pruned a variant, i.e. the
+        ensemble changed and training should continue instead of stopping.
+        """
+        resume, self._resume_after_dormant = self._resume_after_dormant, False
+        return resume
 
     def set_stop_fn(self, fn: Callable[[], None]) -> None:
         """
@@ -645,6 +662,10 @@ class PolicyManagerCallback(LoopCallback):
                     reset to ACTIVE and keep training.
               NO  → best known weights ARE the answer. Stop.
         """
+        self._resume_after_dormant = False
+        spawns_before = self._pm._spawn_count
+        prunes_before = self._pm._prune_count
+
         # Step 1: rebalance ensemble weights from score history
         self._pm.auto_update_weights()
 
@@ -674,6 +695,15 @@ class PolicyManagerCallback(LoopCallback):
                 self._stop_fn()
         # else: no factory provided — PolicyManager is passive; loop_controller
         # handles convergence and stopping via its own DORMANT state.
+
+        # The ensemble changed (a variant was spawned or pruned) → ask the
+        # loop to keep training. Anything else (budget exhausted, STOP,
+        # NO_OP, passive mode) leaves the loop's default stop in place.
+        if (
+            self._pm._spawn_count > spawns_before
+            or self._pm._prune_count > prunes_before
+        ):
+            self._resume_after_dormant = True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -807,4 +837,4 @@ class PolicyManagerCallback(LoopCallback):
                 lines.append(f"    [{a['index']}] weight={a['weight']:.4f}  mean_score={ms}")
 
         lines += [sep, ""]
-        print("\n".join(lines))
+        safe_print("\n".join(lines))

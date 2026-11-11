@@ -8,6 +8,7 @@ tears down / finalizes idempotently.
 
 import hashlib
 import os
+import sys
 import uuid
 from typing import Any, Dict, Optional
 
@@ -181,6 +182,24 @@ class ExperimentLedgerCallback(LoopCallback):
     def on_loop_stop(self) -> None:
         self._append("loop_stop")
         if self._finalized:
+            return
+        # LoopController fires on_loop_stop from run()'s `finally`, i.e. also
+        # while an exception is propagating — before any caller-side
+        # `except: ledger_cb.mark_failed(e)` can run. Record the real outcome
+        # here instead of stamping a crashed run COMPLETED.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, KeyboardInterrupt):
+            self._finalized = True
+            self._store.finalize_experiment(
+                self._experiment_id,
+                state=ExperimentState.CANCELLED,
+                evaluation_status=EvaluationStatus.INCONCLUSIVE,
+                final_metrics=self._last_metrics,
+                error_message="KeyboardInterrupt",
+            )
+            return
+        if exc is not None:
+            self.mark_failed(exc)
             return
         self._finalized = True
         self._store.finalize_experiment(

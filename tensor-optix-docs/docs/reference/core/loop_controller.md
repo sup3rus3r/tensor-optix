@@ -165,7 +165,22 @@ that immediately drag the policy back down. Their buffers naturally
 smooth through degradations without rollback.
 ```
 
-Rollback fires only when all of: `rollback_on_degradation=True`, the agent is on-policy, a best snapshot exists, and the scheduler is currently in `DORMANT`.
+Rollback fires when all of: `rollback_on_degradation=True`, the agent is on-policy, and a best snapshot exists. Degradation itself must first be *confirmed*: the smoothed score has to sit below `best × degradation_threshold` for `min_consecutive_degradations` (default 3) consecutive non-probe evals before `_handle_degradation()` runs, `on_degradation` fires, and the scheduler returns to `ACTIVE`.
+
+## Plateau accounting
+
+Every eval whose trend is not improving advances the scheduler's non-improvement counter (`BackoffScheduler.record_non_improvement()`), for on-policy and off-policy agents alike and whether or not the optimizer is probing. The single exception is the eval on which a degradation is confirmed. Consequences:
+
+- The eval interval backs off (`backoff_factor`) while the score is flat, so not every window is evaluated. Use `backoff_factor=1.0` to evaluate every window.
+- `ACTIVE → COOLING` fires `on_plateau`; `COOLING → DORMANT` calls `optimizer.on_plateau()`, fires `on_dormant`, and then applies the DORMANT rule below.
+
+## What happens at DORMANT
+
+After `on_dormant` callbacks have run, the loop stops unless a callback asks for more training:
+
+- A callback may expose `consume_dormant_resume() -> bool`. It is polled once per DORMANT event on every callback; if any returns `True` (and no callback called `stop()`), the scheduler is restarted (`record_restart()`) and training continues.
+- `PolicyManagerCallback` returns `True` when that DORMANT event spawned or pruned a variant. Budget exhausted, a `MetaController` `STOP`/`NO_OP`, or passive mode (no `agent_factory`) leave the default in place.
+- Otherwise the loop stops and the best checkpoint is restored.
 
 ## Degradation suppression during optimizer probes
 
@@ -173,7 +188,7 @@ When an online optimizer (SPSA, Backoff) applies a finite-difference probe pertu
 
 ## RND eta scheduling
 
-`_update_rnd_eta(event)` adjusts `RNDPipeline`'s intrinsic-reward scale at loop state transitions, when the active pipeline exposes `set_eta`:
+`_update_rnd_eta(event)` adjusts `RNDPipeline`'s intrinsic-reward scale at loop state transitions, when the **training** pipeline exposes `set_eta` (the validation pipeline is only consulted if the training pipeline does not):
 
 ```
 improvement → eta *= 0.9   (getting better, pull back exploration)
@@ -183,3 +198,7 @@ restart     → eta = base   (reset after dormant restart)
 ```
 
 This is a no-op (zero cost) for pipelines that don't implement `set_eta`. See [Exploration (RND)](../exploration.md).
+
+## Verbose output
+
+`verbose=True` prints a per-eval diagnostic block (score, trend, state machine, optimizer step). Output goes through `tensor_optix.utils.console.safe_print`, which replaces glyphs the output stream cannot encode (e.g. box-drawing characters on a Windows cp1252 console or a redirected stdout) with `?` instead of raising `UnicodeEncodeError`. Pass `verbose_log_file=` to write the same output to a UTF-8 file.

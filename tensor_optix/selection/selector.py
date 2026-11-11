@@ -21,6 +21,22 @@ if TYPE_CHECKING:
     from tensor_optix.orchestrator import TrialOrchestrator
 
 
+def record_matches_method(record, method: str) -> bool:
+    """
+    True when a ledger experiment is evidence for `method`.
+
+    Two kinds of experiment carry a method label in their config:
+      - trial-search runs backfilled from an Optuna study: config["sampler"]
+      - strategy-candidate runs (StrategyTrialRunner): config["op_name"],
+        excluding the paired no-strategy baseline run (config["is_baseline"]),
+        which is evidence for the baseline, not for the op.
+    """
+    config = record.config or {}
+    if config.get("sampler") == method:
+        return True
+    return config.get("op_name") == method and not config.get("is_baseline", False)
+
+
 @dataclass
 class MethodStats:
     method: str
@@ -50,7 +66,7 @@ class StrategySelector:
         we actually want to compare on across runs.
         """
         records = self._store.query_experiments(task_env=task_env, limit=1000)
-        matching = [r for r in records if r.config.get("sampler") == method]
+        matching = [r for r in records if record_matches_method(r, method)]
 
         n_experiments = len(matching)
         completed = [r for r in matching if r.state == ExperimentState.COMPLETED]

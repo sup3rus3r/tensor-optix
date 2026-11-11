@@ -116,7 +116,10 @@ class BackoffOptimizer(BaseOptimizer):
             probe_value_raw = self._denormalize(x_probe, lo, hi)
 
             self._phase[param_name] = "commit"
-            self._probe_delta[param_name] = delta
+            # Signed step actually taken (negative when probing downward at the
+            # upper bound, smaller than delta when clipped) so the commit phase
+            # measures the gradient along the real probe direction.
+            self._probe_delta[param_name] = x_probe - x_current
             self._base_score[param_name] = latest_score
             self._probe_value_raw[param_name] = probe_value_raw
             self._current_x[param_name] = x_current
@@ -132,14 +135,20 @@ class BackoffOptimizer(BaseOptimizer):
             x_cur = self._current_x[param_name]
             probe_raw = self._probe_value_raw[param_name]
 
-            gradient = (probe_score - base_score) / delta
+            # delta is signed: positive for an upward probe, negative for a
+            # downward one. `improvement` is the score change caused by the
+            # probe itself, independent of its direction.
+            improvement = probe_score - base_score
+            gradient = improvement / abs(delta) if delta != 0 else 0.0
 
             if abs(gradient) <= self._gradient_threshold:
-                new_params[param_name] = current_value
+                # No measurable effect — restore the pre-probe value.
+                new_params[param_name] = self._denormalize(x_cur, lo, hi)
             elif gradient > 0:
                 new_params[param_name] = probe_raw
             else:
-                x_opposite = max(0.0, x_cur - delta)
+                # Probe hurt — step the other way from the base (clipped to bounds).
+                x_opposite = min(1.0, max(0.0, x_cur - delta))
                 new_params[param_name] = self._denormalize(x_opposite, lo, hi)
 
             self._phase[param_name] = "probe"

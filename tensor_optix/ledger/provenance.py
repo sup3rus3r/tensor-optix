@@ -42,14 +42,26 @@ def _tensor_optix_version() -> Optional[str]:
 
 def _library_versions() -> Dict[str, str]:
     versions: Dict[str, str] = {"python": sys.version.split()[0]}
+    # Read versions without importing: importing tensorflow/jax just to
+    # stamp a ledger row costs seconds per experiment in a torch-only run.
+    import importlib.metadata as _md
+    dist_names = {
+        "tensorflow": ("tensorflow", "tensorflow-cpu", "tensorflow-gpu", "tensorflow-macos"),
+    }
     for module_name in ("numpy", "torch", "tensorflow", "jax", "gymnasium", "optuna"):
-        try:
-            module = __import__(module_name)
-            version = getattr(module, "__version__", None)
-            if version:
-                versions[module_name] = str(version)
-        except Exception:
-            continue
+        version = None
+        loaded = sys.modules.get(module_name)
+        if loaded is not None:
+            version = getattr(loaded, "__version__", None)
+        if not version:
+            for dist in dist_names.get(module_name, (module_name,)):
+                try:
+                    version = _md.version(dist)
+                    break
+                except Exception:
+                    continue
+        if version:
+            versions[module_name] = str(version)
     return versions
 
 

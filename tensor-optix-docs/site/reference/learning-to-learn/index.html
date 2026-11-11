@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -86,6 +90,10 @@
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Reference</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#1-ledger-tensor_optixledger">1. Ledger (tensor_optix.ledger)</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#experimentledgercallback">ExperimentLedgerCallback</a>
+    </li>
+        </ul>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#2-concurrent-scheduler-tensor_optixscheduler">2. Concurrent scheduler (tensor_optix.scheduler)</a>
     </li>
@@ -96,6 +104,8 @@
     <li class="toctree-l2"><a class="reference internal" href="#5-strategy-discovery-tensor_optixstrategy">5. Strategy discovery (tensor_optix.strategy)</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#6-live-adaptive-runtime-tensor_optixruntime">6. Live adaptive runtime (tensor_optix.runtime)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#behaviour-notes">Behaviour notes</a>
     </li>
     </ul>
                   </li>
@@ -154,6 +164,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
@@ -164,7 +178,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml/">ML mode (legacy)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../exploration/">Exploration (RND)</a>
                   </li>
@@ -308,6 +324,57 @@ See the guide for narrative usage: ../guides/learning-to-learn.md
     def record_strategy_scope(self, candidate_id: str, scope: Dict[str, Any]) -&gt; None: ...
     def get_strategy_scope(self, candidate_id: str) -&gt; Optional[Dict[str, Any]]: ...
 </code></pre>
+<h3 id="experimentledgercallback">ExperimentLedgerCallback</h3>
+<pre><code class="language-python">class ExperimentLedgerCallback(LoopCallback):
+    def __init__(
+        self, store: ExperimentStore, *, task_env: str, algorithm: str,
+        framework: str = &quot;torch&quot;, seed: int = 0, checkpoint_dir: str,
+        solve_threshold: Optional[float] = None, config: Optional[Dict[str, Any]] = None,
+        parent_experiment_id: Optional[str] = None, study_id: Optional[str] = None,
+        experiment_id: Optional[str] = None, checkpoint_registry: Optional[Any] = None,
+    ): ...
+
+    @property
+    def experiment_id(self) -&gt; str: ...
+
+    def mark_failed(self, exc: Exception) -&gt; None:
+        &quot;&quot;&quot;Finalize the experiment as FAILED / INCONCLUSIVE (idempotent).&quot;&quot;&quot;
+</code></pre>
+<p>Attach it to any <code>RLOptimizer</code> / <code>LoopController</code> run to record that run in the ledger: the
+experiment row (with provenance: tensor-optix version, git revision, library versions, hostname),
+one event per loop hook, a progress update and an <code>ArtifactRef</code> (with a SHA-256 of the weights)
+per improvement.</p>
+<p>Terminal state is decided in <code>on_loop_stop</code>, which the loop fires from <code>run()</code>'s <code>finally</code>:</p>
+<table>
+<thead>
+<tr>
+<th>How the run ended</th>
+<th><code>state</code></th>
+<th><code>evaluation_status</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>returned normally</td>
+<td><code>COMPLETED</code></td>
+<td><code>PRELIMINARY</code></td>
+</tr>
+<tr>
+<td>an exception is propagating</td>
+<td><code>FAILED</code> (with <code>error_message</code>)</td>
+<td><code>INCONCLUSIVE</code></td>
+</tr>
+<tr>
+<td><code>KeyboardInterrupt</code></td>
+<td><code>CANCELLED</code></td>
+<td><code>INCONCLUSIVE</code></td>
+</tr>
+</tbody>
+</table>
+<p>So a crashed run is recorded as failed without any caller-side handling; calling
+<code>mark_failed(exc)</code> yourself afterwards is harmless (finalization is idempotent).</p>
+<p>Library versions are read from package metadata; frameworks that the run has not imported
+(e.g. TensorFlow in a torch-only run) are not imported just to stamp the row.</p>
 <p>Schema version 3. Tables: <code>experiments</code>, <code>events</code>, <code>artifacts</code>, <code>strategy_candidates</code>,
 <code>strategy_evaluations</code>, <code>strategy_registry</code>. Migrations are version-gated in
 <code>tensor_optix/ledger/schema.py::_migrate()</code> — one <code>if from_version == N:</code> branch per real,
@@ -343,6 +410,17 @@ shipped hop.</p>
 <p>Workers never touch the Optuna <code>Study</code> or the <code>ExperimentStore</code> directly — they receive a
 plain sampled-params dict and report scores back over a queue; all ledger/study writes happen
 in the parent process.</p>
+<p>Failure handling:</p>
+<ul>
+<li>A worker that <strong>raises</strong> reports <code>status="failed"</code>; that is a property of the trial, not of
+  the infrastructure, so it is not retried - the trial is told to Optuna as <code>FAIL</code> and
+  finalized <code>FAILED</code> in the ledger.</li>
+<li>A worker process that <strong>dies without reporting</strong> (OOM-kill, segfault, external kill) is
+  detected by the parent on the next poll. It is treated as transient and re-dispatched with
+  a new seed up to <code>max_retries</code> times, then finalized <code>FAILED</code> with the exit code in
+  <code>error_message</code>. <code>run()</code> therefore always terminates, with or without <code>trial_timeout_s</code>.</li>
+<li>A trial exceeding <code>trial_timeout_s</code> is cancelled and finalized <code>TIMED_OUT</code>.</li>
+</ul>
 <h2 id="3-baseline-selection-tensor_optixselection">3. Baseline selection (<code>tensor_optix.selection</code>)</h2>
 <pre><code class="language-python">@dataclass
 class MethodStats:
@@ -636,6 +714,15 @@ class CycleRecommendation:
     weights_path and writes a new deployed_baseline ExperimentRecord.&quot;&quot;&quot;
 </code></pre>
 <p>See the guide for the full end-to-end wiring: <a href="../../guides/learning-to-learn/">Learning-to-Learn Engine guide</a>.</p>
+<h2 id="behaviour-notes">Behaviour notes</h2>
+<ul>
+<li><strong>Method evidence.</strong> <code>StrategySelector</code> and <code>NanonetsSelector</code> count a ledger experiment as evidence for a method when <code>config["sampler"] == method</code> (trial-search runs) or <code>config["op_name"] == method</code> with <code>is_baseline</code> false (strategy-candidate runs). The live runtime's proposals over strategy ops therefore learn from earlier strategy trials. Untried methods are ranked last.</li>
+<li><strong><code>CycleRecommendation.automatable_criteria_passed</code></strong> is <code>True</code> when every evidence-based criterion passed, ignoring <code>human_reviewed</code> (which the recommend-only loop never sets).</li>
+<li><strong>Trial workers</strong> (<code>ConcurrentTrialScheduler</code>, <code>StrategyTrialRunner</code>) seed <code>torch</code>, <code>numpy</code> and <code>random</code> from the trial seed.</li>
+<li><strong><code>CheckpointRollbackOp</code></strong> in a strategy trial rolls back to the run's current best checkpoint (it shares the run's <code>CheckpointRegistry</code>).</li>
+<li><strong><code>OptimizationMethodChoiceOp</code></strong> switches at most once per stall; after the run improves again, the next stall advances to the next entry of <code>candidate_methods</code>.</li>
+<li><strong><code>run_reevaluation</code></strong> evaluates epsilon-greedy agents greedily (<code>epsilon = 0</code>).</li>
+</ul>
               
             </div>
           </div><footer>

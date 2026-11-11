@@ -35,7 +35,11 @@ def make_controller(criteria_mode, tmp_path, **kwargs):
     evaluator = DummyEvaluator()
     pipeline = DummyPipeline(rewards_sequence=make_unicorn_sequence())
     registry = CheckpointRegistry(str(tmp_path / "checkpoints"), max_snapshots=20)
-    scheduler = BackoffScheduler(base_interval=1, plateau_threshold=50, dormant_threshold=100)
+    # backoff_factor=1.0 pins the eval interval at 1 so every scripted episode
+    # (including the ep5 unicorn) is evaluated even while the score is flat.
+    scheduler = BackoffScheduler(
+        base_interval=1, backoff_factor=1.0, plateau_threshold=50, dormant_threshold=100,
+    )
     optimizer = BackoffOptimizer()
     controller = LoopController(
         agent=agent,

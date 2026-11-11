@@ -65,7 +65,7 @@ def load_ensemble(self, agent, top_k: int = 3, score_band: float = 0.1) -> Optio
 def best(self) -> Optional[PolicySnapshot]: ...
 ```
 
-`load_ensemble` is how Stochastic Weight Averaging (SWA) is exposed at the registry level - it requires the agent to implement `average_weights()` (see [BaseAgent](base_agent.md)).
+`load_ensemble` is how Stochastic Weight Averaging (SWA) is exposed at the registry level - it requires the agent to implement `average_weights()` (see [BaseAgent](base_agent.md)). An agent that only inherits `BaseAgent`'s no-op `average_weights()` is treated as not implementing it, and `load_ensemble` falls back to `load_best()` rather than loading nothing.
 
 `CheckpointRegistry.save()` itself does no comparison - it trusts the caller
 and unconditionally overwrites `self._best` with whatever it's given. That

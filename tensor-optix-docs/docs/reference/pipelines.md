@@ -1,6 +1,6 @@
 # tensor_optix.pipeline
 
-Three concrete `BasePipeline` implementations.
+Three concrete `BasePipeline` implementations. For PettingZoo environments see [multi_agent](multi-agent.md); for the intrinsic-reward wrapper see [Exploration (RND)](exploration.md).
 
 ## BatchPipeline
 
@@ -37,9 +37,17 @@ class BatchPipeline(BasePipeline):
     """
 
     def __init__(self, env, agent=None, window_size: int = 200): ...
+
+    @property
+    def steps_per_episode(self) -> int:
+        """Env steps per yielded window (== window_size)."""
 ```
 
 Physics-engine exceptions raised during `env.step()` (e.g. Box2D `AssertionError`) are caught and treated as episode termination rather than propagating.
+
+When an episode ends mid-window and the agent defines `reset_hidden()` (e.g. `TorchRecurrentPPOAgent`), the pipeline calls it right after the env reset, so recurrent state never leaks from one episode into the next.
+
+`steps_per_episode` is the step hint `TrialOrchestrator` / `ConcurrentTrialScheduler` use to convert a `trial_steps` budget into a number of windows.
 
 ## LivePipeline
 
@@ -69,7 +77,8 @@ class LivePipeline(BasePipeline):
 
     def __init__(
         self, data_source, agent=None,
-        episode_boundary_fn=None, reconnect_on_disconnect=True,
+        episode_boundary_fn=None, buffer_size: int = 1000,
+        reconnect_on_disconnect=True,
     ): ...
 
     @staticmethod
@@ -79,6 +88,13 @@ class LivePipeline(BasePipeline):
     @staticmethod
     def on_done_signal(): ...
 ```
+
+Behaviour notes:
+
+- **Backpressure.** The producer thread blocks while the bounded queue (`buffer_size` items) is full and resumes when the consumer catches up. A slow `learn()` therefore throttles the source instead of being mistaken for a disconnect - no samples are dropped and the stream is not restarted.
+- **End of stream.** With `reconnect_on_disconnect=False`, when `stream()` is exhausted (or raises) the steps collected so far are yielded as a final, shorter `EpisodeData` and `episodes()` then ends.
+- **Idle source.** If no item arrives for 30 s the current episode is closed with whatever was collected.
+- **YAML configs.** `LivePipeline` needs a `data_source` object, so it cannot be built from a Gymnasium env id - see [Config / CLI](config-cli.md).
 
 ## VectorBatchPipeline
 
@@ -106,7 +122,7 @@ class VectorBatchPipeline(BasePipeline):
     """
 
     def __init__(
-        self, env_fns, agent=None, window_size: int = 200, async_envs: bool = False,
+        self, env_fns, agent=None, window_size: int = 256, async_envs: bool = False,
     ): ...
 
     def episodes(self):
@@ -120,6 +136,19 @@ class VectorBatchPipeline(BasePipeline):
 
     @property
     def n_envs(self) -> int: ...
+
+    @property
+    def steps_per_episode(self) -> int:
+        """Env steps per yielded window (window_size * n_envs)."""
 ```
+
+Window layout and how the rest of the library consumes it:
+
+- **Layout.** Flat arrays are interleaved as `[t * n_envs + env]`. `EpisodeData.metadata["n_envs"]` records the env count and `EpisodeData.final_obs` is a **list** with one entry per env (the observation after that env's last step, `None` if that step ended an episode).
+- **Autoreset.** Vector envs are created with `autoreset_mode=SAME_STEP` (Gymnasium >= 1.1), so the observation returned by a terminal step is already the first observation of the next episode. Gymnasium's default `NEXT_STEP` mode would instead insert one action-ignored, zero-reward "reset" transition after every episode into the training data. On Gymnasium 1.0.x (no `AutoresetMode`) the library falls back to the vector env's default.
+- **On-policy agents** (PPO family) pass `n_envs` to `compute_gae()`, which runs the recurrence per env and bootstraps each env from its own `final_obs`.
+- **Off-policy agents** (DQN, Rainbow, SAC, TD3 - Torch and TF) pair each step with the next step *of the same env* when filling the replay buffer, and flush n-step accumulation per env.
+- **Evaluators** (`TorchEvaluator` / `TFEvaluator`) and the composite-score breadth signal split episodes per env.
+- **Not supported:** `TorchRecurrentPPOAgent` keeps a single hidden state and must be used with `BatchPipeline`.
 
 See [Train an RL agent](../guides/train-rl-agent.md) for the `optimal_window_size()` helper that picks a sensible `window_size` automatically.

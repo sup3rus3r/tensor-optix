@@ -120,8 +120,14 @@ def check_degradation(self, score: float) -> bool:
 ### State machine
 
 ```python
-def record_improvement(self, score: float) -> None:
-    """Called when a new best score is recorded. Resets backoff and state."""
+def record_improvement(self, score: float, append: bool = True) -> None:
+    """
+    Called when a new best score is recorded. Resets backoff and state.
+
+    append=False: the score for this eval was already added to the trend
+    window via record_score() - do not count the same eval twice.
+    (LoopController uses this; standalone callers keep the default.)
+    """
 
 def record_non_improvement(self) -> None:
     """Called when episode did not produce a new best. Advances backoff."""

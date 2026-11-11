@@ -17,6 +17,7 @@ nav:
       - Ensembles and policy evolution: guides/ensembles-evolution.md
       - Add exploration bonuses (RND): guides/exploration-rnd.md
       - Distributed training (IMPALA): guides/distributed-training.md
+      - Multi-agent training (PettingZoo): guides/multi-agent.md
       - Train any PyTorch model (legacy ML mode): guides/ml-mode.md
       - Build a neuroevo agent: guides/neuroevo.md
       - Export to ONNX: guides/onnx-export.md
@@ -51,6 +52,8 @@ nav:
       - make_agent (factory): reference/factory.md
       - Algorithms: reference/algorithms.md
       - Pipelines: reference/pipelines.md
+      - Multi-agent (PettingZoo): reference/multi-agent.md
+      - Encoders (image / Dict observations): reference/encoders.md
       - Optimizers (hyperparameter tuning): reference/optimizers.md
       - Callbacks: reference/callbacks.md
       - Distributed (IMPALA + V-trace): reference/distributed.md

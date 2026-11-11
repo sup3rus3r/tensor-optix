@@ -238,8 +238,9 @@ def as_callback(
     """
     Returns a LoopCallback that wires PolicyManager into the loop.
 
-    agent_factory: callable that returns a fresh agent shell for spawning.
-        When provided, DORMANT triggers spawn-until-budget-exhausted.
+    agent_factory: zero-argument callable that returns a fresh agent shell
+        for spawning. When provided, each DORMANT event spawns a variant
+        and training continues until the spawn budget is exhausted.
         When omitted, DORMANT stops immediately.
 
     meta_controller: optional MetaController that overrides spawn/stop
@@ -267,7 +268,17 @@ class PolicyManagerCallback(LoopCallback):
        - If MetaController present: delegate SPAWN/PRUNE/STOP/NO_OP decision to it
        - If no MetaController: spawn whenever budget allows (default behaviour)
     4. If budget exhausted: call stop_fn → opt.run() returns cleanly
+
+    If this DORMANT event spawned or pruned a variant, the callback asks
+    LoopController to keep training (see consume_dormant_resume()).
     """
+
+    def consume_dormant_resume(self) -> bool:
+        """
+        One-shot flag polled by LoopController right after on_dormant():
+        True when this DORMANT event changed the ensemble (spawn or prune),
+        so training should continue instead of stopping.
+        """
 
     def set_stop_fn(self, fn: Callable[[], None]) -> None:
         """
@@ -279,3 +290,7 @@ class PolicyManagerCallback(LoopCallback):
 `_do_spawn()` grows the weight-perturbation scale based on recent improvement: when at least two metrics are recorded, the scale is `clip(0.01 / (1 + improvement_ratio), 0.005, 0.1)`; otherwise it falls back to `min(0.1, 0.01 × 2^spawn_count)` (exponential growth with spawn count).
 
 See also: [Ensembles and policy evolution](../../guides/ensembles-evolution.md), [MetaController](meta_controller.md).
+
+### spawn_variant() hyperparameter noise
+
+`spawn_variant()` applies multiplicative Gaussian noise to numeric hyperparameters: floats are scaled by `1 + N(0, noise_scale)`; positive integers are scaled, rounded, and kept `>= 1`. Booleans are left untouched (they are flags, not magnitudes), as are zero-valued integers. The noise is not clipped to any optimizer `param_bounds` - an agent that needs a hyperparameter kept in a range (e.g. `gamma < 1`) should clamp it in `set_hyperparams()`.

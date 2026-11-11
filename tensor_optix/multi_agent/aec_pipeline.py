@@ -8,14 +8,17 @@ only one agent acts per env.step() call in AEC, so a window's steps are
 naturally split across however many agents are active, same as a real
 game's turn order. A seat's EpisodeData only grows on its own turns.
 
-Known limitation: a seat's final terminal/truncated turn (PettingZoo
-requires action=None there, so no act() call is made) is NOT included in
-that seat's EpisodeData -- every existing BaseAgent's learn() assumes its
-internal act()-populated cache has at least as many entries as
-episode_data.rewards, and appending an un-acted-on step would desync the
-two. This means a seat's final reward for an episode that ends within a
-window is not part of its training signal for that window. Not solved in
-this pass; flagged rather than silently dropped.
+Reward alignment: env.last() returns the reward a seat accumulated since
+its previous action, so each reward (and the terminal/truncated flag seen
+on the seat's final, action=None turn) is credited back to that seat's
+previously recorded step. reward[k] is therefore the outcome of action[k],
+and a seat's last acted step in an episode carries the terminal reward
+with terminated/truncated=True.
+
+Known limitation: the outcome of a seat's LAST action in a window only
+arrives on its next turn, which belongs to the next window. That one
+reward per seat per window boundary is not credited (the step keeps
+reward 0.0 and no done flag).
 """
 from __future__ import annotations
 
@@ -89,6 +92,10 @@ class AECMultiAgentPipeline:
                 for aid in self._env.possible_agents
             }
 
+            # Per seat: index (within this window) of its most recent acted
+            # step whose outcome has not been observed yet, or None.
+            pending: Dict[Hashable, Optional[int]] = {}
+
             steps_taken = 0
             while steps_taken < self._window_size:
                 try:
@@ -100,6 +107,7 @@ class AECMultiAgentPipeline:
                     # BatchPipeline/ParallelMultiAgentPipeline.
                     self._env.reset()
                     self._agent_iter = iter(self._env.agent_iter())
+                    pending.clear()
                     try:
                         aid = next(self._agent_iter)
                     except StopIteration:
@@ -107,20 +115,27 @@ class AECMultiAgentPipeline:
 
                 raw_observation, reward, termination, truncation, info = self._env.last()
 
+                # In AEC, env.last() reports the reward this seat accumulated
+                # SINCE ITS PREVIOUS ACTION — i.e. the outcome of the step it
+                # already recorded, not of the action it is about to take.
+                # Credit it (and any terminal/truncated flag) back to that
+                # recorded step. This keeps reward[k] aligned with action[k]
+                # and delivers the terminal reward + done flag without
+                # appending an un-acted-on step (which would desync agents'
+                # act()-populated caches).
+                prev_idx = pending.get(aid)
+                if prev_idx is not None:
+                    per_seat[aid]["rewards"][prev_idx] += float(reward)
+                    if termination:
+                        per_seat[aid]["terminated"][prev_idx] = True
+                    if truncation:
+                        per_seat[aid]["truncated"][prev_idx] = True
+
                 if termination or truncation:
                     # PettingZoo requires action=None for a terminal/
                     # truncated agent's turn -- no act() call is made, so
-                    # this step must NOT be appended to the seat's running
-                    # lists. Every existing BaseAgent's learn() assumes its
-                    # internal act()-populated cache (built only by real
-                    # act() calls) has at least as many entries as
-                    # episode_data.rewards; appending an un-acted-on step
-                    # here would silently desync the two and crash deep
-                    # inside learn() ("cache underflow"). This seat's final
-                    # terminal reward is therefore not included in its
-                    # training signal for this window -- a real, visible
-                    # limitation of this first version, not solved by
-                    # reaching into each agent class's private cache.
+                    # no new step is appended for this seat.
+                    pending[aid] = None
                     self._env.step(None)
                     steps_taken += 1
                     continue
@@ -130,10 +145,13 @@ class AECMultiAgentPipeline:
 
                 per_seat[aid]["observations"].append(observation)
                 per_seat[aid]["actions"].append(action)
-                per_seat[aid]["rewards"].append(float(reward))
-                per_seat[aid]["terminated"].append(bool(termination))
-                per_seat[aid]["truncated"].append(bool(truncation))
+                # Outcome is unknown until this seat's next turn — filled in
+                # above when that turn arrives.
+                per_seat[aid]["rewards"].append(0.0)
+                per_seat[aid]["terminated"].append(False)
+                per_seat[aid]["truncated"].append(False)
                 per_seat[aid]["infos"].append(info)
+                pending[aid] = len(per_seat[aid]["rewards"]) - 1
 
                 self._env.step(action)
                 steps_taken += 1

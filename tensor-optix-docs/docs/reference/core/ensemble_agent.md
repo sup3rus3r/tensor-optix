@@ -54,3 +54,17 @@ class EnsembleAgent(BaseAgent):
     @property
     def policy_manager(self) -> PolicyManager: ...
 ```
+
+Additional delegation:
+
+- `is_on_policy` mirrors the primary agent, so the loop applies the right degradation/rollback rules to an ensemble of off-policy agents.
+- `reset_cache()` clears the rollout cache of every member that has one (called by `LoopController` after validation rollouts).
+
+### Limitations
+
+`act()` returns `PolicyManager.ensemble_action()` unchanged. With more than one member that is:
+
+- for members exposing `action_probs()` (discrete PPO agents): the **averaged probability vector**, not an action index - sample or `argmax` it before passing it to an environment;
+- otherwise: the weighted mean of the members' sampled actions.
+
+On-policy members also only populate their rollout caches inside their own `act()`, which the probability-averaging path does not call. Multi-member ensembles are therefore suited to *inference-time* combination of already-trained policies; training several PPO members through one `EnsembleAgent` inside `RLOptimizer` is not supported out of the box.

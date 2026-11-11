@@ -123,6 +123,10 @@ class TensorBoardCallback(LoopCallback):
                 self._writer.add_scalar(f"metrics/{k}", float(v), episode_id)
 
     def on_improvement(self, snapshot: PolicySnapshot) -> None:
+        # These hooks fire before on_episode_end for the same episode;
+        # advance the step so a following on_hyperparam_update is not
+        # logged at an older step (W&B drops non-monotonic steps).
+        self._last_episode_id = max(self._last_episode_id, snapshot.episode_id)
         if self._writer is None:
             return
 
@@ -135,16 +139,19 @@ class TensorBoardCallback(LoopCallback):
                 self._writer.add_scalar(f"hyperparams/{k}", float(v), ep)
 
     def on_plateau(self, episode_id: int, state) -> None:
+        self._last_episode_id = max(self._last_episode_id, episode_id)
         if self._writer is None:
             return
         self._writer.add_scalar("events/plateau", 1, episode_id)
 
     def on_dormant(self, episode_id: int) -> None:
+        self._last_episode_id = max(self._last_episode_id, episode_id)
         if self._writer is None:
             return
         self._writer.add_scalar("events/convergence", 1, episode_id)
 
     def on_degradation(self, episode_id: int, eval_metrics: Optional[EvalMetrics]) -> None:
+        self._last_episode_id = max(self._last_episode_id, episode_id)
         if self._writer is None:
             return
         self._writer.add_scalar("events/degradation", 1, episode_id)

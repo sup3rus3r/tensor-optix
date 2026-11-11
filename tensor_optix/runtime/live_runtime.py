@@ -22,6 +22,7 @@ from tensor_optix.strategy import PromotionPolicy
 from .baseline import get_current_baseline_experiment_id, run_reevaluation
 from .experiment_stage import evaluate_and_recommend, propose_and_run
 from .observer import DeploymentObserver, ObservationResult
+from tensor_optix.utils.console import safe_print
 
 
 @dataclass
@@ -95,7 +96,7 @@ class LiveAdaptiveRuntime:
             )
             obs = self._observer.observe(score)
             observations.append(obs)
-            print(f"[cycle {cycle}] score={score:.1f} state={obs.state.name} degrading={obs.is_degrading}")
+            safe_print(f"[cycle {cycle}] score={score:.1f} state={obs.state.name} degrading={obs.is_degrading}")
 
             should_trigger = obs.degradation_fired or (cycle % self._cfg.research_cycle_every == 0)
             if should_trigger:
@@ -112,12 +113,19 @@ class LiveAdaptiveRuntime:
                         algorithm=self._cfg.algorithm, trial_steps=self._cfg.experiment_trial_steps,
                         seeds=list(self._cfg.experiment_seeds),
                     )
+                    # verdict.approved also requires human_reviewed, which this
+                    # recommend-only loop never sets — so it is always False
+                    # here. The flag reports the evidence-based criteria only.
+                    automatable_pass = all(
+                        passed for name, passed in verdict.criteria.items()
+                        if name != "human_reviewed"
+                    )
                     recommendations.append(CycleRecommendation(
                         cycle=cycle, candidate_id=candidate.candidate_id, op_name=candidate.op_name,
-                        automatable_criteria_passed=verdict.approved, rationale=verdict.rationale,
+                        automatable_criteria_passed=automatable_pass, rationale=verdict.rationale,
                     ))
-                    print(f"  recommendation {candidate.candidate_id[:8]} ({candidate.op_name}): "
-                          f"automatable_pass={verdict.approved} -- {verdict.rationale}")
+                    safe_print(f"  recommendation {candidate.candidate_id[:8]} ({candidate.op_name}): "
+                          f"automatable_pass={automatable_pass} -- {verdict.rationale}")
 
             if cycle < self._cfg.max_cycles:
                 time.sleep(self._cfg.cycle_sleep_s)

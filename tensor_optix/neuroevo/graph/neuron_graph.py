@@ -120,6 +120,10 @@ class NeuronGraph(nn.Module):
         # elsewhere (e.g. an optimizer) can compare this to detect that their
         # captured parameters are now stale and must be re-fetched.
         self._struct_version: int = 0
+        # Zero-argument callables run after every forward() — lets observers
+        # such as HebbianHook sample per-step activations without the caller
+        # having to invoke them manually after each act().
+        self._post_forward_hooks: list = []
 
     def ensure_built(self) -> None:
         """Force a matrix-structure rebuild now if one is pending.
@@ -333,7 +337,10 @@ class NeuronGraph(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self._fwd(obs)
+        out = self._fwd(obs)
+        for hook in self._post_forward_hooks:
+            hook()
+        return out
 
     def _raw_forward(self, obs: torch.Tensor) -> torch.Tensor:
         """
@@ -486,6 +493,56 @@ class NeuronGraph(nn.Module):
         }
 
         graph = cls(dale_mode=d.get("dale_mode", "clamp"))
+        graph._populate_from_dict(d)
+        return graph
+
+    def restore_from_dict(self, d: dict) -> "NeuronGraph":
+        """
+        Rebuild THIS graph object in place from a topology dict.
+
+        Checkpoint restore must not swap in a new NeuronGraph instance:
+        TopologyController, HebbianHook and BrainNetwork all hold references
+        to the graph object, and would silently keep operating on the
+        discarded one. Parameters are re-created; call load_state_dict()
+        afterwards to restore their values.
+        """
+        for nid in list(self._neurons.keys()):
+            del self._neurons[nid]
+        for key in list(self._edge_weights.keys()):
+            del self._edge_weights[key]
+        self._edges.clear()
+        self._input_ids.clear()
+        self._output_ids.clear()
+        self._hidden_ids.clear()
+        self._in_edges.clear()
+        self._neuron_index.clear()
+        self._nid_to_idx.clear()
+        self._ff_dst = None
+        self._ff_src = None
+        self._ff_weight_vec = None
+        self._ff_cell_types = []
+        self._rec_edges = []
+        self._topo_order = []
+        self._level_act_groups = []
+        self._is_uniform = False
+        self._input_pos = {}
+        self._dale_mode = d.get("dale_mode", "clamp")
+        self._matrix_dirty = True
+        self._populate_from_dict(d)
+        self.invalidate_compile()
+        return self
+
+    def _populate_from_dict(self, d: dict) -> None:
+        from .neuron import GRUNeuron, LSTMNeuron, TrainableGRUNeuron, TrainableLSTMNeuron
+
+        _type_map = {
+            "Neuron":              Neuron,
+            "GRUNeuron":           GRUNeuron,
+            "LSTMNeuron":          LSTMNeuron,
+            "TrainableGRUNeuron":  TrainableGRUNeuron,
+            "TrainableLSTMNeuron": TrainableLSTMNeuron,
+        }
+        graph = self
 
         for spec in d["neurons"]:
             neuron_cls = _type_map.get(spec["type"], Neuron)
@@ -512,7 +569,6 @@ class NeuronGraph(nn.Module):
                 edge_id=spec["edge_id"],
             )
 
-        return graph
 
     @property
     def input_ids(self) -> List[str]:

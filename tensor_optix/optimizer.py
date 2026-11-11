@@ -14,6 +14,7 @@ from tensor_optix.adapters.tensorflow.tf_evaluator import TFEvaluator
 from tensor_optix.optimizers.backoff_optimizer import BackoffOptimizer  # noqa: F401 (re-exported)
 from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer        # noqa: F401 (re-exported)
 from tensor_optix.core.diagnostic_controller import DiagnosticController
+from tensor_optix.utils.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -292,21 +293,27 @@ class RLOptimizer:
         """
         from tensor_optix.orchestrator import TrialOrchestrator
 
-        trial_steps: int
+        # Per-trial budget in episodes (windows): a fraction of the full run,
+        # or 30 when the full run is unbounded.
+        pipeline_hint = self._pipeline_factory()
+        steps_per_ep = getattr(pipeline_hint, "n_steps", None) or getattr(pipeline_hint, "steps_per_episode", None) or 1
         if self._max_episodes is not None:
-            pipeline_hint = self._pipeline_factory()
-            steps_per_ep = getattr(pipeline_hint, "n_steps", None) or getattr(pipeline_hint, "steps_per_episode", None) or 1
-            total_steps = self._max_episodes * steps_per_ep
-            trial_steps = max(1, int(total_steps * self._trial_steps_fraction)) // steps_per_ep
+            trial_episodes = max(1, int(self._max_episodes * self._trial_steps_fraction))
         else:
-            trial_steps = 30
+            trial_episodes = 30
+        # TrialOrchestrator takes its budget in ENV STEPS and divides by the
+        # pipeline's steps-per-window itself; passing an episode count here
+        # would be divided a second time and collapse every trial to 1 window.
+        # (Without a step hint steps_per_ep is 1 and the orchestrator treats
+        # the value as an episode count, so the product is right either way.)
+        trial_steps = trial_episodes * steps_per_ep
 
         logger.info(
             "TrialOrchestrator: running %d trials × %d episodes each",
-            self._n_trials, trial_steps,
+            self._n_trials, trial_episodes,
         )
         if self._verbose:
-            print(f"  [trial search] running {self._n_trials} trials × {trial_steps} episodes ...", flush=True)
+            safe_print(f"  [trial search] running {self._n_trials} trials × {trial_episodes} episodes ...", flush=True)
 
         orch = TrialOrchestrator(
             agent_factory=self._trial_agent_factory,
@@ -320,7 +327,7 @@ class RLOptimizer:
         best_params, best_score = orch.run()
 
         if self._verbose:
-            print(f"  [trial search] complete — best score={best_score:.4f}  params={best_params}", flush=True)
+            safe_print(f"  [trial search] complete — best score={best_score:.4f}  params={best_params}", flush=True)
         logger.info("Trial search complete — best score=%.4f params=%s", best_score, best_params)
         return best_params, orch.best_weights_path, orch.run_ckpt_dir
 
@@ -344,7 +351,7 @@ class RLOptimizer:
                     agent.load_weights(best_weights_path)
                     logger.info("Warm-start: loaded trial weights from %s", best_weights_path)
                     if self._verbose:
-                        print(f"  [warm-start] loaded best trial weights", flush=True)
+                        safe_print(f"  [warm-start] loaded best trial weights", flush=True)
                 except Exception as e:
                     logger.warning("Warm-start failed (%s) — continuing from random init", e)
             # Clean up all trial checkpoint dirs now that weights are in memory

@@ -66,21 +66,37 @@ class LivePipeline(BasePipeline):
         )
         self._producer_thread.start()
 
+    def _put(self, item) -> bool:
+        """
+        Blocking put with backpressure. A full queue means the consumer is
+        slower than the source — wait for space instead of raising queue.Full
+        (which would be mistaken for a stream disconnect). Returns False if
+        the pipeline was torn down while waiting.
+        """
+        while not self._stop_event.is_set():
+            try:
+                self._queue.put(item, timeout=0.5)
+                return True
+            except queue.Full:
+                continue
+        return False
+
     def _produce(self) -> None:
         while not self._stop_event.is_set():
             try:
                 for item in self._data_source.stream():
-                    if self._stop_event.is_set():
-                        break
-                    self._queue.put(item, timeout=5.0)
+                    if not self._put(item):
+                        return
+                if self._stop_event.is_set():
+                    return
                 if not self._reconnect:
-                    self._queue.put(_SENTINEL)
+                    self._put(_SENTINEL)
                     return
                 logger.info("LivePipeline: stream exhausted, reconnecting")
             except Exception as e:
                 logger.warning("LivePipeline producer error: %s", e)
                 if not self._reconnect:
-                    self._queue.put(_SENTINEL)
+                    self._put(_SENTINEL)
                     return
                 time.sleep(1.0)
 
@@ -95,6 +111,7 @@ class LivePipeline(BasePipeline):
 
             step_count = 0
             episode_start = time.time()
+            stream_ended = False
 
             while True:
                 try:
@@ -104,7 +121,10 @@ class LivePipeline(BasePipeline):
                     break
 
                 if item is _SENTINEL:
-                    return
+                    # Stream is over — flush the partially collected episode
+                    # below instead of silently dropping its steps.
+                    stream_ended = True
+                    break
 
                 obs, reward, terminated, truncated, info = item
                 action = self._agent.act(obs)
@@ -125,6 +145,8 @@ class LivePipeline(BasePipeline):
                     break
 
             if len(rewards) == 0:
+                if stream_ended:
+                    return
                 continue
 
             yield EpisodeData(
@@ -137,6 +159,8 @@ class LivePipeline(BasePipeline):
                 episode_id=self._episode_counter,
             )
             self._episode_counter += 1
+            if stream_ended:
+                return
 
     def teardown(self) -> None:
         self._stop_event.set()

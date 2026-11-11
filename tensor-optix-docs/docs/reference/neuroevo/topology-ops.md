@@ -94,3 +94,12 @@ def cosine_similarity_neurons(graph, nid_a, nid_b) -> float:
 ```
 
 See [TopologyController](topology-controller.md) for the statistical signals that decide *when* to call these.
+
+## Weights are effective weights
+
+Every identity above is stated in terms of an edge's **effective** weight (`graph.effective_weight(edge_id)`). In `dale_mode="softplus"` the stored parameter is a raw `theta` with effective weight `+/-softplus(theta)`; the operations read and write effective weights, so function preservation holds in both Dale modes. Two Dale-specific cases:
+
+- `insert_neuron_on_edge` on an edge leaving an **inhibitory** neuron inserts an *excitatory* relay with weights `-1` (source -> relay) and `-w` (relay -> destination); an inhibitory source cannot carry the `+1` identity weight.
+- `prune_neuron(redistribute=True)` drops a bypass edge whose sign the source's cell type cannot emit (e.g. excitatory -> pruned inhibitory -> destination), rather than adding it with the wrong sign. Function preservation is approximate in that case.
+
+`neuron_importance` and `edge_importance` also use effective magnitudes, as do `TopologyController`'s edge-pruning threshold and grow-edge selection.

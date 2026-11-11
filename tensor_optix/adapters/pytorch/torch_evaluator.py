@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Callable, Optional
 from tensor_optix.core.base_evaluator import BaseEvaluator
+from tensor_optix.core.reward_shape import split_episode_returns
 from tensor_optix.core.types import EpisodeData, EvalMetrics
 
 
@@ -39,7 +40,8 @@ class TorchEvaluator(BaseEvaluator):
         if self._primary_score_fn is not None:
             primary = float(self._primary_score_fn(episode_data, train_diagnostics))
         else:
-            primary = self._mean_episode_return(rewards, dones)
+            n_envs = int((episode_data.metadata or {}).get("n_envs", 1))
+            primary = self._mean_episode_return(rewards, dones, n_envs)
 
         metrics = {
             "primary_score":  primary,
@@ -54,20 +56,18 @@ class TorchEvaluator(BaseEvaluator):
                            episode_id=episode_data.episode_id)
 
     @staticmethod
-    def _mean_episode_return(rewards: np.ndarray, dones: list) -> float:
+    def _mean_episode_return(rewards: np.ndarray, dones: list, n_envs: int = 1) -> float:
         """
         Compute mean return of episodes that completed in this window.
         dones should be terminated OR truncated — both signal an episode
         boundary. Falls back to mean per-step reward only if the window
         contains a single incomplete episode (very long envs, early training).
         """
-        episode_returns = []
-        current = 0.0
-        for r, done in zip(rewards, dones):
-            current += float(r)
-            if done:
-                episode_returns.append(current)
-                current = 0.0
+        # Per-env accumulation: a VectorBatchPipeline window interleaves
+        # n_envs envs, and each episode's return must only sum its own env.
+        episode_returns = [
+            float(np.sum(seg)) for seg in split_episode_returns(rewards, dones, n_envs)
+        ]
         if episode_returns:
             return float(np.mean(episode_returns))
         return float(rewards.mean())

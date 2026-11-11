@@ -50,6 +50,12 @@ class AsyncActorLearner:
         Returns
         -------
         dict with: total_steps, total_updates, steps_per_second, elapsed
+
+        Raises
+        ------
+        RuntimeError if every actor process exits before max_steps is
+        reached (e.g. env_factory raises in the workers) - the learner
+        fails loudly instead of waiting forever for trajectories.
         """
 ```
 

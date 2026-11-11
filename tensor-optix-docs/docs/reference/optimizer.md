@@ -203,3 +203,11 @@ For the RL path, it:
 6. Assembles and stores an `RLOptimizer`.
 
 `opt.run()` simply delegates to the wrapped `RLOptimizer.run()`.
+
+## Trial-search budget
+
+When `agent_factory` + `pipeline_factory` + `param_space` are given, `run()` first runs a `TrialOrchestrator` search. Each trial trains for `max(1, int(max_episodes * trial_steps_fraction))` windows (30 windows when `max_episodes` is `None`). `RLOptimizer` converts that to environment steps using the pipeline's step hint (`steps_per_episode`, i.e. `window_size` for `BatchPipeline` and `window_size * n_envs` for `VectorBatchPipeline`) before handing it to the orchestrator, whose `trial_steps` argument is in environment steps.
+
+## Console output
+
+`verbose=True` output and the trial-search progress lines are written with an encoding-safe printer: on a stream that cannot represent the box-drawing/arrow glyphs (Windows cp1252 console, redirected stdout) they degrade to `?` instead of raising `UnicodeEncodeError`.

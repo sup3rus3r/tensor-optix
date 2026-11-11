@@ -50,12 +50,22 @@ def config_to_dict(cfg: TrainConfig) -> dict:
 def build_agent_from_config(cfg: TrainConfig):
     """
     Build the agent and its HyperparamSet from a TrainConfig.
-    Uses make_agent() for automatic network construction.
+    Uses make_agent() for automatic network construction, routed to the
+    algorithm family named by cfg.algorithm (PPO / DQN / SAC / TD3).
     Returns (agent, hyperparams).
+
+    Raises ValueError when the factory cannot build exactly cfg.algorithm
+    for this env/framework (see "Algorithm resolution" below).
     """
 
 def build_pipeline_from_config(cfg: TrainConfig):
-    """Build BatchPipeline or LivePipeline from a TrainConfig."""
+    """
+    Build the pipeline from a TrainConfig.
+
+    "BatchPipeline" wraps gym.make(cfg.env) with cfg.window_size.
+    "LivePipeline" raises ValueError for a plain Gymnasium env: it needs a
+    data source exposing stream(), which only Python code can provide.
+    """
 
 def build_optimizer_from_config(cfg: TrainConfig, agent, pipeline):
     """
@@ -67,6 +77,21 @@ def build_optimizer_from_config(cfg: TrainConfig, agent, pipeline):
 
 Precedence order: `defaults < config file < CLI overrides`.
 
+### Algorithm resolution
+
+`algorithm` is honoured, not just validated. The class name selects the `make_agent()` family and the built agent's class must match it exactly, otherwise `build_agent_from_config()` raises `ValueError` naming what it *could* build:
+
+| `algorithm` | Works with | Notes |
+|---|---|---|
+| `TorchPPOAgent` / `TFPPOAgent` | Discrete actions | |
+| `TorchGaussianPPOAgent` / `TFGaussianPPOAgent` | Continuous (Box) actions | |
+| `TorchDQNAgent` | Discrete actions | |
+| `TorchSACAgent` / `TFSACAgent` | Continuous actions | |
+| `TorchTD3Agent` / `TFTDDAgent` | Continuous actions | `deterministic: true` is implied |
+| `TFDQNAgent`, `TorchRecurrentPPOAgent` | - | accepted by `validate`, but `make_agent()` has no builder for them: `train` exits with a build error. Construct these agents in Python. |
+
+A mismatch such as `algorithm: TorchPPOAgent` on a continuous-action env is an error rather than a silent substitution.
+
 ## CLI
 
 Registered as the `tensor-optix` console script:
@@ -76,7 +101,7 @@ tensor-optix train config.yaml [key=value ...]
 tensor-optix validate config.yaml [key=value ...]
 ```
 
-`train` loads the config, seeds `random`/`numpy`/`torch` (and CUDA, if available) from `cfg.seed`, builds agent/pipeline/optimizer via the functions above, and calls `optimizer.run()`. Exits `1` with a printed error on a config or build failure rather than a raw traceback.
+`train` loads the config, seeds `random`/`numpy`/`torch` (and CUDA, if available; TensorFlow too when it is already imported) from `cfg.seed`, builds agent/pipeline/optimizer via the functions above, and calls `optimizer.run()`. Exits `1` with a printed error on a config or build failure rather than a raw traceback.
 
 `validate` parses and validates the config (same error handling) without building or running anything - prints the resolved `env`, `algorithm`, `framework`, `seed`, and any `agent`/`optimizer` sub-dicts. Exits `0` on success, `1` on error - suitable for a CI gate.
 

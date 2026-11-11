@@ -54,6 +54,13 @@ def _strategy_trial_worker(
 
     torch.set_num_threads(1)
     torch.manual_seed(seed)
+    # Agents and replay buffers also draw from numpy / stdlib RNGs
+    # (epsilon-greedy, PER sampling, minibatch shuffles) — seed them too so a
+    # trial is reproducible from its seed, not just its torch stream.
+    import random as _random
+    import numpy as _np
+    _np.random.seed(seed % (2**32))
+    _random.seed(seed)
 
     started_at = time.time()
     pid = os.getpid()
@@ -122,6 +129,13 @@ def _strategy_trial_worker(
             callbacks=callbacks, **rl_kwargs,
         )
         callbacks[0]._stop_fn = rl.stop
+        # A registry-backed op (CheckpointRollbackOp) must share the run's own
+        # CheckpointRegistry instance. A second instance on the same directory
+        # caches the first "best" it loads and never sees later saves, so a
+        # rollback would restore a stale snapshot instead of the current best.
+        for cb in callbacks[1:]:
+            if getattr(cb, "_registry", None) is registry:
+                cb._registry = rl._controller._registry
 
         rl.run()
 

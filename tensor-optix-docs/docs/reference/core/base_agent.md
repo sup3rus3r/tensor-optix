@@ -151,3 +151,43 @@ def teardown(self) -> None:
     to CPU and free CUDA memory.  Default: no-op.
     """
 ```
+
+### Full-state checkpoints (resumable training)
+
+```python
+@property
+def resumable_components(self) -> frozenset:
+    """
+    Which pieces of training state save_full_state() captures beyond
+    weights, e.g. frozenset({"model", "optimizer", "rng"}).
+    Default: empty - save_full_state()/load_full_state() are then
+    equivalent to save_weights()/load_weights().
+    """
+
+def save_full_state(self, path: str) -> None: ...
+def load_full_state(self, path: str) -> None: ...
+```
+
+`CheckpointRegistry` saves through `save_full_state()`, restores through `load_full_state()`, and records `resumable_components` in each snapshot's metadata, so a checkpoint is honestly labelled exact, partial, or weights-only. `TorchAgent`, `TorchPPOAgent` and `TorchSACAgent` report `{"model", "optimizer", "rng"}`; every other built-in agent is weights-only. `TorchSACAgent` deliberately does **not** list `"replay_buffer"` - resuming it starts with an empty buffer.
+
+Torch agents implement this with `tensor_optix.core.resume_state`:
+
+```python
+def save_torch_resume_state(path: str, **named_stateful) -> None:
+    """Save state_dict() of every passed object (optimizers, schedulers,
+    modules) plus torch/numpy/CUDA RNG state into <path>/resume_state.pt."""
+
+def load_torch_resume_state(path: str, **named_stateful) -> bool:
+    """Restore what save_torch_resume_state() wrote. Returns False when
+    the checkpoint has no resume file (weights-only checkpoint)."""
+```
+
+### Optional hooks recognised by pipelines and the loop
+
+| Attribute | Used by | Purpose |
+|---|---|---|
+| `reset_cache()` | `LoopController` | clear on-policy rollout caches after validation rollouts |
+| `reset_hidden()` | `BatchPipeline` | reset recurrent state at each episode boundary |
+| `action_probs(obs)` | `PolicyManager.ensemble_action()` | probability-space ensemble averaging for discrete policies |
+| `default_param_bounds`, `default_log_params` | `RLOptimizer`, `ConcurrentTrialScheduler` | default search space for online tuning / trial search |
+| `default_min_episodes_before_dormant` | `RLOptimizer` | off-policy warm-up before `DORMANT` can fire |

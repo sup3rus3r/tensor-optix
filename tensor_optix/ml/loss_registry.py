@@ -30,6 +30,7 @@ from typing import Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tensor_optix.utils.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ def resolve_loss(
             return nn.MSELoss()
         detected = _auto_detect(dataset, n_samples)
         logger.info("loss='auto' detected: '%s'", detected)
-        print(
+        safe_print(
             f"  [tensor-optix] loss='auto' detected: '{detected}'  "
             f"(set loss='{detected}' explicitly to suppress this message)",
             flush=True,

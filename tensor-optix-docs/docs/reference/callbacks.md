@@ -89,4 +89,39 @@ class TensorBoardCallback(LoopCallback):
     def __init__(self, log_dir=None, comment="", flush_secs=10, **writer_kwargs): ...
 ```
 
+## AsyncCallbackAdapter
+
+`tensor_optix.core.async_callback`
+
+```python
+class AsyncCallbackAdapter(LoopCallback):
+    """
+    Wraps `inner` so its hooks run on a background thread via a bounded
+    queue, never on the training thread.
+
+    Overflow policy: when the queue is full, the OLDEST pending event is
+    dropped to make room for the newest one. Dropped events are counted.
+    """
+
+    def __init__(self, inner: LoopCallback, maxsize: int = 256): ...
+
+    @property
+    def dropped_count(self) -> int: ...
+    @property
+    def pending_count(self) -> int: ...
+
+    def close(self, timeout: Optional[float] = None) -> None:
+        """Stop the background thread once training is done."""
+```
+
+`LoopController` fires callbacks synchronously on the training thread, so a slow callback (GUI update, network I/O) stalls training. Wrap such a callback in `AsyncCallbackAdapter` to decouple it. Only use it for callbacks that are safe to run on another thread and do not need to observe or influence training synchronously - a wrapped callback cannot, for example, resume the loop at `DORMANT`.
+
+## ExperimentLedgerCallback
+
+Records a run into the experiment ledger - documented with the ledger in [Learning-to-Learn reference](learning-to-learn.md#experimentledgercallback).
+
 See [Logging and dashboards](../guides/logging-callbacks.md) for usage and writing your own `LoopCallback`.
+
+### Step numbering
+
+`WandbCallback` and `TensorBoardCallback` log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires `on_improvement` / `on_plateau` / `on_degradation`, then `on_hyperparam_update`, then `on_episode_end`; steps are kept monotonic across those hooks so Weights & Biases does not drop the hyperparameter entries.

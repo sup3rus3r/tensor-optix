@@ -39,6 +39,13 @@ def _trial_worker(
 
     torch.set_num_threads(1)
     torch.manual_seed(seed)
+    # Agents and replay buffers also draw from numpy / stdlib RNGs
+    # (epsilon-greedy, PER sampling, minibatch shuffles) — seed them too so a
+    # trial is reproducible from its seed, not just its torch stream.
+    import random as _random
+    import numpy as _np
+    _np.random.seed(seed % (2**32))
+    _random.seed(seed)
 
     started_at = time.time()
     pid = os.getpid()

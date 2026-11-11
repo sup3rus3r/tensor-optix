@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from tensor_optix.ledger.records import ExperimentState
 from tensor_optix.ledger.store import ExperimentStore
-from tensor_optix.selection.selector import SelectionDecision, StrategySelector
+from tensor_optix.selection.selector import SelectionDecision, StrategySelector, record_matches_method
 
 from .abstention import MIN_TARGET_N, normalize_scores, passes_percentile_gate, similarity_weight
 from .features import TaskFeatures, extract_task_features
@@ -60,7 +60,7 @@ class NanonetsSelector:
 
     def _scores_for(self, task_env: str, method: str) -> List[float]:
         records = self._store.query_experiments(task_env=task_env, limit=1000)
-        matching = [r for r in records if r.config.get("sampler") == method]
+        matching = [r for r in records if record_matches_method(r, method)]
         completed = [r for r in matching if r.state == ExperimentState.COMPLETED]
         return [r.best_primary_score for r in completed if r.best_primary_score is not None]
 
@@ -193,7 +193,13 @@ class NanonetsSelector:
                 ),
             )
 
-        ranked = sorted(methods, key=lambda m: estimates[m].pooled_interval.hi95, reverse=True)
+        def _rank_key(m: str) -> float:
+            # Untried methods have a NaN interval; NaN breaks sort ordering
+            # for every element, so rank them last explicitly.
+            hi = estimates[m].pooled_interval.hi95
+            return float("-inf") if hi != hi else hi
+
+        ranked = sorted(methods, key=_rank_key, reverse=True)
         allocations = {m: 0 for m in methods}
         min_exploration = max(1, budget // len(methods)) if budget else 0
 

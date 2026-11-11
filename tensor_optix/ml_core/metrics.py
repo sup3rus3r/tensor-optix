@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import numpy as np
 
 from tensor_optix.core.types import EvalMetrics
+from tensor_optix.utils.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def resolve_metrics(
     if key == "auto":
         key = _detect_task_type(y_true)
         logger.info("metrics='auto' detected: '%s'", key)
-        print(
+        safe_print(
             f"  [tensor-optix] metrics='auto' detected: '{key}'  "
             f"(set metrics='{key}' explicitly to suppress this message)",
             flush=True,
@@ -143,6 +144,18 @@ def resolve_metrics(
 
     if key == "classification":
         from tensor_optix.ml_core.metrics_impl.classification import classification_metrics
+        # Class-index arrays must be flat and integer-valued. Two shapes
+        # reach here that are not: targets of shape (N, 1), and the single-
+        # output binary head, whose "prediction" is a raw logit/probability
+        # per sample rather than a class index.
+        y_true = y_true.reshape(-1)
+        y_pred = y_pred.reshape(-1)
+        if np.issubdtype(y_pred.dtype, np.floating) and not np.allclose(y_pred, np.round(y_pred)):
+            # Probabilities live in [0, 1] -> threshold 0.5; otherwise logits -> 0.
+            is_prob = y_pred.min() >= 0.0 and y_pred.max() <= 1.0
+            y_pred = (y_pred > (0.5 if is_prob else 0.0))
+        y_true = y_true.astype(np.int64)
+        y_pred = y_pred.astype(np.int64)
         resolved_n_classes = n_classes
         if resolved_n_classes is None:
             resolved_n_classes = int(max(y_true.max(), y_pred.max())) + 1

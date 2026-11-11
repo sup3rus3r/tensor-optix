@@ -161,7 +161,7 @@ hook.apply()
 hook.reset()
 ```
 
-`HebbianHook` is a `LoopCallback` - pass it directly via `callbacks=` and it wires itself automatically. Use `HebbianHook.from_brain(brain, ...)` for `BrainNetwork` graphs.
+`HebbianHook` is a `LoopCallback` - pass it directly via `callbacks=` and it wires itself automatically (it records after every `act()` and applies the update after each `learn()`; don't call `record()` yourself in that case). Use `HebbianHook.from_brain(brain, ...)` for `BrainNetwork` graphs.
 
 ## Neuromodulation
 
@@ -209,3 +209,9 @@ graph.compile_forward()   # one-time call; re-call after any topology mutation
 ## Reference
 
 Full class and function documentation: [Neuroevo reference](../reference/neuroevo/index.md).
+
+## Things to know
+
+- `make_agent(env, neuroevo=True)` attaches its `HebbianHook` and `TopologyController` as `agent._neuroevo_callbacks`; `Optimizer` wires them into the loop automatically. With `RLOptimizer`, pass them yourself: `callbacks=agent._neuroevo_callbacks`.
+- In `neuroevo_mode="feature_extractor"` the graph is a recurrent feature extractor in front of SAC. Checkpoints contain the SAC networks **and** the graph (topology + weights) and the fixed random projection, so a restored agent reproduces the same features. The features the policy acted on are cached and reused by `learn()`.
+- Restoring a checkpoint (rollback, best-weight restore at the end of `run()`) rebuilds the graph in place - callbacks keep operating on the live graph.

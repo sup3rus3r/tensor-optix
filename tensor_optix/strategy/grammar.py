@@ -307,6 +307,14 @@ class _OptimizerSwitchCallback(LoopCallback):
         if self._op.switch_condition == "on_dormant":
             self._switch()
 
+    def on_improvement(self, snapshot) -> None:
+        # on_plateau fires on every eval while the loop is COOLING, so one
+        # stall must trigger at most one switch. Once the run improves again
+        # the latch is released and the NEXT stall advances to the next
+        # candidate method (without this, only candidate_methods[0] was ever
+        # reachable).
+        self._switched = False
+
 
 @dataclass(frozen=True)
 class BudgetAllocationOp(StrategyOp):

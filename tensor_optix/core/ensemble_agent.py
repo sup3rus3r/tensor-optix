@@ -74,5 +74,17 @@ class EnsembleAgent(BaseAgent):
         self._primary.load_weights(path)
 
     @property
+    def is_on_policy(self) -> bool:
+        # The loop's degradation / rollback handling must follow the wrapped
+        # agent's algorithm family, not BaseAgent's on-policy default.
+        return getattr(self._primary, "is_on_policy", True)
+
+    def reset_cache(self) -> None:
+        """Clear rollout caches of every ensemble member (called after validation rollouts)."""
+        for agent, _weight in self._pm._ensemble:
+            if hasattr(agent, "reset_cache"):
+                agent.reset_cache()
+
+    @property
     def policy_manager(self) -> PolicyManager:
         return self._pm

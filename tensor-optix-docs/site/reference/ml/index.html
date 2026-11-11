@@ -5,14 +5,14 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <link rel="shortcut icon" href="../../img/favicon.ico" />
-    <title>ML mode - tensor-optix</title>
+    <title>ML mode (legacy) - tensor-optix</title>
     <link rel="stylesheet" href="../../css/theme.css" />
     <link rel="stylesheet" href="../../css/theme_extra.css" />
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
     
       <script>
         // Current page data
-        var mkdocs_page_name = "ML mode";
+        var mkdocs_page_name = "ML mode (legacy)";
         var mkdocs_page_input_path = "reference\\ml.md";
         var mkdocs_page_url = null;
       </script>
@@ -56,6 +56,8 @@
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/train-rl-agent/">Train an RL agent</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-core/">Train an ML model</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/trial-search/">Run trial-level search</a>
@@ -68,7 +70,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/distributed-training/">Distributed training (IMPALA)</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (ML mode)</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/neuroevo/">Build a neuroevo agent</a>
                   </li>
@@ -140,6 +144,10 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../pipelines/">Pipelines</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../optimizers/">Optimizers (hyperparameter tuning)</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../callbacks/">Callbacks</a>
@@ -150,7 +158,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config-cli/">Config / CLI</a>
                   </li>
-                  <li class="toctree-l1 current"><a class="reference internal current" href="#">ML mode</a>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">ML mode (legacy)</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#mlagent">MLAgent</a>
     </li>
@@ -206,7 +216,7 @@
   <ul class="wy-breadcrumbs">
     <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
           <li class="breadcrumb-item">API Reference</li>
-      <li class="breadcrumb-item active">ML mode</li>
+      <li class="breadcrumb-item active">ML mode (legacy)</li>
     <li class="wy-breadcrumbs-aside">
           <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/ml.md" class="icon icon-github"> Edit on GitHub</a>
     </li>
@@ -371,7 +381,7 @@ def available_losses() -&gt; str:
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../config-cli/" class="btn btn-neutral float-left" title="Config / CLI"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../ml-core/" class="btn btn-neutral float-left" title="ml_core (BaseMLModel / Trainer / metrics)"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../exploration/" class="btn btn-neutral float-right" title="Exploration (RND)">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -399,7 +409,7 @@ def available_losses() -&gt; str:
         </span>
     
     
-      <span><a href="../config-cli/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../ml-core/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../exploration/" style="color: #fcfcfc">Next &raquo;</a></span>

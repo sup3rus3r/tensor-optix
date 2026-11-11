@@ -148,7 +148,6 @@ class TopologyController(LoopCallback):
 
         self.grow_op = grow_op
         self.grow_grad_threshold = grow_grad_threshold
-        self.grow_gap_threshold  = grow_grad_threshold  # alias for NeuromodulatorSignal
         self.grow_cooldown = grow_cooldown
         self.backoff_reset_factor = backoff_reset_factor
         self.grad_eps = grad_eps
@@ -194,6 +193,17 @@ class TopologyController(LoopCallback):
         self._merge_count: int = 0
 
         self._topology_callbacks: List[TopologyCallback] = list(topology_callbacks or [])
+
+    @property
+    def grow_gap_threshold(self) -> float:
+        """Alias of grow_grad_threshold (the name NeuromodulatorSignal
+        modulates). A property rather than a copied attribute, so writing it
+        actually changes the threshold the grow test uses."""
+        return self.grow_grad_threshold
+
+    @grow_gap_threshold.setter
+    def grow_gap_threshold(self, value: float) -> None:
+        self.grow_grad_threshold = value
 
     def _fire_topology(self, event: str, *args) -> None:
         """Same per-callback exception isolation as LoopController._fire —
@@ -401,7 +411,7 @@ class TopologyController(LoopCallback):
         edges = graph.all_edges()
         if not edges:
             return None
-        best = max(edges, key=lambda e: abs(e.weight.item()))
+        best = max(edges, key=lambda e: abs(graph.effective_weight(e.edge_id)))
         return insert_neuron_on_edge(graph, best.edge_id)
 
     def _grow_split_neuron(self, graph: NeuronGraph) -> Optional[str]:
@@ -458,7 +468,9 @@ class TopologyController(LoopCallback):
     def _check_edge_pruning(self, episode_id: int, region_name: str, graph: NeuronGraph) -> None:
         to_prune = []
         for edge in graph.all_edges():
-            if abs(edge.weight.item()) < self.prune_edge_threshold:
+            # Effective weight: in dale_mode="softplus" the raw parameter of a
+            # near-zero edge is a large negative number, not a small one.
+            if abs(graph.effective_weight(edge.edge_id)) < self.prune_edge_threshold:
                 self._edge_below_threshold[edge.edge_id] += 1
                 if self._edge_below_threshold[edge.edge_id] >= self.prune_edge_patience:
                     to_prune.append(edge.edge_id)
@@ -640,7 +652,7 @@ class TopologyController(LoopCallback):
             grad_mag[nid] = abs(g.item()) if g is not None else 0.0
 
         for edge in graph.all_edges():
-            w = abs(edge.weight.item())
+            w = abs(graph.effective_weight(edge.edge_id))
             g = abs(edge.weight.grad.item()) if edge.weight.grad is not None else 0.0
             if edge.src in hidden_set:
                 grad_mag[edge.src] += g

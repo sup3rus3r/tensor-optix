@@ -22,6 +22,32 @@ from typing import Tuple
 import numpy as np
 
 
+def episode_n_envs(episode_data) -> int:
+    """Number of interleaved parallel envs in a window (1 for single-env pipelines).
+
+    VectorBatchPipeline records it in EpisodeData.metadata["n_envs"]."""
+    metadata = getattr(episode_data, "metadata", None) or {}
+    return max(1, int(metadata.get("n_envs", 1)))
+
+
+def window_transition_pairs(T: int, n_envs: int = 1):
+    """
+    Yield, for each environment in a flat rollout window of T entries, the
+    list of (t, t_next) index pairs of temporally consecutive steps.
+
+    n_envs == 1: one list [(0, 1), (1, 2), ..., (T-2, T-1)].
+    n_envs  > 1: the window interleaves envs as [timestep * n_envs + env], so
+    env i's consecutive steps are n_envs apart. Pairing index t with t + 1
+    there would stitch env i's observation to env i+1's as its "next state".
+
+    The final step of each env has no successor inside the window and is not
+    paired (its next observation is not part of the window arrays).
+    """
+    n_envs = max(1, int(n_envs))
+    for env_i in range(n_envs):
+        yield [(t, t + n_envs) for t in range(env_i, T - n_envs, n_envs)]
+
+
 def _as_obs(obs):
     """Normalize a single observation for storage: flat/image arrays become
     float32 np.ndarray exactly as before; a dict observation (Dict space)
@@ -190,7 +216,9 @@ class PrioritizedReplayBuffer:
             self._uniform_buf.append((obs, action, reward, next_obs, done, n))
         else:
             self._ensure_tree()
-            priority = (self._tree.max_priority + self._eps) ** self._alpha
+            # Leaves already hold p^alpha — new transitions enter at the current
+            # max leaf priority (Schaul et al. 2016) without re-exponentiating.
+            priority = self._tree.max_priority
             self._tree.add(priority, (obs, action, reward, next_obs, done, n))
 
     def _commit_n_step(self) -> None:

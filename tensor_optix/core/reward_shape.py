@@ -31,7 +31,7 @@ from typing import Deque, List
 import numpy as np
 
 
-def split_episode_returns(values: List[float], dones: List[bool]) -> List[List[float]]:
+def split_episode_returns(values: List[float], dones: List[bool], n_envs: int = 1) -> List[List[float]]:
     """
     Split a window of per-step values into per-completed-episode segments,
     using terminated-OR-truncated boundaries (same convention as
@@ -40,13 +40,19 @@ def split_episode_returns(values: List[float], dones: List[bool]) -> List[List[f
     The trailing incomplete segment (no terminal done yet) is dropped — it
     isn't a completed episode and its shape isn't yet meaningful.
     """
+    # n_envs > 1: the window interleaves parallel envs as [t * n_envs + env]
+    # (VectorBatchPipeline). Each env's steps are split on that env's own
+    # dones — walking the flat array would splice different envs' rewards
+    # into one "episode".
+    n_envs = max(1, int(n_envs))
     segments: List[List[float]] = []
-    current: List[float] = []
-    for v, done in zip(values, dones):
-        current.append(v)
-        if done:
-            segments.append(current)
-            current = []
+    for env_i in range(n_envs):
+        current: List[float] = []
+        for t in range(env_i, len(values), n_envs):
+            current.append(values[t])
+            if dones[t]:
+                segments.append(current)
+                current = []
     return segments
 
 
@@ -70,7 +76,7 @@ def _gini(values: np.ndarray) -> float:
     return float(np.clip(gini, 0.0, 1.0))
 
 
-def episode_breadth(rewards: List[float], dones: List[bool]) -> List[float]:
+def episode_breadth(rewards: List[float], dones: List[bool], n_envs: int = 1) -> List[float]:
     """
     Returns one breadth value in [0, 1] per completed episode in the window.
     breadth = 1 - Gini(|r_t|) — higher means the episode's outcome was built
@@ -82,9 +88,9 @@ def episode_breadth(rewards: List[float], dones: List[bool]) -> List[float]:
     mirrors the same incomplete-window fallback used by
     TorchEvaluator._mean_episode_return.
     """
-    segments = split_episode_returns(rewards, dones)
+    segments = split_episode_returns(rewards, dones, n_envs)
     if not segments:
-        if not rewards:
+        if not len(rewards):
             return []
         segments = [list(rewards)]
 

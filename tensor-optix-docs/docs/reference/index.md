@@ -7,11 +7,15 @@ This section documents every public class and function in tensor-optix, organize
 - **[make_agent](factory.md)** - the auto-selection factory.
 - **[Algorithms](algorithms.md)** - the 15 built-in agents across PyTorch, TensorFlow, and JAX/Flax.
 - **[Pipelines](pipelines.md)** - `BatchPipeline`, `LivePipeline`, `VectorBatchPipeline`.
+- **[Multi-agent](multi-agent.md)** - PettingZoo Parallel/AEC pipelines, `SeatEnvView`, `MultiAgentRunner`.
+- **[Encoders](encoders.md)** - observation encoders for image and `Dict` observation spaces.
 - **[Optimizers](optimizers.md)** - SPSA, Momentum, Backoff, PBT, Adaptive (hyperparameter tuning).
-- **[Callbacks](callbacks.md)** - Rich dashboard, Weights & Biases, TensorBoard.
+- **[Callbacks](callbacks.md)** - Rich dashboard, Weights & Biases, TensorBoard, `AsyncCallbackAdapter`.
 - **[Distributed](distributed.md)** - IMPALA-style async actor-learner with V-trace.
 - **[Trial search](orchestrator.md)** - `TrialOrchestrator` (Optuna-based).
 - **[Config / CLI](config-cli.md)** - YAML config loading and the `tensor-optix` CLI.
-- **[ML mode](ml.md)** - training arbitrary `nn.Module`s with the same loop.
+- **[ml_core](ml-core.md)** - `BaseMLModel`, `Trainer`, metrics, LR schedules, transfer learning.
+- **[ML mode (legacy)](ml.md)** - training arbitrary `nn.Module`s with the RL loop.
+- **[Learning-to-Learn Engine](learning-to-learn.md)** - ledger, concurrent scheduler, selection, nanonets, strategy discovery, live runtime.
 - **[Exploration](exploration.md)** - `RNDPipeline` (Random Network Distillation).
 - **[Neuroevo](neuroevo/index.md)** - the dynamic-topology policy subsystem.

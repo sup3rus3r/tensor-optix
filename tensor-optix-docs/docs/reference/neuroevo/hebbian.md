@@ -91,3 +91,15 @@ hook.reset()
 ```
 
 `HebbianHook` is a `LoopCallback` - pass it directly to `Optimizer` or `RLOptimizer` via `callbacks=` and it wires itself automatically (you don't need to call `record()`/`apply()`/`reset()` manually when using the loop).
+
+### How the automatic wiring works
+
+As a loop callback the hook:
+
+1. on `on_loop_start`, registers a post-forward hook on each of its graphs, so `record()` runs after every `graph(obs)` call - i.e. once per `act()`; the batched training forward does not go through `graph.forward` and is not recorded;
+2. on `on_episode_end` (after `agent.learn()` for that window), calls `apply_and_reset()`;
+3. on `on_loop_stop`, removes the post-forward hook.
+
+Do not also call `record()` manually while the hook is attached to a running loop - steps would be counted twice.
+
+The update is defined on **effective** weights: `w <- w + eta * mean(h_pre * h_post) - lambda * w`, with `w = graph.effective_weight(edge)`. In `dale_mode="softplus"` the result is written back through the inverse softplus and kept on the sign the source neuron's cell type allows.

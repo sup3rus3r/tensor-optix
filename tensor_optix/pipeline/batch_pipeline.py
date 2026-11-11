@@ -111,6 +111,11 @@ class BatchPipeline(BasePipeline):
                 if terminated or truncated:
                     # Env done mid-window — reset and continue filling the window
                     self._obs, _ = self._env.reset()
+                    # Recurrent agents carry hidden state between act() calls;
+                    # it must not leak from the finished episode into the next.
+                    reset_hidden = getattr(self._agent, "reset_hidden", None)
+                    if callable(reset_hidden):
+                        reset_hidden()
                     if step_idx + 1 < self._window_size:
                         episode_start_indices.append(step_idx + 1)
                 else:

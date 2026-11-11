@@ -124,7 +124,12 @@ class CheckpointRegistry:
         candidates.sort(key=lambda e: e["primary_score"], reverse=True)
         candidates = candidates[:top_k]
 
-        if len(candidates) < 2 or not hasattr(agent, "average_weights"):
+        # BaseAgent ships a no-op average_weights(); an agent that merely
+        # inherits it cannot average, and calling it would load nothing at all.
+        from .base_agent import BaseAgent
+        avg_fn = getattr(type(agent), "average_weights", None)
+        can_average = avg_fn is not None and avg_fn is not BaseAgent.average_weights
+        if len(candidates) < 2 or not can_average:
             return self.load_best(agent)
 
         paths = [e["snapshot_dir"] + "/weights" for e in candidates]
