@@ -88,14 +88,98 @@ A seat that gets no turn in a window yields an empty `EpisodeData`; skip `learn(
 ```python
 class MultiAgentRunner:
     """
-    Minimal training driver: for each window, call learn() on every seat's
-    agent with that seat's EpisodeData (empty seats skipped).
+    Trains every seat and applies, per seat, the convergence and
+    checkpoint machinery of the single-agent loop.
     """
 
-    def __init__(self, pipeline, agents: Dict[Hashable, Any]): ...
-    def run(self, max_windows: Optional[int] = None) -> None: ...
+    def __init__(
+        self,
+        pipeline,
+        agents: Dict[Hashable, Any],
+        *,
+        evaluator=None,                    # BaseEvaluator, or {agent_id: BaseEvaluator}
+        checkpoint_dir: Optional[str] = None,
+        max_snapshots: int = 10,
+        improvement_margin: float = 0.0,
+        plateau_threshold: int = 5,
+        dormant_threshold: int = 20,
+        min_windows_before_dormant: int = 0,
+        noise_k: float = 2.0,
+        score_window: int = 20,
+        trend_window: int = 8,
+        stop_when: str = "all",            # "all" | "any"
+        stop_on_convergence: bool = True,
+        restore_best: bool = True,
+        callbacks: Optional[List[Any]] = None,
+    ): ...
+
+    def run(self, max_windows: Optional[int] = None) -> MultiAgentRunResult: ...
+    def stop(self) -> None: ...
+    def add_callback(self, callback) -> None: ...
+
+    @property
+    def states(self) -> Dict[Hashable, LoopState]: ...
+    @property
+    def best_scores(self) -> Dict[Hashable, Optional[float]]: ...
+    @property
+    def best_snapshots(self) -> Dict[Hashable, Optional[PolicySnapshot]]: ...
 ```
 
-`MultiAgentRunner` is deliberately small - it does not run the `LoopController` state machine (no checkpointing, hyperparameter tuning, or convergence detection). To get those for one seat, wrap that seat in your own `BasePipeline` and use `RLOptimizer`.
+Each window, for every seat that took at least one step:
+
+1. `agent.learn(episode_data)`.
+2. The window is scored by `evaluator` (default: mean return of the episodes that completed in the window - the same default the single-agent loop uses).
+3. **Checkpoint.** If the score beats the seat's best by more than `improvement_margin`, the seat is saved to its own `CheckpointRegistry` under `<checkpoint_dir>/<agent_id>`. With `checkpoint_dir=None` best scores are still tracked but nothing is written or restored.
+4. **Convergence.** The score feeds the seat's own `BackoffScheduler`. A seat whose score trend stays flat for `plateau_threshold` consecutive windows is `COOLING`; after `dormant_threshold` it is `DORMANT`, i.e. converged. A later upward trend puts it back to `ACTIVE`. Every window is evaluated (no eval-interval backoff).
+
+A seat with no turn in a window is skipped entirely - not learned, not scored, and not counted toward its plateau counter.
+
+**When the run stops**
+
+| Condition | `stop_reason` |
+|---|---|
+| every seat converged (`stop_when="all"`, default) or the first seat converged (`stop_when="any"`) | `"converged"` |
+| `max_windows` reached | `"max_windows"` |
+| `stop()` called (e.g. from a callback) | `"stopped"` |
+| the pipeline's generator ended | `"pipeline_exhausted"` |
+
+`stop_on_convergence=False` disables the first row. The default is `"all"` because in a competitive game one seat plateauing while its opponent still improves is not convergence.
+
+**Best-weight restore.** When the run ends (including on an exception) and `restore_best=True`, every seat with a checkpoint is restored to its best snapshot. In competitive games each seat's best score was achieved against the opponents *as they were at that time*, so restored seats can come from different stages of training; pass `restore_best=False` to keep the final, jointly trained weights - the best snapshots remain on disk and in the result.
+
+```python
+@dataclass
+class MultiAgentRunResult:
+    windows_run: int
+    stop_reason: str
+    seats: Dict[Hashable, SeatResult]
+    converged: bool                    # property: stop_reason == "converged"
+
+@dataclass
+class SeatResult:
+    agent_id: Hashable
+    state: LoopState
+    converged: bool
+    windows_scored: int
+    best_score: Optional[float]
+    last_score: Optional[float]
+    best_snapshot: Optional[PolicySnapshot]
+```
+
+### MultiAgentCallback
+
+```python
+class MultiAgentCallback:
+    def on_run_start(self) -> None: ...
+    def on_window_end(self, window_id: int, metrics: Dict[Hashable, EvalMetrics]) -> None: ...
+    def on_improvement(self, agent_id, snapshot: Optional[PolicySnapshot], score: float) -> None: ...
+    def on_plateau(self, agent_id, window_id: int) -> None: ...
+    def on_converged(self, agent_id, window_id: int) -> None: ...
+    def on_run_stop(self, reason: str) -> None: ...
+```
+
+Subclassing is optional - any object defining some of these methods works. An exception raised by a callback is logged and does not stop training.
+
+**Not provided** (single-agent `LoopController` features without an agreed multi-agent meaning): online hyperparameter tuning, degradation rollback during training, and policy spawning.
 
 See [Multi-agent training](../guides/multi-agent.md) for a worked example.

@@ -23,7 +23,7 @@ class BackoffScheduler:
 
         where floor_per_step = adaptive_floor / trend_window.
 
-    Adaptive floor auto-scales to env reward range (noise_k × std of recent
+    Adaptive floor auto-scales to env reward range (noise_k × detrended std of recent
     scores), capped at 50% of |best_score| to prevent early-chaos poisoning.
 
     State transitions:
@@ -53,7 +53,8 @@ def __init__(
 ):
     """
     Args:
-        noise_k:           Adaptive floor multiplier. floor = noise_k × std(scores).
+        noise_k:           Adaptive floor multiplier. floor = noise_k × std of the
+                           scores' residuals around their linear trend.
         score_window:      Rolling window size for std / trend computation.
         trend_window:      Number of most-recent scores used for slope fit.
                            Must be ≤ score_window. Default 8 - enough to be

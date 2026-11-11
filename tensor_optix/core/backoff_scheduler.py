@@ -23,7 +23,7 @@ class BackoffScheduler:
 
         where floor_per_step = adaptive_floor / trend_window.
 
-    Adaptive floor auto-scales to env reward range (noise_k × std of recent
+    Adaptive floor auto-scales to env reward range (noise_k × detrended std of recent
     scores), capped at 50% of |best_score| to prevent early-chaos poisoning.
 
     State transitions:
@@ -49,7 +49,8 @@ class BackoffScheduler:
     ):
         """
         Args:
-            noise_k:           Adaptive floor multiplier. floor = noise_k × std(scores).
+            noise_k:           Adaptive floor multiplier. floor = noise_k × std of the
+                               scores' residuals around their linear trend.
             score_window:      Rolling window size for std / trend computation.
             trend_window:      Number of most-recent scores used for slope fit.
                                Must be ≤ score_window. Default 8 — enough to be
@@ -86,12 +87,21 @@ class BackoffScheduler:
     def _adaptive_floor(self) -> float:
         """
         Adaptive absolute floor for improvement margin and degradation detection.
-        Returns noise_k × std(recent scores), capped at 50% of |best_score|.
+        Returns noise_k × std(residuals of recent scores around their linear
+        trend), capped at 50% of |best_score|.
         Falls back to min_degradation_drop until at least 5 scores exist.
         """
         if len(self._score_window) < 5:
             return self._min_degradation_drop
-        floor = self._noise_k * float(np.std(list(self._score_window)))
+        # Noise = spread of the scores AROUND their linear trend, not their raw
+        # spread. The raw std of a steadily rising series is dominated by the
+        # trend itself (std of a ramp over W points ≈ slope × W/√12), so with
+        # a full window the floor always exceeded the slope it was compared
+        # against and steady linear improvement was classified as a plateau.
+        y = np.asarray(self._score_window, dtype=np.float64)
+        x = np.arange(len(y), dtype=np.float64)
+        slope, intercept = np.polyfit(x, y, 1)
+        floor = self._noise_k * float(np.std(y - (slope * x + intercept)))
         if self._best_score is not None and abs(self._best_score) > 1e-8:
             floor = min(floor, 0.5 * abs(self._best_score))
         return max(floor, self._min_degradation_drop)

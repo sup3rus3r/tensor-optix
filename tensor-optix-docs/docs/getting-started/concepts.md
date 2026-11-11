@@ -30,7 +30,7 @@ ACTIVE → COOLING → DORMANT → (watchdog shutdown | policy spawn)
 - **COOLING** - `plateau_threshold` consecutive non-improving evals.
 - **DORMANT** - `dormant_threshold` consecutive non-improving evals. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
 
-Transitions are **not** point-to-point score comparisons. `BackoffScheduler` fits a linear trend over the most recent `trend_window` scores and compares the slope against an adaptive floor (`noise_k × std(recent scores)`, capped at 50% of `|best_score|`). A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.
+Transitions are **not** point-to-point score comparisons. `BackoffScheduler` fits a linear trend over the most recent `trend_window` scores and compares the slope against an adaptive floor (`noise_k ×` the standard deviation of the recent scores around their own linear trend, capped at 50% of `|best_score|`) - the noise estimate is detrended so that steady improvement is not mistaken for noise. A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.
 
 ## Checkpointing is validation-only
 

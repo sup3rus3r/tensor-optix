@@ -1,5 +1,7 @@
 # tensor-optix
 
+[See Documentation](https://sup3rus3r.github.io/tensor-optix/)
+
 tensor-optix is a training framework for reinforcement learning and for supervised/unsupervised machine learning. Both have statistical convergence control, online hyperparameter optimisation, and real checkpointing.
 
 It has two parallel cores:
@@ -233,7 +235,7 @@ pipeline = AECMultiAgentPipeline(env, agents, window_size=400, views=views)
 MultiAgentRunner(pipeline, agents).run(max_windows=500)
 ```
 
-In turn-based games each reward (including the terminal win/loss) is credited to the action that earned it. `MultiAgentRunner` is a minimal collect/learn driver - it does not run the convergence/checkpoint state machine. See [Multi-agent training](https://sup3rus3r.github.io/tensor-optix/guides/multi-agent/).
+In turn-based games each reward (including the terminal win/loss) is credited to the action that earned it. `MultiAgentRunner` scores every seat each window, checkpoints each seat's best weights (`checkpoint_dir=`), detects per-seat convergence with the same trend test as the single-agent loop, and stops once every seat has converged (`stop_when="any"` for the first), restoring best weights. See [Multi-agent training](https://sup3rus3r.github.io/tensor-optix/guides/multi-agent/).
 
 ---
 
