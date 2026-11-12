@@ -78,6 +78,12 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#convergence-and-checkpoints">Convergence and checkpoints</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#hyperparameter-tuning-per-seat">Hyperparameter tuning per seat</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#rollback-on-degradation">Rollback on degradation</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#self-play">Self-play</a>
+    </li>
     <li class="toctree-l2"><a class="reference internal" href="#what-you-dont-get">What you don't get</a>
     </li>
     </ul>
@@ -289,8 +295,57 @@ for aid, seat in result.seats.items():
 
 runner.add_callback(Log())
 </code></pre>
+<h2 id="hyperparameter-tuning-per-seat">Hyperparameter tuning per seat</h2>
+<p>Each seat is tuned online by its own optimizer, exactly as <code>RLOptimizer</code> tunes a single agent. It is on by default: every seat whose agent declares <code>default_param_bounds</code> (all built-in agents do) gets its own SPSA optimizer. After each scored window the seat's hyperparameters may be adjusted.</p>
+<pre><code class="language-python">MultiAgentRunner(pipeline, agents)                                   # SPSA per seat (default)
+MultiAgentRunner(pipeline, agents, optimizer=None)                   # no tuning
+MultiAgentRunner(pipeline, agents,
+                 optimizer=lambda agent: AdaptiveOptimizer(param_bounds=agent.default_param_bounds))
+</code></pre>
+<p><code>result.seats[aid].hyperparams</code> holds each seat's final hyperparameters, and <code>on_hyperparam_update(agent_id, old, new)</code> fires on every change.</p>
+<h2 id="rollback-on-degradation">Rollback on degradation</h2>
+<pre><code class="language-python">runner = MultiAgentRunner(
+    pipeline, agents,
+    checkpoint_dir=&quot;./checkpoints&quot;,
+    rollback_on_degradation=True,        # restore a seat's best weights if its score collapses
+    min_consecutive_degradations=3,
+)
+</code></pre>
+<p>When a seat's score stays clearly below its best for several scored windows in a row, the seat is restored to its best checkpoint and keeps training. <code>result.seats[aid].rollbacks</code> counts how often that happened.</p>
+<p>A score also falls when an opponent gets better, so in a competitive game combine it with self-play: then only windows played against a frozen past opponent can trigger a rollback. Without self-play, enable it for cooperative games only.</p>
+<h2 id="self-play">Self-play</h2>
+<p>In a competitive game, agents that only ever face each other's current version tend to go in circles. Self-play against a pool of past snapshots fixes that. Pick the form that matches what you are training.</p>
+<p><strong>Train every seat</strong> - each seat keeps its own policy and sometimes faces a past version of its opponent:</p>
+<pre><code class="language-python">from tensor_optix.multi_agent import SelfPlayConfig
+
+runner = MultiAgentRunner(
+    pipeline, agents,
+    checkpoint_dir=&quot;./checkpoints&quot;,
+    self_play=SelfPlayConfig(snapshot_every=20, pool_size=10, opponent_prob=0.5),
+)
+result = runner.run(max_windows=5000)
+print(result.pool_sizes, {a: s.frozen_windows for a, s in result.seats.items()})
+</code></pre>
+<p>A seat that is played by a snapshot for a window does not learn or get scored for that window.</p>
+<p><strong>Train one agent</strong> for a symmetric game - the other seats become part of the environment, and the full single-agent loop drives the learner:</p>
+<pre><code class="language-python">from tensor_optix import RLOptimizer
+from tensor_optix.multi_agent import SelfPlayPipeline, SelfPlayConfig
+
+env = rps_v2.env()
+env.reset(seed=0)
+views = {aid: SeatEnvView(env, aid) for aid in env.possible_agents}
+learner = make_agent(views[&quot;player_0&quot;])
+
+inner = AECMultiAgentPipeline(env, {}, window_size=2048, views=views)
+pipeline = SelfPlayPipeline(inner, learner_seat=&quot;player_0&quot;,
+                            config=SelfPlayConfig(snapshot_every=10))
+
+RLOptimizer(agent=learner, pipeline=pipeline, checkpoint_dir=&quot;./checkpoints&quot;).run()
+</code></pre>
+<p>This form gets everything <code>RLOptimizer</code> offers (all optimizers, rollback on degradation, policy spawning). It requires that the opponent seats can be played by the learner's policy, i.e. the same observation and action spaces.</p>
+<p>Self-play is for competitive or mixed games; in a purely cooperative game it is the wrong tool. The defaults (<code>snapshot_every=20</code>, <code>pool_size=10</code>, <code>opponent_prob=0.5</code>) are starting points, not tuned values.</p>
 <h2 id="what-you-dont-get">What you don't get</h2>
-<p>Online hyperparameter tuning, degradation rollback during training, and policy spawning remain single-agent (<code>LoopController</code>) features. Self-play schedules, league training, and centralized critics are out of scope.</p>
+<p>Policy spawning is not part of <code>MultiAgentRunner</code> (use <code>SelfPlayPipeline</code> + <code>RLOptimizer</code> when one learner is enough). One policy shared across seats, league training, and centralized critics are out of scope.</p>
               
             </div>
           </div><footer>
