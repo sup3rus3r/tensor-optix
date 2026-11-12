@@ -15,9 +15,15 @@ What "converged" means for the run as a whole is an explicit choice
 competitive game one seat plateauing while its opponent is still improving
 is not convergence, it is one side losing ground.
 
-Not done here (single-agent LoopController features with no obvious
-multi-agent meaning yet): online hyperparameter tuning, degradation
-rollback during training, policy spawning.
+Each seat's hyperparameters are tuned online by its own optimizer (SPSA by
+default, like RLOptimizer), and `self_play=SelfPlayConfig(...)` lets seats
+train against past snapshots of their opponents.
+
+`rollback_on_degradation=True` restores a seat's best checkpoint mid-run
+when its score has confirmedly dropped.
+
+Not done here (single-agent LoopController feature with no obvious
+multi-agent meaning yet): policy spawning.
 """
 from __future__ import annotations
 
@@ -27,10 +33,20 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Hashable, List, Optional
 
 from tensor_optix.core.backoff_scheduler import BackoffScheduler
+from tensor_optix.core.base_optimizer import BaseOptimizer
 from tensor_optix.core.checkpoint_registry import CheckpointRegistry
 from tensor_optix.core.types import EvalMetrics, HyperparamSet, LoopState, PolicySnapshot
 
+from tensor_optix.multi_agent.self_play import (
+    OpponentPool,
+    SelfPlayConfig,
+    discard_rollout,
+    make_stand_in,
+)
+
 logger = logging.getLogger(__name__)
+
+_METRICS_HISTORY_LEN = 200
 
 
 class MultiAgentCallback:
@@ -44,6 +60,8 @@ class MultiAgentCallback:
     def on_improvement(self, agent_id: Hashable, snapshot: Optional[PolicySnapshot], score: float) -> None: ...
     def on_plateau(self, agent_id: Hashable, window_id: int) -> None: ...
     def on_converged(self, agent_id: Hashable, window_id: int) -> None: ...
+    def on_hyperparam_update(self, agent_id: Hashable, old_params: dict, new_params: dict) -> None: ...
+    def on_degradation(self, agent_id: Hashable, window_id: int, score: float, rolled_back: bool) -> None: ...
     def on_run_stop(self, reason: str) -> None: ...
 
 
@@ -58,6 +76,10 @@ class SeatResult:
     best_score: Optional[float]
     last_score: Optional[float]
     best_snapshot: Optional[PolicySnapshot]
+    frozen_windows: int = 0        # windows this seat was played by a pool snapshot
+    degradations: int = 0          # confirmed degradations
+    rollbacks: int = 0             # of which restored the best checkpoint
+    hyperparams: Optional[dict] = None   # the seat's hyperparameters at the end of the run
 
 
 @dataclass
@@ -66,6 +88,7 @@ class MultiAgentRunResult:
     windows_run: int
     stop_reason: str            # "converged" | "max_windows" | "stopped" | "pipeline_exhausted"
     seats: Dict[Hashable, SeatResult] = field(default_factory=dict)
+    pool_sizes: Dict[Hashable, int] = field(default_factory=dict)   # self-play snapshots per seat
 
     @property
     def converged(self) -> bool:
@@ -73,11 +96,18 @@ class MultiAgentRunResult:
 
 
 class _Seat:
-    def __init__(self, agent_id, agent, scheduler: BackoffScheduler, registry: Optional[CheckpointRegistry]):
+    def __init__(self, agent_id, agent, scheduler: BackoffScheduler,
+                 registry: Optional[CheckpointRegistry], optimizer: Optional[BaseOptimizer] = None):
         self.agent_id = agent_id
         self.agent = agent
         self.scheduler = scheduler
         self.registry = registry
+        self.optimizer = optimizer
+        self.metrics_history: List[EvalMetrics] = []
+        self.frozen_windows = 0
+        self.consecutive_degraded = 0
+        self.degradations = 0
+        self.rollbacks = 0
         self.best_score: Optional[float] = None
         self.last_score: Optional[float] = None
         self.best_snapshot: Optional[PolicySnapshot] = None
@@ -120,6 +150,32 @@ class MultiAgentRunner:
     is skipped for that window — not learned, not scored, and it does not
     count toward that seat's plateau counter.
 
+    Hyperparameter tuning: after every scored window the seat's optimizer
+    is shown that seat's score history and may adjust its hyperparameters
+    (`on_hyperparam_update` fires when it does). Windows that are not
+    scored do not step the optimizer.
+
+    Self-play pool (`self_play=SelfPlayConfig(...)`): every
+    `snapshot_every` windows each seat's weights are saved to that seat's
+    pool. Each window, a seat is played by a random past snapshot of itself
+    with probability `opponent_prob` — it then neither learns nor is scored
+    for that window — while the remaining live seats train against it. At
+    least one seat is always live. Live agents are put back before the run
+    returns.
+
+    Rollback (`rollback_on_degradation=True`): when a seat's score stays
+    clearly below its best for `min_consecutive_degradations` scored
+    windows in a row, `on_degradation` fires and — for on-policy agents with
+    a checkpoint — the seat's best weights are restored and training
+    continues. Off-policy agents are never rolled back (their replay buffer
+    would pull restored weights straight back). A score also drops when the
+    OPPONENT improves, which is not a collapse: with self-play enabled only
+    windows played against at least one frozen (pool) opponent count, since
+    those are the windows where the opposition did not change. Without
+    self-play, use rollback for cooperative games; in a competitive game it
+    would undo real learning. Probe windows of the seat's optimizer never
+    count.
+
     Scores are full episode returns, tracked across windows by the
     pipeline. A window in which a seat finished no episode still trains
     that seat but is not scored (no checkpoint, no plateau count). Until a
@@ -144,6 +200,26 @@ class MultiAgentRunner:
                                per-seat BackoffScheduler settings (same
                                meaning as RLOptimizer's). Each seat is
                                evaluated every window (no eval backoff).
+        optimizer:             per-seat online hyperparameter tuning.
+                               "auto" (default): an SPSAOptimizer over the
+                               agent's default_param_bounds, for every seat
+                               whose agent declares them. None: no tuning.
+                               A callable(agent) -> BaseOptimizer builds one
+                               per seat; a dict {agent_id: BaseOptimizer or
+                               None} assigns them explicitly. Optimizers are
+                               stateful, so a single instance cannot be
+                               shared between seats.
+        self_play:             SelfPlayConfig enabling the frozen-opponent
+                               pool (see below). None (default) = off.
+        rollback_on_degradation:
+                               restore a seat's best checkpoint mid-run on a
+                               confirmed degradation (see below). Requires
+                               checkpoint_dir. Default False.
+        degradation_threshold: a window is "degraded" when the seat's score
+                               is below best - max(|best| * (1 - threshold),
+                               the seat's noise floor). Default 0.95.
+        min_consecutive_degradations:
+                               degraded windows in a row needed to confirm.
         stop_when:             "all" | "any".
         stop_on_convergence:   False = only max_windows / stop() end the run.
         restore_best:          restore each seat's best snapshot at the end.
@@ -166,6 +242,11 @@ class MultiAgentRunner:
         noise_k: float = 2.0,
         score_window: int = 20,
         trend_window: int = 8,
+        optimizer: Any = "auto",
+        self_play: Optional[SelfPlayConfig] = None,
+        rollback_on_degradation: bool = False,
+        degradation_threshold: float = 0.95,
+        min_consecutive_degradations: int = 3,
         stop_when: str = "all",
         stop_on_convergence: bool = True,
         restore_best: bool = True,
@@ -182,6 +263,22 @@ class MultiAgentRunner:
         self._restore_best = restore_best
         self._callbacks: List[Any] = list(callbacks or [])
         self._stop_requested = False
+
+        if rollback_on_degradation and checkpoint_dir is None:
+            raise ValueError("rollback_on_degradation=True requires checkpoint_dir (there is nothing to roll back to).")
+        self._rollback_on_degradation = rollback_on_degradation
+        self._degradation_threshold = float(degradation_threshold)
+        self._min_consecutive_degradations = max(1, int(min_consecutive_degradations))
+
+        self._self_play = self_play
+        if self_play is not None and not hasattr(pipeline, "set_agents"):
+            raise TypeError(
+                "self_play requires a pipeline exposing set_agents() "
+                "(ParallelMultiAgentPipeline / AECMultiAgentPipeline)."
+            )
+        self._pool: Optional[OpponentPool] = None
+        self._stand_ins: Dict[Hashable, Any] = {}
+        self._frozen: set = set()
 
         if evaluator is None:
             # Framework-agnostic despite the name: numpy-only mean episode return.
@@ -213,7 +310,10 @@ class MultiAgentRunner:
                 score_window=score_window,
                 trend_window=trend_window,
             )
-            self._seats[aid] = _Seat(aid, agent, scheduler, registry)
+            self._seats[aid] = _Seat(
+                aid, agent, scheduler, registry,
+                optimizer=_resolve_optimizer(optimizer, aid, agent, len(agents)),
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -244,6 +344,11 @@ class MultiAgentRunner:
         self._fire("on_run_start")
         windows_run = 0
         stop_reason = "pipeline_exhausted"
+        if self._self_play is not None:
+            self._pool = OpponentPool(
+                self._self_play.pool_size, self._self_play.pool_dir, self._self_play.seed
+            )
+            self._frozen = set()
         try:
             for window in self._pipeline.episodes():
                 window_metrics: Dict[Hashable, EvalMetrics] = {}
@@ -252,6 +357,13 @@ class MultiAgentRunner:
                         continue
                     seat = self._seats.get(aid)
                     if seat is None:
+                        continue
+                    if aid in self._frozen:
+                        # Played by a pool snapshot this window: the live
+                        # agent did not act, so it has nothing to learn from
+                        # and no score of its own.
+                        seat.frozen_windows += 1
+                        discard_rollout(self._stand_ins[aid])
                         continue
                     diagnostics = seat.agent.learn(episode_data) or {}
                     metrics = self._evaluators[aid].score(episode_data, diagnostics)
@@ -265,6 +377,8 @@ class MultiAgentRunner:
 
                 self._fire("on_window_end", windows_run, window_metrics)
                 windows_run += 1
+                if self._pool is not None:
+                    self._advance_self_play(windows_run)
 
                 if self._stop_requested:
                     stop_reason = "stopped"
@@ -280,6 +394,14 @@ class MultiAgentRunner:
                     stop_reason = "max_windows"
                     break
         finally:
+            pool_sizes: Dict[Hashable, int] = {}
+            if self._pool is not None:
+                pool_sizes = self._pool.sizes()
+                # Hand the pipeline its live agents back before anything else.
+                self._pipeline.set_agents(dict(self._agents))
+                self._frozen = set()
+                self._pool.cleanup()
+                self._pool = None
             try:
                 if self._restore_best:
                     self._restore_best_weights()
@@ -300,9 +422,14 @@ class MultiAgentRunner:
                     best_score=seat.best_score,
                     last_score=seat.last_score,
                     best_snapshot=seat.best_snapshot,
+                    frozen_windows=seat.frozen_windows,
+                    degradations=seat.degradations,
+                    rollbacks=seat.rollbacks,
+                    hyperparams=dict(_hyperparams_of(seat.agent, windows_run).params),
                 )
                 for aid, seat in self._seats.items()
             },
+            pool_sizes=pool_sizes,
         )
 
     # ------------------------------------------------------------------
@@ -347,6 +474,14 @@ class MultiAgentRunner:
                 )
             self._fire("on_improvement", seat.agent_id, seat.best_snapshot, score)
 
+        seat.metrics_history.append(metrics)
+        if len(seat.metrics_history) > _METRICS_HISTORY_LEN:
+            del seat.metrics_history[:-_METRICS_HISTORY_LEN]
+
+        self._update_convergence(seat, metrics, score, window_id)
+        self._tune(seat)
+
+    def _update_convergence(self, seat: _Seat, metrics: EvalMetrics, score: float, window_id: int) -> None:
         # --- convergence: trend over the seat's recent scores ---
         sched = seat.scheduler
         first = sched.best_score is None
@@ -354,7 +489,13 @@ class MultiAgentRunner:
         if first or sched.is_improving():
             sched.record_improvement(score, append=False)
             seat.converged = False
+            seat.consecutive_degraded = 0
+            if seat.optimizer is not None:
+                seat.optimizer.on_improvement(metrics)
             return
+
+        if self._check_degradation(seat, score, window_id):
+            return  # a degraded window is a collapse in progress, not a plateau
 
         if seat.reports_episodes and seat.completed_episodes < self._min_completed_episodes:
             return  # too few finished episodes to call anything a plateau
@@ -367,7 +508,100 @@ class MultiAgentRunner:
         elif state == LoopState.DORMANT and not seat.converged:
             seat.converged = True
             logger.info("MultiAgentRunner: seat %r converged at window %d", seat.agent_id, window_id)
+            if seat.optimizer is not None:
+                seat.optimizer.on_plateau(seat.metrics_history)
             self._fire("on_converged", seat.agent_id, window_id)
+
+    def _check_degradation(self, seat: _Seat, score: float, window_id: int) -> bool:
+        """Count degraded windows; on confirmation fire on_degradation and
+        (when enabled and safe) roll the seat back.
+
+        Returns True when this window is degraded (confirmed or not): such a
+        window must not count toward the plateau counter, or a collapsed seat
+        would be declared converged at its collapsed level between rollbacks.
+        """
+        if not self._rollback_on_degradation or seat.best_score is None:
+            return False
+        if seat.optimizer is not None and getattr(seat.optimizer, "is_probing", False):
+            return False  # a probe's score drop is self-inflicted
+        if self._pool is not None and not (self._frozen - {seat.agent_id}):
+            # Self-play is on and every opponent was live this window: a drop
+            # may simply be the opponent improving. Neither count nor reset.
+            return False
+
+        best = seat.best_score
+        allowed_drop = max(
+            abs(best) * (1.0 - self._degradation_threshold),
+            seat.scheduler._adaptive_floor(),
+        )
+        if score >= best - allowed_drop:
+            seat.consecutive_degraded = 0
+            return False
+
+        seat.consecutive_degraded += 1
+        if seat.consecutive_degraded < self._min_consecutive_degradations:
+            return True
+
+        seat.consecutive_degraded = 0
+        seat.degradations += 1
+        rolled_back = False
+        if (
+            getattr(seat.agent, "is_on_policy", True)
+            and seat.registry is not None
+            and seat.best_snapshot is not None
+        ):
+            seat.registry.load_best(seat.agent)
+            discard_rollout(seat.agent)
+            seat.rollbacks += 1
+            rolled_back = True
+            logger.info(
+                "MultiAgentRunner: seat %r degraded (score=%.4f, best=%.4f) — rolled back at window %d",
+                seat.agent_id, score, best, window_id,
+            )
+        seat.scheduler.record_degradation()
+        seat.scheduler._consecutive_non_improvements = 0
+        seat.converged = False
+        self._fire("on_degradation", seat.agent_id, window_id, score, rolled_back)
+        return True
+
+    def _tune(self, seat: _Seat) -> None:
+        """One online hyperparameter step for this seat (after a scored window)."""
+        if seat.optimizer is None:
+            return
+        current = seat.agent.get_hyperparams()
+        old_params = dict(current.params)
+        suggested = seat.optimizer.suggest(current, seat.metrics_history)
+        seat.agent.set_hyperparams(suggested)
+        if suggested.params != old_params:
+            self._fire("on_hyperparam_update", seat.agent_id, old_params, dict(suggested.params))
+
+    def _advance_self_play(self, windows_run: int) -> None:
+        """Snapshot on schedule, then choose who is frozen for the next window."""
+        cfg = self._self_play
+        if windows_run % cfg.snapshot_every == 0:
+            for aid, seat in self._seats.items():
+                self._pool.add(aid, seat.agent)
+
+        rng = self._pool.rng
+        frozen = {
+            aid for aid in self._seats
+            if self._pool.size(aid) > 0 and rng.random() < cfg.opponent_prob
+        }
+        if len(frozen) >= len(self._seats):
+            # Somebody has to be learning.
+            frozen.discard(rng.choice(sorted(frozen, key=str)))
+
+        mapping = dict(self._agents)
+        for aid in frozen:
+            stand_in = self._stand_ins.get(aid)
+            if stand_in is None:
+                stand_in = make_stand_in(self._agents[aid], aid, cfg.opponent_factory)
+                self._stand_ins[aid] = stand_in
+            discard_rollout(stand_in)
+            self._pool.load_into(aid, stand_in, self._agents[aid])
+            mapping[aid] = stand_in
+        self._frozen = frozen
+        self._pipeline.set_agents(mapping)
 
     def _run_converged(self) -> bool:
         flags = [seat.converged for seat in self._seats.values()]
@@ -400,6 +634,36 @@ def _hyperparams_of(agent, window_id: int) -> HyperparamSet:
     if getter is not None:
         return getter()
     return HyperparamSet(params={}, episode_id=window_id)
+
+
+def _resolve_optimizer(spec: Any, agent_id: Hashable, agent: Any, n_seats: int) -> Optional[BaseOptimizer]:
+    """Turn the runner's `optimizer` argument into this seat's own optimizer."""
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        return spec.get(agent_id)
+    if isinstance(spec, str):
+        if spec != "auto":
+            raise ValueError(f"optimizer must be 'auto', None, a callable, or a dict; got {spec!r}")
+        bounds = getattr(agent, "default_param_bounds", None)
+        if not bounds or not hasattr(agent, "get_hyperparams"):
+            return None
+        from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
+        return SPSAOptimizer(
+            param_bounds=dict(bounds),
+            log_params=list(getattr(agent, "default_log_params", []) or []),
+        )
+    if isinstance(spec, BaseOptimizer):
+        if n_seats > 1:
+            raise ValueError(
+                "A single optimizer instance cannot be shared between seats (it "
+                "holds per-run state). Pass a callable(agent) -> BaseOptimizer or "
+                "a dict {agent_id: optimizer}."
+            )
+        return spec
+    if callable(spec):
+        return spec(agent)
+    raise ValueError(f"Unsupported optimizer argument: {spec!r}")
 
 
 def _safe_dirname(agent_id: Hashable) -> str:

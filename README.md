@@ -235,7 +235,7 @@ pipeline = AECMultiAgentPipeline(env, agents, window_size=400, views=views)
 MultiAgentRunner(pipeline, agents).run(max_windows=500)
 ```
 
-In turn-based games each reward (including the terminal win/loss) is credited to the action that earned it. `MultiAgentRunner` scores every seat each window, checkpoints each seat's best weights (`checkpoint_dir=`), detects per-seat convergence with the same trend test as the single-agent loop, and stops once every seat has converged (`stop_when="any"` for the first), restoring best weights. See [Multi-agent training](https://sup3rus3r.github.io/tensor-optix/guides/multi-agent/).
+In turn-based games each reward (including the terminal win/loss) is credited to the action that earned it. `MultiAgentRunner` scores every seat each window, checkpoints each seat's best weights (`checkpoint_dir=`), detects per-seat convergence with the same trend test as the single-agent loop, and stops once every seat has converged (`stop_when="any"` for the first), restoring best weights. Each seat's hyperparameters are tuned online by its own optimizer (SPSA by default, `optimizer=None` to disable). `rollback_on_degradation=True` restores a seat's best checkpoint mid-run if its score collapses. For competitive games, `self_play=SelfPlayConfig(...)` lets seats train against a pool of past snapshots of their opponents, and `SelfPlayPipeline` turns a symmetric game into a single-agent pipeline (the other seats are played by past versions of the learner) so `RLOptimizer` can drive one learner with the full loop. See [Multi-agent training](https://sup3rus3r.github.io/tensor-optix/guides/multi-agent/).
 
 ---
 

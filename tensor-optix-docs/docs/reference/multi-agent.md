@@ -12,6 +12,9 @@ from tensor_optix.multi_agent import (
     ParallelMultiAgentPipeline,
     AECMultiAgentPipeline,
     MultiAgentRunner,
+    SelfPlayConfig,
+    SelfPlayPipeline,
+    OpponentPool,
 )
 ```
 
@@ -108,6 +111,11 @@ class MultiAgentRunner:
         noise_k: float = 2.0,
         score_window: int = 20,
         trend_window: int = 8,
+        optimizer="auto",                  # per-seat tuning: "auto" | None | callable(agent) | {agent_id: optimizer}
+        self_play: Optional[SelfPlayConfig] = None,
+        rollback_on_degradation: bool = False,
+        degradation_threshold: float = 0.95,
+        min_consecutive_degradations: int = 3,
         stop_when: str = "all",            # "all" | "any"
         stop_on_convergence: bool = True,
         restore_best: bool = True,
@@ -168,7 +176,13 @@ class SeatResult:
     best_score: Optional[float]
     last_score: Optional[float]
     best_snapshot: Optional[PolicySnapshot]
+    frozen_windows: int                # windows played by a pool snapshot (self-play)
+    degradations: int                  # confirmed degradations
+    rollbacks: int                     # of which restored the best checkpoint
+    hyperparams: Optional[dict]        # the seat's hyperparameters at the end of the run
 ```
+
+`MultiAgentRunResult.pool_sizes` reports the number of self-play snapshots held per seat.
 
 ### MultiAgentCallback
 
@@ -179,11 +193,106 @@ class MultiAgentCallback:
     def on_improvement(self, agent_id, snapshot: Optional[PolicySnapshot], score: float) -> None: ...
     def on_plateau(self, agent_id, window_id: int) -> None: ...
     def on_converged(self, agent_id, window_id: int) -> None: ...
+    def on_hyperparam_update(self, agent_id, old_params: dict, new_params: dict) -> None: ...
+    def on_degradation(self, agent_id, window_id: int, score: float, rolled_back: bool) -> None: ...
     def on_run_stop(self, reason: str) -> None: ...
 ```
 
 Subclassing is optional - any object defining some of these methods works. An exception raised by a callback is logged and does not stop training.
 
-**Not provided** (single-agent `LoopController` features without an agreed multi-agent meaning): online hyperparameter tuning, degradation rollback during training, and policy spawning.
+### Per-seat hyperparameter tuning
+
+Every seat has its own optimizer, driven by that seat's own scores - the same online tuning `RLOptimizer` performs for a single agent.
+
+| `optimizer=` | Result |
+|---|---|
+| `"auto"` (default) | an `SPSAOptimizer` over the agent's `default_param_bounds` / `default_log_params`, for each seat whose agent declares them; other seats are not tuned |
+| `None` | no tuning |
+| `callable(agent) -> BaseOptimizer` | called once per seat |
+| `{agent_id: BaseOptimizer or None}` | explicit per seat |
+
+A single optimizer instance cannot be shared between seats (optimizers hold per-run state); passing one with more than one seat raises `ValueError`.
+
+After every *scored* window the seat's optimizer receives the seat's `EvalMetrics` history (last 200) and its suggestion is applied with `agent.set_hyperparams()`; `on_hyperparam_update` fires when anything changed. `optimizer.on_improvement()` is called when the seat's trend is improving and `optimizer.on_plateau()` when the seat converges. Windows that are not scored (no finished episode, no turn, or frozen for self-play) do not step the optimizer.
+
+A seat's score also moves when the other seats change, so the tuning signal is noisier than in single-agent training.
+
+### Rollback on degradation
+
+Off by default; `rollback_on_degradation=True` requires `checkpoint_dir`.
+
+- A scored window is **degraded** when the seat's score is below `best - max(|best| * (1 - degradation_threshold), noise floor)`, where the noise floor is the seat's own adaptive floor (so ordinary score noise does not qualify).
+- After `min_consecutive_degradations` degraded windows in a row the degradation is **confirmed**: `on_degradation` fires, and for an on-policy agent the seat's best checkpoint is restored and training continues. Off-policy agents are reported (`rolled_back=False`) but never rolled back - their replay buffer would pull restored weights straight back.
+- Degraded windows do not count toward the plateau counter, and a confirmed degradation resets it, so a collapsed seat is not declared converged at its collapsed level.
+- Windows in which the seat's optimizer is probing never count.
+- **With self-play enabled**, only windows in which at least one *other* seat was played by a pool snapshot count. In a competitive game a score also drops when the opponent improves, which is not a collapse; windows against a frozen opponent are the ones where the opposition did not change. Windows against all-live opponents neither count nor reset the streak.
+
+Without self-play, use rollback for cooperative games. In a competitive game without a pool it would undo real learning whenever the opponent gets better.
+
+## Self-play
+
+Two agents that only ever play each other's current version tend to chase each other in circles. Training against a pool of past snapshots makes forgetting how to beat an old strategy cost reward. There are two ways to use it.
+
+```python
+@dataclass
+class SelfPlayConfig:
+    pool_size: int = 10               # snapshots kept per seat, oldest evicted first
+    snapshot_every: int = 20          # save a snapshot every N windows
+    opponent_prob: float = 0.5        # MultiAgentRunner: chance per window that a seat is frozen
+    pool_dir: Optional[str] = None    # None = temporary directory, removed when the run ends
+    opponent_factory: Optional[Callable[[Hashable], Any]] = None
+    seed: Optional[int] = None        # seeds the pool's sampling
+```
+
+Snapshots are weights on disk. A frozen opponent is one *stand-in* agent per seat into which a sampled snapshot is loaded, so memory does not grow with `pool_size`. The stand-in is a `copy.deepcopy` of the live agent (framework module references are shared, not copied) - this works for the built-in Torch agents; pass `opponent_factory=lambda agent_id: <fresh agent>` for agent types that cannot be deep-copied. The stand-in's hyperparameters are synced from the live agent each time, and its rollout cache is discarded after every window.
+
+### Every seat learns: `MultiAgentRunner(self_play=...)`
+
+- Every `snapshot_every` windows each seat's current weights are added to **that seat's** pool.
+- Each window, each seat whose pool is non-empty is frozen with probability `opponent_prob`: it is played by a uniformly sampled past snapshot of itself. At least one seat always stays live.
+- A frozen seat does not learn, is not scored and does not step its optimizer for that window (`SeatResult.frozen_windows` counts these). Live seats learn and are scored whether their opponents were live or frozen.
+- The pipeline's live agents are restored before `run()` returns, then best-weight restore proceeds as usual.
+
+Pools are per seat, so this works for asymmetric games. It needs a pipeline with `set_agents()` (both built-in multi-agent pipelines).
+
+When episodes are longer than a window, an episode's return can include steps that were played by a snapshot before the seat went live again.
+
+### One learner: `SelfPlayPipeline`
+
+```python
+class SelfPlayPipeline(BasePipeline):
+    """
+    Turns a multi-agent pipeline into an ordinary single-agent pipeline:
+    the learner plays learner_seat, every other seat is played by a past
+    snapshot of the learner.
+    """
+
+    def __init__(self, pipeline, learner_seat, agent=None, config: Optional[SelfPlayConfig] = None): ...
+    def set_agent(self, agent) -> None: ...
+
+    @property
+    def pool(self) -> Optional[OpponentPool]: ...
+```
+
+Because it is a `BasePipeline`, `RLOptimizer` / `LoopController` drive it with everything the single-agent loop has: every optimizer, rollback on degradation, policy spawning, checkpoint confirmation.
+
+- The pool starts with the learner's initial weights and gains a snapshot every `snapshot_every` windows; each window every opponent seat is loaded with a uniformly sampled snapshot.
+- The opponent seats must be playable by the learner's policy - same observation and action spaces (symmetric games). `opponent_prob` is not used here.
+- Only the learner seat's `EpisodeData` is yielded; windows in which the learner took no step are skipped. With the AEC pipeline the learner gets roughly `window_size / n_seats` steps per window.
+
+### OpponentPool
+
+```python
+class OpponentPool:
+    def __init__(self, pool_size: int = 10, pool_dir: Optional[str] = None, seed: Optional[int] = None): ...
+    def add(self, key, agent) -> str: ...                       # save agent's weights as the newest snapshot
+    def sample(self, key) -> Optional[str]: ...                 # uniform over the pool
+    def load_into(self, key, stand_in, live_agent=None) -> bool: ...
+    def size(self, key) -> int: ...
+    def sizes(self) -> Dict[Hashable, int]: ...
+    def cleanup(self) -> None: ...                              # removes the directory if the pool created it
+```
+
+**Not provided** (a single-agent `LoopController` feature without an agreed multi-agent meaning): policy spawning in `MultiAgentRunner` - use `SelfPlayPipeline` with `RLOptimizer` when you need it for one learner. One policy shared across seats, league training and centralized critics are out of scope.
 
 See [Multi-agent training](../guides/multi-agent.md) for a worked example.

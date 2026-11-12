@@ -7,7 +7,7 @@ This section documents every public class and function in tensor-optix, organize
 - **[make_agent](factory.md)** - the auto-selection factory.
 - **[Algorithms](algorithms.md)** - the 15 built-in agents across PyTorch, TensorFlow, and JAX/Flax.
 - **[Pipelines](pipelines.md)** - `BatchPipeline`, `LivePipeline`, `VectorBatchPipeline`.
-- **[Multi-agent](multi-agent.md)** - PettingZoo Parallel/AEC pipelines, `SeatEnvView`, `MultiAgentRunner`.
+- **[Multi-agent](multi-agent.md)** - PettingZoo Parallel/AEC pipelines, `SeatEnvView`, `MultiAgentRunner` (per-seat convergence, checkpoints, tuning), self-play (`SelfPlayConfig`, `SelfPlayPipeline`).
 - **[Encoders](encoders.md)** - observation encoders for image and `Dict` observation spaces.
 - **[Optimizers](optimizers.md)** - SPSA, Momentum, Backoff, PBT, Adaptive (hyperparameter tuning).
 - **[Callbacks](callbacks.md)** - Rich dashboard, Weights & Biases, TensorBoard, `AsyncCallbackAdapter`.

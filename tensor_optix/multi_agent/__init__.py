@@ -16,8 +16,11 @@ per-seat convergence detection (BackoffScheduler) and best-snapshot
 checkpointing (CheckpointRegistry); the run stops when all seats (or any
 seat, configurable) have converged, and restores each seat's best weights.
 
-Out of scope for this package: shared/self-play policies across seats,
-online hyperparameter tuning and degradation rollback per seat, and
+Each seat's hyperparameters are tuned online by its own optimizer, and
+SelfPlayConfig / SelfPlayPipeline provide frozen-opponent self-play.
+
+Out of scope for this package: one policy shared across seats, degradation
+rollback and policy spawning per seat, and
 vectorizing across multiple copies of a multi-agent environment.
 """
 from tensor_optix.multi_agent.seat_env import SeatEnvView
@@ -29,6 +32,7 @@ from tensor_optix.multi_agent.multi_agent_runtime import (
     MultiAgentRunner,
     SeatResult,
 )
+from tensor_optix.multi_agent.self_play import OpponentPool, SelfPlayConfig, SelfPlayPipeline
 
 __all__ = [
     "SeatEnvView",
@@ -38,4 +42,7 @@ __all__ = [
     "MultiAgentCallback",
     "MultiAgentRunResult",
     "SeatResult",
+    "SelfPlayConfig",
+    "SelfPlayPipeline",
+    "OpponentPool",
 ]
