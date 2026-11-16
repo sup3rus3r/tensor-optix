@@ -79,9 +79,17 @@ class HebbianHook(LoopCallback):
         self.clip_weight = clip_weight
         self.respect_dale = respect_dale
 
-        # accum[graph_idx][edge_id] = list of (h_pre * h_post) scalar values
+        # Per graph: running sum of h_pre * h_post per edge, kept on the device
+        # as one vector aligned with the graph's edge_table() order, plus the
+        # number of steps summed. Moved to the host (one transfer) only when
+        # the topology changes or the update is applied, into _accum:
+        # edge_id -> [sum, count].
+        self._run_sum: List[Optional[torch.Tensor]] = [None for _ in self.graphs]
+        self._run_count: List[int] = [0 for _ in self.graphs]
+        self._run_ids: List[List[str]] = [[] for _ in self.graphs]
+        self._run_version: List[int] = [-1 for _ in self.graphs]
         self._accum: List[Dict[str, List[float]]] = [
-            defaultdict(list) for _ in self.graphs
+            defaultdict(lambda: [0.0, 0]) for _ in self.graphs
         ]
         self._steps: int = 0
 
@@ -114,17 +122,38 @@ class HebbianHook(LoopCallback):
         edge across all tracked graphs.
 
         Call this immediately after each forward pass / agent.act() while
-        neurons still hold their _current activations for this timestep.
+        neurons still hold their activations for this timestep. All edges are
+        handled as one tensor op, with no host sync.
         """
         for g_idx, graph in enumerate(self.graphs):
-            accum = self._accum[g_idx]
-            for edge in graph.all_edges():
-                src_neuron = graph.get_neuron(edge.src)
-                dst_neuron = graph.get_neuron(edge.dst)
-                h_pre = src_neuron._current.detach().squeeze().item()
-                h_post = dst_neuron._current.detach().squeeze().item()
-                accum[edge.edge_id].append(h_pre * h_post)
+            table = graph.edge_table()
+            if graph._struct_version != self._run_version[g_idx]:
+                self._flush(g_idx)
+                self._run_ids[g_idx] = table.edge_ids
+                self._run_version[g_idx] = graph._struct_version
+            # Each neuron's current activation, gathered without a host sync.
+            h = torch.cat([
+                graph.get_neuron(nid)._current.detach().reshape(-1)[:1]
+                for nid in graph.neuron_index
+            ]).to(table.weight.device)
+            coact = h.index_select(0, table.src) * h.index_select(0, table.dst)
+            run = self._run_sum[g_idx]
+            self._run_sum[g_idx] = coact if run is None else run + coact
+            self._run_count[g_idx] += 1
         self._steps += 1
+
+    def _flush(self, g_idx: int) -> None:
+        """Move the on-device running sum for one graph into the per-edge dict."""
+        run = self._run_sum[g_idx]
+        if run is not None and self._run_count[g_idx]:
+            accum = self._accum[g_idx]
+            count = self._run_count[g_idx]
+            for eid, s in zip(self._run_ids[g_idx], run.tolist()):
+                entry = accum[eid]
+                entry[0] += s
+                entry[1] += count
+        self._run_sum[g_idx] = None
+        self._run_count[g_idx] = 0
 
     def apply(self) -> None:
         """
@@ -133,45 +162,80 @@ class HebbianHook(LoopCallback):
         Δw = η · mean(h_pre · h_post) - λ · w
 
         Call once per episode, after agent.learn() so PPO and Hebbian updates
-        are both applied before the next episode starts.
+        are both applied before the next episode starts. Computed for all edges
+        at once on the device.
         """
         if self._steps == 0:
             return
 
         for g_idx, graph in enumerate(self.graphs):
+            self._flush(g_idx)
             accum = self._accum[g_idx]
+            table = graph.edge_table()
+            if not table.edge_ids:
+                continue
+            dev = table.weight.device
+            means, has = [], []
+            for eid in table.edge_ids:
+                entry = accum.get(eid)
+                if entry and entry[1]:
+                    means.append(entry[0] / entry[1])
+                    has.append(True)
+                else:
+                    means.append(0.0)
+                    has.append(False)
+            mean_coact = torch.tensor(means, device=dev)
+            mask = torch.tensor(has, device=dev)
+
+            # The rule is defined on the EFFECTIVE weight. In dale_mode=
+            # "softplus" the stored parameter is a raw theta (effective =
+            # +/-softplus(theta)); decaying or clipping theta directly would,
+            # e.g., GROW a near-zero excitatory edge (theta << 0) instead of
+            # shrinking it.
+            w = table.weight
+            new_w = w + self.hebbian_lr * mean_coact - self.weight_decay * w
+            if self.clip_weight is not None:
+                new_w = new_w.clamp(-self.clip_weight, self.clip_weight)
+            new_raw = self._to_raw(graph, new_w)
+
+            n_ff = len(graph._ff_edge_ids)
             with torch.no_grad():
-                for edge in graph.all_edges():
-                    samples = accum.get(edge.edge_id)
-                    if not samples:
-                        continue
-                    mean_coact = sum(samples) / len(samples)
-                    # The rule is defined on the EFFECTIVE weight. In
-                    # dale_mode="softplus" the stored parameter is a raw
-                    # theta (effective = +/-softplus(theta)); decaying or
-                    # clipping theta directly would, e.g., GROW a near-zero
-                    # excitatory edge (theta << 0) instead of shrinking it.
-                    w = graph.effective_weight(edge.edge_id)
-                    new_w = w + self.hebbian_lr * mean_coact - self.weight_decay * w
-                    if self.clip_weight is not None:
-                        new_w = max(-self.clip_weight, min(self.clip_weight, new_w))
-                    if graph._dale_mode == "softplus":
-                        ct = graph.get_neuron(edge.src).cell_type
-                        if ct == "excitatory":
-                            new_w = max(new_w, 0.0)
-                        elif ct == "inhibitory":
-                            new_w = min(new_w, 0.0)
-                        edge.weight.fill_(graph._softplus_init(edge.src, new_w))
-                    else:
-                        edge.weight.fill_(new_w)
+                vec = graph._ff_weight_vec
+                if n_ff:
+                    vec.copy_(torch.where(mask[:n_ff], new_raw[:n_ff], vec))
+                for i, edge in enumerate(graph._rec_edges):
+                    j = n_ff + i
+                    if has[j]:
+                        edge.weight.copy_(new_raw[j].reshape(edge.weight.shape))
 
             if self.respect_dale:
                 graph.enforce_dale()
 
+    @staticmethod
+    def _to_raw(graph: NeuronGraph, new_w: torch.Tensor) -> torch.Tensor:
+        """Effective weights -> stored parameters, for every edge in edge_table() order."""
+        if graph._dale_mode != "softplus":
+            return new_w
+        sign = torch.cat([graph._ff_sign, graph._rec_sign])
+        # Dale: an excitatory edge cannot go negative, an inhibitory one positive.
+        clamped = torch.where(sign > 0, new_w.clamp(min=0.0),
+                              torch.where(sign < 0, new_w.clamp(max=0.0), new_w))
+        mag = clamped.abs()
+        # Inverse of softplus; near-zero magnitudes map to theta = -10 as in
+        # NeuronGraph._softplus_init.
+        theta = torch.where(
+            mag < 1e-6, torch.full_like(mag, -10.0),
+            torch.log(torch.expm1(mag.clamp(min=1e-6))),
+        )
+        return torch.where(sign == 0, new_w, theta)
+
     def reset(self) -> None:
         """Clear all accumulated co-activation data. Call at episode start or end."""
-        for accum in self._accum:
+        for g_idx, accum in enumerate(self._accum):
             accum.clear()
+            self._run_sum[g_idx] = None
+            self._run_count[g_idx] = 0
+            self._run_version[g_idx] = -1
         self._steps = 0
 
     # ------------------------------------------------------------------
@@ -226,8 +290,9 @@ class HebbianHook(LoopCallback):
         Useful for logging how strongly pairs of neurons are correlating.
         """
         result: Dict[str, float] = {}
-        for accum in self._accum:
-            for eid, samples in accum.items():
-                if samples:
-                    result[eid] = sum(samples) / len(samples)
+        for g_idx, accum in enumerate(self._accum):
+            self._flush(g_idx)
+            for eid, (total, count) in accum.items():
+                if count:
+                    result[eid] = total / count
         return result

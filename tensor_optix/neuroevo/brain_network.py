@@ -96,6 +96,7 @@ class BrainNetwork(nn.Module):
         self,
         name: str = "brain",
         output_regions: Optional[List[str]] = None,
+        device=None,
     ) -> None:
         super().__init__()
 
@@ -120,7 +121,9 @@ class BrainNetwork(nn.Module):
         # region_name -> deque of past output tensors (list for simplicity)
         self._region_output_history: Dict[str, List[torch.Tensor]] = {}
 
-        self._device: torch.device = get_device()
+        self._device: torch.device = (
+            torch.device(device) if device is not None else get_device()
+        )
 
     def to(self, *args, **kwargs):
         result = super().to(*args, **kwargs)

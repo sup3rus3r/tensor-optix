@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -9,8 +10,43 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .neuron import GRUNeuron, LSTMNeuron, Neuron
+from .neuron import (
+    ACTIVATIONS, GRUNeuron, LSTMNeuron, Neuron,
+    TrainableGRUNeuron, TrainableLSTMNeuron,
+)
 from tensor_optix.core.device import get_device
+
+_GRU_ATTRS = ("wz", "uz", "bz", "wr", "ur", "br", "wn", "un", "bn")
+_LSTM_ATTRS = ("wf", "uf", "bf", "wi", "ui", "bi", "wg", "ug", "bg", "wo", "uo", "bo")
+
+
+@dataclass
+class EdgeTable:
+    """Every edge of a graph as aligned tensors (see NeuronGraph.edge_table)."""
+    edge_ids: List[str]
+    src: torch.Tensor       # [E] source neuron index
+    dst: torch.Tensor       # [E] destination neuron index
+    weight: torch.Tensor    # [E] effective (post-Dale) weight, detached
+    grad: torch.Tensor      # [E] gradient of the stored parameter, 0 if none yet
+
+
+@dataclass
+class GraphState:
+    """Explicit recurrent state for NeuronGraph.forward_batch().
+
+    Columns follow the graph's neuron index order (graph.all_neuron_ids()).
+    """
+    h: torch.Tensor                 # [B, n] activations of the previous step
+    c: torch.Tensor                 # [B, n] LSTM cell state (zero for other neurons)
+    hist: Optional[torch.Tensor]    # [B, max_delay, n] past activations, newest first
+
+    def detach(self) -> "GraphState":
+        """Cut the gradient path into earlier steps (truncated BPTT)."""
+        return GraphState(
+            h=self.h.detach(),
+            c=self.c.detach(),
+            hist=None if self.hist is None else self.hist.detach(),
+        )
 
 
 @dataclass
@@ -49,7 +85,7 @@ class NeuronGraph(nn.Module):
     surviving parameters.
     """
 
-    def __init__(self, dale_mode: str = "clamp") -> None:
+    def __init__(self, dale_mode: str = "clamp", device=None) -> None:
         """
         dale_mode: 'clamp' (default) or 'softplus'.
 
@@ -57,6 +93,10 @@ class NeuronGraph(nn.Module):
         'softplus' — raw parameter θ; effective_weight = softplus(θ) * sign.
                      Zero-weight init uses θ=-10 (softplus(-10)≈4.5e-5).
                      enforce_dale() is a no-op in this mode.
+
+        device: where the graph lives. None uses the global tensor-optix
+        device (tensor_optix.set_device / auto_device), which is "cpu" unless
+        you change it. Pass "cuda" (or call tx.auto_device()) to run on GPU.
         """
         super().__init__()
 
@@ -80,7 +120,14 @@ class NeuronGraph(nn.Module):
         self._dale_mode: str = dale_mode
 
         # Cached device — initialised from the global registry, updated on .to()
-        self._device: torch.device = get_device()
+        self._device: torch.device = (
+            torch.device(device) if device is not None else get_device()
+        )
+
+        # Per-step activation recorder, filled by forward() and forward_batch()
+        # and drained by TopologyController. None = recording off.
+        self._trace: Optional[deque] = None
+        self._trace_struct: int = -1
 
         # -------------------------------------------------------------------
         # Matrix cache — rebuilt lazily on topology change
@@ -103,6 +150,27 @@ class NeuronGraph(nn.Module):
         self._ff_weight_vec: Optional[nn.Parameter] = None
         self._ff_params: List[nn.Parameter] = []   # unused after first rebuild; kept for compat
         self._ff_cell_types: List[str] = []
+        # Edge id of each entry of _ff_weight_vec, in packed order. Replaced
+        # (never mutated) on rebuild, so holders can keep a reference to the
+        # order they last saw and map old packed positions to new ones by id.
+        self._ff_edge_ids: List[str] = []
+        # Dale sign per packed entry: +1 excitatory source, -1 inhibitory, 0 free.
+        self._ff_sign: Optional[torch.Tensor] = None
+        self._rec_sign: Optional[torch.Tensor] = None
+        self._rec_src: Optional[torch.Tensor] = None
+        self._rec_dst: Optional[torch.Tensor] = None
+        self._rec_delay: Optional[torch.Tensor] = None
+        self._max_rec_delay: int = 0
+        # Vectorized execution plan for _raw_forward / forward_batch.
+        self._plan: list = []
+        self._input_idx: Optional[torch.Tensor] = None
+        self._output_idx: Optional[torch.Tensor] = None
+        self._lstm_idx: Optional[torch.Tensor] = None
+        self._lstm_neurons: List[Neuron] = []
+        self._state_src: List[Tuple[Neuron, bool]] = []
+        self._custom_types: List[str] = []
+        # Activations of the most recent forward(), [n] in neuron index order.
+        self._last_h: Optional[torch.Tensor] = None
         self._rec_edges: List[Edge] = []
         self._topo_order: List[str] = []
         # Per-level activation groups: List[List[(idx_tensor, nid_list, act_fn)]]
@@ -237,12 +305,13 @@ class NeuronGraph(nn.Module):
         self._edges[eid] = edge
         self._in_edges[dst].append(eid)
 
-        # Ensure destination neuron history buffer is deep enough
-        dst_neuron: Neuron = self._neurons[dst]  # type: ignore
-        if delay > dst_neuron.max_delay:
-            dst_neuron.expand_history(delay)
+        # A delayed edge reads the SOURCE neuron's history, so the source is
+        # the one that must keep a deep enough buffer and push into it.
         if delay >= 1:
-            dst_neuron._has_delayed_readers = True  # type: ignore
+            src_neuron: Neuron = self._neurons[src]  # type: ignore
+            if delay > src_neuron.max_delay:
+                src_neuron.expand_history(delay)
+            src_neuron._has_delayed_readers = True  # type: ignore
 
         self._matrix_dirty = True
         return eid
@@ -259,14 +328,7 @@ class NeuronGraph(nn.Module):
             self._in_edges[edge.dst] = [
                 e for e in self._in_edges[edge.dst] if e != edge_id
             ]
-        # Recompute flag: clear if no remaining incoming edge has delay >= 1
-        if edge.dst in self._neurons:
-            dst_neuron: Neuron = self._neurons[edge.dst]  # type: ignore
-            dst_neuron._has_delayed_readers = any(  # type: ignore
-                self._edges[e].delay >= 1
-                for e in self._in_edges[edge.dst]
-                if e in self._edges
-            )
+        # _has_delayed_readers is recomputed for every neuron on the next rebuild.
         self._matrix_dirty = True
 
     def remove_neuron(self, neuron_id: str) -> None:
@@ -342,6 +404,61 @@ class NeuronGraph(nn.Module):
             hook()
         return out
 
+    # ------------------------------------------------------------------
+    # Activation recording (feeds TopologyController's merge / importance
+    # statistics, from this graph's own forwards or from an external one)
+    # ------------------------------------------------------------------
+
+    @property
+    def neuron_index(self) -> List[str]:
+        """Neuron ids in the column order used by every activation tensor."""
+        return list(self._neuron_index)
+
+    def enable_activation_trace(self, capacity: int = 100) -> None:
+        """Start keeping the last `capacity` forward calls' activations."""
+        if self._trace is None or self._trace.maxlen != capacity:
+            self._trace = deque(self._trace or (), maxlen=capacity)
+
+    def record_activations(self, h: torch.Tensor) -> None:
+        """
+        Report activations from a forward pass, shape [n] or [S, n], columns
+        in neuron_index order. forward() and forward_batch() call this
+        themselves; call it from your own forward pass if you bypass both and
+        still want the controller to see what the network is doing.
+        """
+        self.ensure_built()   # tag rows with the structure they were produced under
+        h = h.detach()
+        self._last_h = h[-1] if h.dim() == 2 else h
+        self._last_h_struct = self._struct_version
+        if self._trace is not None:
+            self._trace.append((self._struct_version, h.reshape(-1, h.shape[-1])))
+
+    def drain_activation_trace(self) -> Optional[torch.Tensor]:
+        """
+        Return every activation row recorded since the last drain as one
+        [S, n] tensor (neuron_index order) and clear the recorder. Rows
+        recorded under an older topology are dropped. None if nothing usable.
+        """
+        if not self._trace:
+            return None
+        rows = [t for ver, t in self._trace if ver == self._struct_version]
+        self._trace.clear()
+        if not rows:
+            return None
+        return torch.cat(rows, dim=0)
+
+    def activation_snapshot(self) -> torch.Tensor:
+        """Latest activation of every neuron as an [n] tensor (neuron_index order)."""
+        if self._matrix_dirty and self._neurons:
+            self._rebuild_matrix_structure()
+        last = getattr(self, "_last_h", None)
+        if last is not None and getattr(self, "_last_h_struct", -1) == self._struct_version:
+            return last
+        return torch.cat([
+            self._neurons[nid]._current.detach().reshape(-1)[:1]  # type: ignore
+            for nid in self._neuron_index
+        ]).to(self._device)
+
     def _raw_forward(self, obs: torch.Tensor) -> torch.Tensor:
         """
         Run one timestep of the graph.
@@ -399,6 +516,8 @@ class NeuronGraph(nn.Module):
             h = h.clone()
             h[idx] = neuron._current.squeeze(0)  # type: ignore
 
+        self.record_activations(h)
+
         # Push history only for neurons that have delayed incoming edges
         for nid in self._neurons:
             if self._neurons[nid]._has_delayed_readers:  # type: ignore
@@ -436,12 +555,15 @@ class NeuronGraph(nn.Module):
     # Serialization — topology-aware save / load
     # ------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
+    def to_dict(self, include_weights: bool = True) -> dict:
         """
-        Serialize the full graph topology (structure only — weights come from
-        state_dict). The returned dict is JSON-serializable and captures enough
-        information for from_dict() to reconstruct an identical graph that will
-        accept the original state_dict without key mismatches.
+        Serialize the graph. The returned dict is JSON-serializable.
+
+        include_weights=True (default) stores every parameter under "state", so
+        from_dict() returns a graph that computes the same function. With
+        include_weights=False only the structure is stored and from_dict()
+        gives back freshly initialised weights: use that only when you save
+        state_dict() next to it yourself (GraphAgent checkpoints do).
         """
         neurons = []
         for role, ids in [
@@ -469,18 +591,32 @@ class NeuronGraph(nn.Module):
                 "delay":   e.delay,
             })
 
-        return {
+        out = {
             "dale_mode": self._dale_mode,
             "neurons":   neurons,
             "edges":     edges,
         }
+        if include_weights:
+            out["state"] = {
+                k: v.detach().cpu().tolist() for k, v in self.state_dict().items()
+            }
+        return out
+
+    def _load_state_lists(self, state: dict) -> None:
+        self.load_state_dict({
+            k: torch.tensor(v, dtype=torch.float32, device=self._device)
+            for k, v in state.items()
+        })
 
     @classmethod
-    def from_dict(cls, d: dict) -> "NeuronGraph":
+    def from_dict(cls, d: dict, device=None) -> "NeuronGraph":
         """
-        Reconstruct a NeuronGraph from a topology dict produced by to_dict().
+        Reconstruct a NeuronGraph from a dict produced by to_dict().
         Neurons are added with their original IDs so state_dict keys match
-        exactly after a subsequent load_state_dict() call.
+        exactly after a subsequent load_state_dict() call. If the dict carries
+        weights ("state") they are loaded; if it was made with
+        include_weights=False the weights are freshly initialised and you must
+        call load_state_dict() yourself.
         """
         from .neuron import GRUNeuron, LSTMNeuron, TrainableGRUNeuron, TrainableLSTMNeuron
 
@@ -492,8 +628,10 @@ class NeuronGraph(nn.Module):
             "TrainableLSTMNeuron": TrainableLSTMNeuron,
         }
 
-        graph = cls(dale_mode=d.get("dale_mode", "clamp"))
+        graph = cls(dale_mode=d.get("dale_mode", "clamp"), device=device)
         graph._populate_from_dict(d)
+        if "state" in d:
+            graph._load_state_lists(d["state"])
         return graph
 
     def restore_from_dict(self, d: dict) -> "NeuronGraph":
@@ -528,8 +666,14 @@ class NeuronGraph(nn.Module):
         self._input_pos = {}
         self._dale_mode = d.get("dale_mode", "clamp")
         self._matrix_dirty = True
+        self._ff_edge_ids = []
+        self._last_h = None
+        if self._trace is not None:
+            self._trace.clear()
         self._populate_from_dict(d)
         self.invalidate_compile()
+        if "state" in d:
+            self._load_state_lists(d["state"])
         return self
 
     def _populate_from_dict(self, d: dict) -> None:
@@ -607,7 +751,23 @@ class NeuronGraph(nn.Module):
         if self._dale_mode == "softplus":
             return
         with torch.no_grad():
-            for edge in self._edges.values():
+            if self._matrix_dirty or self._ff_sign is None:
+                # Edges not packed yet: each one is still its own Parameter.
+                for edge in self._edges.values():
+                    ct = self.get_neuron(edge.src).cell_type
+                    if ct == "excitatory":
+                        edge.weight.clamp_(min=0.0)
+                    elif ct == "inhibitory":
+                        edge.weight.clamp_(max=0.0)
+                return
+            vec = self._ff_weight_vec
+            if vec is not None and vec.numel():
+                zero = torch.zeros_like(vec)
+                inf = torch.full_like(vec, float("inf"))
+                lo = torch.where(self._ff_sign > 0, zero, -inf)
+                hi = torch.where(self._ff_sign < 0, zero, inf)
+                vec.copy_(torch.minimum(torch.maximum(vec, lo), hi))
+            for edge in self._rec_edges:
                 ct = self.get_neuron(edge.src).cell_type
                 if ct == "excitatory":
                     edge.weight.clamp_(min=0.0)
@@ -648,19 +808,24 @@ class NeuronGraph(nn.Module):
             return -10.0  # softplus(-10) ≈ 4.5e-5 ≈ 0
         return self._softplus_inv(abs_w)
 
-    def _apply_dale(self, raw: torch.Tensor, cell_types: List[str]) -> torch.Tensor:
-        """Apply softplus Dale transform to a tensor of raw parameters."""
+    def _apply_dale(
+        self, raw: torch.Tensor, cell_types: Optional[List[str]] = None,
+    ) -> torch.Tensor:
+        """Apply the softplus Dale transform to a vector of raw edge parameters.
+
+        cell_types=None means the packed feedforward edges (uses the cached
+        sign vector); pass a list to transform some other edge set."""
         if self._dale_mode != "softplus":
             return raw
-        sp = F.softplus(raw)
-        result = raw.clone()
-        for i, ct in enumerate(cell_types):
-            if ct == "excitatory":
-                result[i] = sp[i]
-            elif ct == "inhibitory":
-                result[i] = -sp[i]
-            # "any": use raw directly (unconstrained)
-        return result
+        sign = self._ff_sign if cell_types is None else self._sign_tensor(cell_types)
+        return torch.where(sign == 0, raw, sign * F.softplus(raw))
+
+    def _rec_effective_weights(self) -> torch.Tensor:
+        """Effective weights of all delayed edges as one differentiable [E_rec] tensor."""
+        raw = torch.stack([e.weight.reshape(()) for e in self._rec_edges])
+        if self._dale_mode != "softplus":
+            return raw
+        return torch.where(self._rec_sign == 0, raw, self._rec_sign * F.softplus(raw))
 
     def _effective_rec_weight(self, edge: "Edge") -> torch.Tensor:
         """Effective weight for a recurrent edge (scalar tensor, differentiable)."""
@@ -721,12 +886,12 @@ class NeuronGraph(nn.Module):
             self._ff_src = torch.tensor(ff_src, dtype=torch.long, device=self._device)
             # Collect current weight values (edge.weight may be an individual
             # Parameter from add_edge() or a view from the previous rebuild).
+            # One stack, no per-edge .item(): a host sync per edge here would
+            # cost a GPU round trip for every edge on every topology change.
             with torch.no_grad():
-                packed = torch.tensor(
-                    [self._edges[eid].weight.item() for eid in ff_edge_ids],
-                    dtype=torch.float32,
-                    device=self._device,
-                )
+                packed = torch.stack(
+                    [self._edges[eid].weight.detach().reshape(()) for eid in ff_edge_ids]
+                ).to(device=self._device, dtype=torch.float32)
             self._ff_weight_vec = nn.Parameter(packed)
             # Remove individual ff Parameters from ParameterDict — they are now
             # represented by the packed vector and must not appear twice in state_dict.
@@ -734,14 +899,14 @@ class NeuronGraph(nn.Module):
                 param_key = eid.replace("-", "_")
                 if param_key in self._edge_weights:
                     del self._edge_weights[param_key]
-            # Update each edge.weight to be an element-view of the packed vector
-            # so that enforce_dale(), effective_weight(), and gradient inspection work.
-            # retain_grad() ensures edge.weight.grad is populated after backward(),
-            # which topology_controller uses for dead-edge detection.
-            for i, eid in enumerate(ff_edge_ids):
-                view = self._ff_weight_vec[i]
-                view.retain_grad()
-                self._edges[eid].weight = view
+            # Each edge.weight becomes an element-view of the packed vector so
+            # that enforce_dale(), effective_weight() and in-place edits work.
+            # Gradients are NOT read from these views: they sit outside the
+            # forward graph, so their .grad is never populated. Read them from
+            # the packed vector via edge_table() instead.
+            with torch.enable_grad():   # views must stay attached even if rebuilt under no_grad
+                for i, eid in enumerate(ff_edge_ids):
+                    self._edges[eid].weight = self._ff_weight_vec[i]
         else:
             self._ff_dst = None
             self._ff_src = None
@@ -749,13 +914,44 @@ class NeuronGraph(nn.Module):
 
         self._ff_params = []          # no longer used; cleared to free references
         self._ff_cell_types = ff_cell_types
+        self._ff_edge_ids = ff_edge_ids   # new list object each rebuild
+        self._ff_sign = self._sign_tensor(ff_cell_types)
         self._rec_edges = rec_edges
+        rec_cells = [self.get_neuron(e.src).cell_type for e in rec_edges]
+        self._rec_sign = self._sign_tensor(rec_cells)
+        self._rec_src = torch.tensor(
+            [self._nid_to_idx[e.src] for e in rec_edges], dtype=torch.long, device=self._device)
+        self._rec_dst = torch.tensor(
+            [self._nid_to_idx[e.dst] for e in rec_edges], dtype=torch.long, device=self._device)
+        self._rec_delay = torch.tensor(
+            [e.delay - 1 for e in rec_edges], dtype=torch.long, device=self._device)
+        self._max_rec_delay = max((e.delay for e in rec_edges), default=0)
+        # A delayed edge reads its SOURCE's history, so the source is the
+        # neuron that has to push into it every step.
+        readers = {e.src for e in rec_edges}
+        for nid, neuron in self._neurons.items():
+            neuron._has_delayed_readers = nid in readers  # type: ignore
         self._topo_order = self._topological_order()
         self._is_uniform = self._check_uniform()
         self._level_act_groups = self._compute_level_act_groups() if self._is_uniform else []
+        self._plan = self._build_plan()
+        self._input_idx = torch.tensor(
+            [self._nid_to_idx[nid] for nid in self._input_ids],
+            dtype=torch.long, device=self._device)
+        self._output_idx = torch.tensor(
+            [self._nid_to_idx[nid] for nid in self._output_ids],
+            dtype=torch.long, device=self._device)
         self._fwd = self._fast_forward if self._is_uniform else self._raw_forward
         self._matrix_dirty = False
         self._struct_version += 1
+
+    def _sign_tensor(self, cell_types: List[str]) -> torch.Tensor:
+        """+1 excitatory, -1 inhibitory, 0 unconstrained, one entry per edge."""
+        table = {"excitatory": 1.0, "inhibitory": -1.0}
+        return torch.tensor(
+            [table.get(ct, 0.0) for ct in cell_types],
+            dtype=torch.float32, device=self._device,
+        )
 
     def _assemble_W(self) -> torch.Tensor:
         """
@@ -769,11 +965,233 @@ class NeuronGraph(nn.Module):
         if self._ff_weight_vec is None or self._ff_weight_vec.numel() == 0:
             return torch.zeros(n, n, device=self._device)
         raw = self._ff_weight_vec                        # [num_ff] — single Parameter, no stack
-        weights = self._apply_dale(raw, self._ff_cell_types)
+        weights = self._apply_dale(raw)
         flat_idx = self._ff_dst * n + self._ff_src       # [num_ff]
         W_flat = torch.zeros(n * n, device=self._device)
         W_flat = W_flat.scatter_add(0, flat_idx, weights)
         return W_flat.view(n, n)
+
+    # ------------------------------------------------------------------
+    # Whole-graph edge access (no per-edge host syncs)
+    # ------------------------------------------------------------------
+
+    def edge_table(self) -> "EdgeTable":
+        """
+        Every edge as aligned tensors: packed feedforward edges first (in
+        _ff_edge_ids order), then delayed edges. Weights are effective
+        (post-Dale) and detached; grad is the gradient of the stored
+        parameter, zero where no backward has run yet.
+
+        This is how to read edge gradients. edge.weight.grad is always empty
+        for packed edges because edge.weight is a view that sits outside the
+        forward graph; the gradient lives on the packed vector.
+        """
+        self.ensure_built()
+        dev = self._device
+        ids = list(self._ff_edge_ids)
+        src, dst, w, g = [], [], [], []
+        with torch.no_grad():
+            vec = self._ff_weight_vec
+            if vec is not None and vec.numel():
+                src.append(self._ff_src)
+                dst.append(self._ff_dst)
+                w.append(self._apply_dale(vec.detach()))
+                g.append(vec.grad.detach() if vec.grad is not None else torch.zeros_like(vec))
+            if self._rec_edges:
+                ids.extend(e.edge_id for e in self._rec_edges)
+                src.append(self._rec_src)
+                dst.append(self._rec_dst)
+                w.append(self._rec_effective_weights().detach())
+                g.append(torch.stack([
+                    e.weight.grad.reshape(()) if e.weight.grad is not None
+                    else torch.zeros((), device=dev)
+                    for e in self._rec_edges
+                ]))
+        if not ids:
+            empty_l = torch.zeros(0, dtype=torch.long, device=dev)
+            empty_f = torch.zeros(0, device=dev)
+            return EdgeTable([], empty_l, empty_l, empty_f, empty_f)
+        return EdgeTable(
+            edge_ids=ids,
+            src=torch.cat(src), dst=torch.cat(dst),
+            weight=torch.cat(w), grad=torch.cat(g),
+        )
+
+    # ------------------------------------------------------------------
+    # Batched forward with explicit recurrent state
+    # ------------------------------------------------------------------
+
+    def initial_state(self, batch_size: int = 1) -> GraphState:
+        """All-zero GraphState for `batch_size` independent sequences."""
+        self.ensure_built()
+        n = len(self._neuron_index)
+        z = torch.zeros(batch_size, n, device=self._device)
+        hist = (
+            torch.zeros(batch_size, self._max_rec_delay, n, device=self._device)
+            if self._max_rec_delay > 0 else None
+        )
+        return GraphState(h=z, c=z.clone(), hist=hist)
+
+    def forward_batch(
+        self, obs: torch.Tensor, state: Optional[GraphState] = None,
+    ) -> Tuple[torch.Tensor, GraphState]:
+        """
+        One timestep for a whole batch, with the recurrent state passed in and
+        returned instead of living inside the neurons.
+
+            obs   [B, n_inputs]
+            state GraphState from the previous step (None = all zeros)
+            ->    (out [B, n_outputs], next GraphState)
+
+        Computes the same function as running forward() on each row from a
+        reset graph, but as a few tensor ops per topological level instead of
+        a Python loop over neurons, and it handles point, GRU and LSTM neurons
+        and delayed edges. Neuron objects are only read for their parameters:
+        _current, _h, _c and the history buffers are not touched, so any number
+        of independent batches can run through one graph.
+
+        Gradients flow through the returned state, so a sequence unrolled with
+        this method is trained by backprop through time; call state.detach()
+        every k steps to truncate. The one exception is plain GRUNeuron and
+        LSTMNeuron, whose own hidden state is detached each step exactly as
+        their step() does; TrainableGRUNeuron / TrainableLSTMNeuron are not.
+        """
+        if self._matrix_dirty:
+            self._rebuild_matrix_structure()
+        n_in = len(self._input_ids)
+        if obs.dim() != 2 or obs.shape[1] != n_in:
+            raise ValueError(
+                f"forward_batch expects obs of shape [B, {n_in}], got {tuple(obs.shape)}"
+            )
+        obs = obs.to(device=self._device, dtype=torch.float32)
+        B = obs.shape[0]
+        n = len(self._neuron_index)
+        if state is None:
+            state = self.initial_state(B)
+        elif state.h.shape != (B, n):
+            raise ValueError(
+                f"state.h has shape {tuple(state.h.shape)} but this graph needs {(B, n)}; "
+                f"the topology changed since the state was created, or the batch size differs."
+            )
+        for step in self._plan:
+            for key, _, _ in step:
+                if key[0] == "custom":
+                    raise NotImplementedError(
+                        f"forward_batch does not support neuron type {key[1]}; "
+                        f"supported: Neuron, GRUNeuron, LSTMNeuron and their Trainable variants."
+                    )
+
+        D = self._max_rec_delay
+        hist = state.hist
+        rec_pre = None
+        if D > 0:
+            if hist is None:
+                hist = torch.zeros(B, D, n, device=self._device)
+            elif hist.shape[1] < D:
+                pad = torch.zeros(B, D - hist.shape[1], n, device=self._device)
+                hist = torch.cat([hist, pad], dim=1)
+            past = hist[:, self._rec_delay, self._rec_src]            # [B, E_rec]
+            contrib = past * self._rec_effective_weights()
+            rec_pre = torch.zeros(B, n, device=self._device).index_add(
+                1, self._rec_dst, contrib)
+
+        W = self._assemble_W()
+        h = state.h.index_copy(1, self._input_idx, obs)
+        c = state.c
+        sig, tanh = torch.sigmoid, torch.tanh
+
+        for step in self._plan:
+            for key, idx, neurons in step:
+                kind = key[0]
+                pre = h @ W[idx].t()                                  # [B, k]
+                if rec_pre is not None:
+                    pre = pre + rec_pre[:, idx]
+                if kind == "point":
+                    bias = torch.cat([nr.bias for nr in neurons])
+                    vals = ACTIVATIONS[key[1]](pre + bias)
+                elif kind == "gru":
+                    hp = state.h[:, idx]
+                    if key[1]:
+                        hp = hp.detach()
+                    p = {a: torch.cat([getattr(nr, a) for nr in neurons]) for a in _GRU_ATTRS}
+                    z = sig(p["wz"] * hp + p["uz"] * pre + p["bz"])
+                    r = sig(p["wr"] * hp + p["ur"] * pre + p["br"])
+                    cand = tanh(p["wn"] * r * hp + p["un"] * pre + p["bn"])
+                    vals = (1 - z) * hp + z * cand
+                else:  # lstm
+                    hp = state.h[:, idx]
+                    cp = state.c[:, idx]
+                    if key[1]:
+                        hp, cp = hp.detach(), cp.detach()
+                    p = {a: torch.cat([getattr(nr, a) for nr in neurons]) for a in _LSTM_ATTRS}
+                    f = sig(p["wf"] * hp + p["uf"] * pre + p["bf"])
+                    i = sig(p["wi"] * hp + p["ui"] * pre + p["bi"])
+                    g = tanh(p["wg"] * hp + p["ug"] * pre + p["bg"])
+                    o = sig(p["wo"] * hp + p["uo"] * pre + p["bo"])
+                    c_new = f * cp + i * g
+                    vals = o * tanh(c_new)
+                    c = c.index_copy(1, idx, c_new)
+                h = h.index_copy(1, idx, vals)
+
+        new_hist = None
+        if D > 0:
+            new_hist = torch.cat([h.unsqueeze(1), hist[:, :D - 1]], dim=1)
+        self.record_activations(h)
+        return h.index_select(1, self._output_idx), GraphState(h=h, c=c, hist=new_hist)
+
+    def _build_plan(self) -> list:
+        """Topological levels, each split into groups that can be computed
+        together: point neurons by activation, GRUs, LSTMs."""
+        non_input = set(self._hidden_ids) | set(self._output_ids)
+        input_set = set(self._input_ids)
+        in_degree: Dict[str, int] = {nid: 0 for nid in non_input}
+        succ: Dict[str, List[str]] = {}
+        for edge in self._edges.values():
+            if edge.delay == 0 and edge.dst in in_degree and edge.src not in input_set:
+                in_degree[edge.dst] += 1
+                succ.setdefault(edge.src, []).append(edge.dst)
+
+        level = [nid for nid in self._neuron_index if nid in in_degree and in_degree[nid] == 0]
+        levels: List[List[str]] = []
+        seen: set = set()
+        while level:
+            levels.append(level)
+            seen.update(level)
+            nxt: List[str] = []
+            for nid in level:
+                for dst in succ.get(nid, ()):
+                    in_degree[dst] -= 1
+                    if in_degree[dst] == 0:
+                        nxt.append(dst)
+            level = nxt
+        # Neurons on a delay-0 cycle never reach in-degree 0; run them last,
+        # one at a time, as _raw_forward does.
+        levels.extend([nid] for nid in self._neuron_index if nid in in_degree and nid not in seen)
+
+        plan = []
+        for level in levels:
+            groups: Dict[tuple, List[str]] = {}
+            for nid in level:
+                t = type(self._neurons[nid])
+                if t is Neuron:
+                    key = ("point", self._neurons[nid].activation_name)  # type: ignore
+                elif t in (GRUNeuron, TrainableGRUNeuron):
+                    key = ("gru", t is GRUNeuron)
+                elif t in (LSTMNeuron, TrainableLSTMNeuron):
+                    key = ("lstm", t is LSTMNeuron)
+                else:
+                    key = ("custom", t.__name__)
+                groups.setdefault(key, []).append(nid)
+            plan.append([
+                (
+                    key,
+                    torch.tensor([self._nid_to_idx[nid] for nid in nids],
+                                 dtype=torch.long, device=self._device),
+                    [self._neurons[nid] for nid in nids],
+                )
+                for key, nids in groups.items()
+            ])
+        return plan
 
     def _check_uniform(self) -> bool:
         """True when the fast vectorized path is valid: no recurrent edges and
@@ -861,6 +1279,8 @@ class NeuronGraph(nn.Module):
                 h = h.index_put((level_idx,), vals)
                 for j, nid in enumerate(level_nids):
                     self._neurons[nid]._current = vals[j].unsqueeze(0)  # type: ignore
+
+        self.record_activations(h)
 
         for nid in self._neurons:
             if self._neurons[nid]._has_delayed_readers:  # type: ignore

@@ -121,7 +121,12 @@ def split_neuron(
     Math:
         incoming edges: both copies receive full weight
         outgoing edges: both copies send w/2  (sum = w, output preserved)
-        bias:           both copies receive b/2
+        bias:           both copies keep the full bias, so each computes
+                        exactly what the original did
+
+    The bias must NOT be halved: the copy's activation is f(w_in.x + b), and
+    only if both copies produce the original's activation do their halved
+    outgoing edges sum back to w * f(w_in.x + b).
 
     Returns (original_id, new_id). Original neuron keeps its id.
     """
@@ -129,17 +134,11 @@ def split_neuron(
     in_edges = graph.edges_into(neuron_id)
     out_edges = graph.edges_from(neuron_id)
 
-    # Create the clone via split_copy() — type-aware deep copy, new uuid
+    # Create the clone via split_copy() — type-aware deep copy (full bias), new uuid
     role = "hidden" if neuron_id in graph.hidden_ids else "output"
     new_neuron_obj = neuron.split_copy()
     new_id = graph.add_neuron(role=role, neuron=new_neuron_obj)
     new_neuron = graph.get_neuron(new_id)
-
-    # Halve bias on both (split_copy already copied the full bias)
-    b = neuron.bias.item()
-    with torch.no_grad():
-        neuron.bias.fill_(b / 2)
-        new_neuron.bias.fill_(b / 2)
 
     # Copy history to new neuron
     new_neuron.init_history_from_buffer(list(neuron._history))

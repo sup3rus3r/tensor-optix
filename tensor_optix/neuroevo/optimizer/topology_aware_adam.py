@@ -22,7 +22,7 @@ Usage::
     opt.notify_topology_change(modified_params) # reset stale momentum
 """
 
-from typing import Iterable, List
+from typing import Iterable, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -72,6 +72,67 @@ class TopologyAwareAdam:
         for p in params:
             if p in self._opt.state:
                 del self._opt.state[p]
+
+    def carry_over(
+        self,
+        old: "TopologyAwareAdam",
+        old_packed: Optional[nn.Parameter] = None,
+        old_ids: Optional[Sequence[str]] = None,
+        new_packed: Optional[nn.Parameter] = None,
+        new_ids: Optional[Sequence[str]] = None,
+    ) -> None:
+        """
+        Copy Adam state from `old` after a topology rebuild replaced some
+        parameters with new objects.
+
+        * A parameter that is the same object in both optimizers keeps its
+          state untouched.
+        * The packed edge-weight vector is a new Parameter after every
+          rebuild. Pass the old and new vector together with the edge id of
+          each position (NeuronGraph._ff_edge_ids at the time of each
+          rebuild): positions are matched by edge id, so a surviving edge keeps
+          its momentum wherever it moved, and a new edge starts from zero.
+
+        Adam keeps one step counter per Parameter, so a new edge in a long-
+        running vector gets a mature step count with empty moments; its first
+        updates are therefore a few times larger than lr. The transient is
+        short, and notify_topology_change() cannot reset single entries of a
+        packed vector since it works per Parameter.
+        """
+        packed_state = None
+        for group in self._opt.param_groups:
+            for p in group["params"]:
+                if p is new_packed:
+                    continue
+                st = old._opt.state.get(p)
+                if st:
+                    self._opt.state[p] = st
+        if (
+            new_packed is None or old_packed is None
+            or old_ids is None or new_ids is None
+        ):
+            return
+        packed_state = old._opt.state.get(old_packed)
+        if not packed_state:
+            return
+        old_index = {eid: i for i, eid in enumerate(old_ids)}
+        src, dst = [], []
+        for j, eid in enumerate(new_ids):
+            i = old_index.get(eid)
+            if i is not None:
+                src.append(i)
+                dst.append(j)
+        n_old, n_new = len(old_ids), len(new_ids)
+        new_state = {}
+        for key, val in packed_state.items():
+            if torch.is_tensor(val) and val.dim() == 1 and val.numel() == n_old:
+                nv = torch.zeros(n_new, dtype=val.dtype, device=val.device)
+                if src:
+                    nv[torch.tensor(dst, device=val.device)] = val[torch.tensor(src, device=val.device)]
+                new_state[key] = nv
+            else:
+                new_state[key] = val.clone() if torch.is_tensor(val) else val
+        self._opt.state[new_packed] = new_state
 
     # ------------------------------------------------------------------
     # Standard optimizer delegation

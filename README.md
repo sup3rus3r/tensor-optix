@@ -447,7 +447,7 @@ All types implement the same protocol: `step()`, `importance()`, `can_merge_with
 
 ### Trainable recurrent neurons
 
-`TrainableGRUNeuron` and `TrainableLSTMNeuron` set `is_recurrent = True`. `RecurrentGraphAgent` detects this flag and switches from shuffled-minibatch PPO to sequential chunk training with truncated BPTT.
+`TrainableGRUNeuron` and `TrainableLSTMNeuron` let gradients flow back through their hidden state. Use them with `RecurrentGraphAgent`, which keeps the graph's state across `act()` calls (reset at episode start via `reset_hidden()`) and trains with sequential chunks and truncated BPTT, replaying exactly what `act()` computed.
 
 ```python
 from tensor_optix.neuroevo import TrainableGRUNeuron, TrainableLSTMNeuron, RecurrentGraphAgent
@@ -461,7 +461,8 @@ agent = RecurrentGraphAgent(
     graph, obs_dim=4, n_actions=2,
     hyperparams=HyperparamSet(params={"chunk_len": 64}),
 )
-# Falls back to standard shuffled-minibatch PPO if no recurrent neurons are present
+# Falls back to standard shuffled-minibatch PPO if the graph holds no state
+# (no GRU/LSTM neurons, no delayed edges)
 ```
 
 ### Topology controller
@@ -589,14 +590,16 @@ w = graph.effective_weight(edge_id)  # reads post-softplus value
 
 ### TopologyAwareAdam
 
-Drop-in Adam replacement that resets (m, v) momentum state for parameters touched by a grow, prune, or merge operation. Stale momentum estimates from before a structural change would otherwise corrupt the first update on modified parameters.
+Drop-in Adam replacement for graphs whose parameters get replaced by topology changes. `GraphAgent` uses it and carries Adam's (m, v) moments across every grow, prune or merge by edge id, so surviving edges keep their momentum and new edges start from zero. You can also reset the state of specific parameters yourself:
 
 ```python
 from tensor_optix.neuroevo import TopologyAwareAdam
 
 optimizer = TopologyAwareAdam(graph.parameters(), lr=3e-4)
-optimizer.notify_topology_change(new_params)  # call after any topology mutation
+optimizer.notify_topology_change(new_params)  # reset (m, v) for these Parameters
 ```
+
+After a rebuild, `new_optimizer.carry_over(old_optimizer, old_packed=..., old_ids=..., new_packed=..., new_ids=...)` moves the state across. See the [reference](https://sup3rus3r.github.io/tensor-optix/reference/neuroevo/topology-aware-adam/).
 
 ### Compiled forward
 

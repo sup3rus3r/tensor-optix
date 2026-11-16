@@ -439,14 +439,13 @@ class TrainableGRUNeuron(GRUNeuron):
     The key difference from GRUNeuron.step(): the hidden state is NOT detached,
     so gradients flow backward through time up to chunk_len steps.
 
-    Requirements:
-      - Use with RecurrentGraphAgent (or any agent that calls recurrent_forward).
-      - The agent must call reset_train_state() at the start of each sequence and
-        detach _h_train every chunk_len steps (truncated BPTT).
-      - Inference (act()) still uses step(), which detaches as normal.
+    Use with RecurrentGraphAgent, or drive NeuronGraph.forward_batch yourself:
+    it carries this neuron's hidden state without detaching it, and
+    GraphState.detach() truncates. step() (used by forward()) detaches as normal.
 
-    is_recurrent = True signals RecurrentGraphAgent to route training through
-    recurrent_forward() instead of _batch_forward().
+    recurrent_step() / reset_train_state() keep a separate state inside the
+    neuron for callers that step neurons by hand; the library itself no longer
+    uses them.
     """
 
     is_recurrent: bool = True
@@ -496,14 +495,13 @@ class TrainableLSTMNeuron(LSTMNeuron):
     The key difference from LSTMNeuron.step(): neither _h nor _c is detached,
     so gradients flow backward through time up to chunk_len steps.
 
-    Requirements:
-      - Use with RecurrentGraphAgent (or any agent that calls recurrent_forward).
-      - The agent must call reset_train_state() at the start of each sequence and
-        detach _h_train / _c_train every chunk_len steps (truncated BPTT).
-      - Inference (act()) still uses step(), which detaches as normal.
+    Use with RecurrentGraphAgent, or drive NeuronGraph.forward_batch yourself:
+    it carries this neuron's hidden and cell state without detaching them, and
+    GraphState.detach() truncates. step() (used by forward()) detaches as normal.
 
-    is_recurrent = True signals RecurrentGraphAgent to route training through
-    recurrent_forward() instead of _batch_forward().
+    recurrent_step() / reset_train_state() keep a separate state inside the
+    neuron for callers that step neurons by hand; the library itself no longer
+    uses them.
     """
 
     is_recurrent: bool = True

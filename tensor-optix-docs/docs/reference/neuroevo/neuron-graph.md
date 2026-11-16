@@ -102,23 +102,78 @@ def forward(self, obs: torch.Tensor) -> torch.Tensor: ...
 
 Internally, a fast vectorized path (`_fast_forward`) is used automatically for "uniform" graphs (no recurrent edges, all non-input neurons share the same point-neuron type) - one matmul per topological level per activation group, instead of a per-neuron Python loop.
 
+### Device
+
+`NeuronGraph(device=None)` and `BrainNetwork(device=None)` take an explicit device. With `None` they use the global tensor-optix device, which is `"cpu"` unless you call `tensor_optix.set_device("cuda")` or `tensor_optix.auto_device()`. The default is not changed to CUDA automatically.
+
+### Batched forward with explicit state
+
+```python
+def initial_state(self, batch_size: int = 1) -> GraphState: ...
+
+def forward_batch(self, obs: Tensor, state: Optional[GraphState] = None
+                  ) -> tuple[Tensor, GraphState]:
+    """
+    One timestep for a whole batch. obs [B, n_inputs] -> (out [B, n_outputs],
+    next state). The recurrent state is passed in and returned instead of
+    living inside the neurons.
+    """
+
+@dataclass
+class GraphState:
+    h: Tensor            # [B, n] previous activations
+    c: Tensor            # [B, n] LSTM cell state
+    hist: Optional[Tensor]  # [B, max_delay, n] past activations, newest first
+    def detach(self) -> "GraphState": ...
+```
+
+`forward_batch` computes the same function as running `forward()` on each row from a reset graph, as a few tensor ops per topological level instead of a Python loop over neurons. It handles point, GRU and LSTM neurons (and the Trainable variants) and delayed edges. Neuron objects are only read for their parameters, so `_current`, `_h`, `_c` and the history buffers are not touched. Gradients flow through the returned state, so an unrolled sequence trains by backprop through time; call `state.detach()` every k steps to truncate. Plain `GRUNeuron` and `LSTMNeuron` keep detaching their own hidden state each step, as their `step()` does; the Trainable variants do not. A custom `Neuron` subclass raises `NotImplementedError`.
+
+### Edge access
+
+```python
+def edge_table(self) -> EdgeTable:
+    """All edges as aligned tensors: edge_ids, src, dst (neuron indices),
+    weight (effective, post-Dale, detached) and grad (gradient of the stored
+    parameter, 0 before any backward)."""
+```
+
+Read edge gradients from here. For packed feedforward edges `edge.weight` is a view that sits outside the forward graph, so `edge.weight.grad` is always empty; the gradient lives on the packed vector. `edge_table()` does it for the whole graph at once with no per-edge host sync.
+
+### Activation recording
+
+```python
+def enable_activation_trace(self, capacity: int = 100) -> None: ...
+def record_activations(self, h: Tensor) -> None:
+    """h is [n] or [S, n], columns in neuron_index order."""
+def drain_activation_trace(self) -> Optional[Tensor]: ...
+def activation_snapshot(self) -> Tensor: ...
+```
+
+`forward()` and `forward_batch()` record every step; `TopologyController` turns the recorder on and drains it each episode. If you run your own forward pass, call `record_activations(h)` with its activations so the controller can see them.
+
+### Delayed edges
+
+A delayed edge `u -> v` with delay `d` reads `u`'s activation from `d` steps ago, so `u` is the neuron that stores history. Earlier versions set the history flag on `v` instead, which meant a delayed edge between two different neurons always delivered zeros unless `u` happened to have a delayed input of its own (a self loop worked, which is why it went unnoticed).
+
 ### Serialization
 
 ```python
-def to_dict(self) -> dict:
+def to_dict(self, include_weights: bool = True) -> dict:
     """
-    Serialize the full graph topology (structure only - weights come from
-    state_dict). JSON-serializable; captures enough information for
-    from_dict() to reconstruct an identical graph that accepts the original
-    state_dict without key mismatches.
+    Serialize the graph. JSON-serializable. With include_weights=True (the
+    default) every parameter is stored under "state", so from_dict() returns a
+    graph that computes the same function. With include_weights=False only the
+    structure is stored; from_dict() then gives freshly initialised weights and
+    you load state_dict() yourself (GraphAgent checkpoints do this).
     """
 
 @classmethod
-def from_dict(cls, d: dict) -> "NeuronGraph":
+def from_dict(cls, d: dict, device=None) -> "NeuronGraph":
     """
-    Reconstruct a NeuronGraph from a topology dict produced by to_dict().
-    Neurons are added with their original IDs so state_dict keys match
-    exactly after a subsequent load_state_dict() call.
+    Reconstruct a NeuronGraph from a dict produced by to_dict(). Neurons are
+    added with their original IDs so state_dict keys match exactly. Loads the
+    weights if the dict carries them.
     """
 ```
 
@@ -172,8 +227,9 @@ def all_neuron_ids(self) -> List[str]: ...
 
 ```python
 def restore_from_dict(self, d: dict) -> "NeuronGraph":
-    """Rebuild THIS graph object in place from a to_dict() topology.
-    Parameters are re-created; follow with load_state_dict()."""
+    """Rebuild THIS graph object in place from a to_dict() dict. Parameters are
+    re-created; loaded from the dict if it carries weights, otherwise follow
+    with load_state_dict()."""
 ```
 
 Use this (not `from_dict`) when other objects hold a reference to the graph. `graph._post_forward_hooks` is a list of zero-argument callables run after every `forward()`; `HebbianHook` uses it to sample activations.

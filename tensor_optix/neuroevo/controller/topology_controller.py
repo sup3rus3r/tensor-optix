@@ -112,7 +112,8 @@ class TopologyController(LoopCallback):
     min_score_buffer:
         Minimum number of eval scores required before grow check runs.
     max_neurons:
-        Hard cap on total neurons per region.
+        Hard cap on total neurons per region, 256 by default. Pass None for
+        no ceiling.
     min_hidden_neurons:
         Minimum hidden neurons kept during pruning per region.
     """
@@ -135,7 +136,7 @@ class TopologyController(LoopCallback):
         merge_check_interval: int = 50,
         act_history_len: int = 100,
         min_score_buffer: int = 30,
-        max_neurons: int = 256,
+        max_neurons: Optional[int] = 256,
         min_hidden_neurons: int = 1,
         topology_callbacks: Optional[List[TopologyCallback]] = None,
     ) -> None:
@@ -177,6 +178,11 @@ class TopologyController(LoopCallback):
         self._grad_util_buffers: Dict[str, deque] = {
             name: deque(maxlen=100) for name in regions
         }
+        # Every forward the graph runs (forward() or forward_batch()) is
+        # recorded, so merge detection sees many activation samples per call
+        # instead of one read from neuron state.
+        for graph in regions.values():
+            graph.enable_activation_trace(act_history_len)
 
         # The remaining accumulators are keyed by neuron UUID so they work
         # across all regions without collision.
@@ -278,8 +284,9 @@ class TopologyController(LoopCallback):
             self._grad_util_buffers[region_name].append(
                 self._compute_grad_util(hidden, grad_mag)
             )
-            self._accumulate_activations(hidden, graph)
-            self._accumulate_neuron_importance(hidden, total_w, graph)
+            samples = self._collect_activations(graph, hidden)
+            self._accumulate_activations(hidden, graph, samples)
+            self._accumulate_neuron_importance(hidden, total_w, graph, samples)
 
             if self._grow_signal_check(region_name):
                 self._do_grow(episode_id, region_name, graph)
@@ -324,7 +331,7 @@ class TopologyController(LoopCallback):
                     "EVO warming up — grow/prune eligible in %d episodes (cooldown)", remaining
                 )
             return False
-        if graph.n_neurons() >= self.max_neurons:
+        if self.max_neurons is not None and graph.n_neurons() >= self.max_neurons:
             return False
         if len(self._score_buffer) < self.min_score_buffer:
             have = len(self._score_buffer)
@@ -408,20 +415,20 @@ class TopologyController(LoopCallback):
         )
 
     def _grow_insert_edge(self, graph: NeuronGraph) -> Optional[str]:
-        edges = graph.all_edges()
-        if not edges:
+        table = graph.edge_table()
+        if not table.edge_ids:
             return None
-        best = max(edges, key=lambda e: abs(graph.effective_weight(e.edge_id)))
-        return insert_neuron_on_edge(graph, best.edge_id)
+        best_id = table.edge_ids[int(table.weight.abs().argmax())]
+        return insert_neuron_on_edge(graph, best_id)
 
     def _grow_split_neuron(self, graph: NeuronGraph) -> Optional[str]:
         hidden = graph.hidden_ids
         if not hidden:
             return None
-        best_id = max(
-            hidden,
-            key=lambda nid: abs(graph.get_neuron(nid)._current.item()),
-        )
+        pos = {nid: i for i, nid in enumerate(graph.neuron_index)}
+        cols = torch.tensor([pos[nid] for nid in hidden], device=graph._device)
+        act = graph.activation_snapshot().abs().index_select(0, cols)
+        best_id = hidden[int(act.argmax())]
         _, new_id = split_neuron(graph, best_id)
         return new_id
 
@@ -466,16 +473,20 @@ class TopologyController(LoopCallback):
     # ------------------------------------------------------------------
 
     def _check_edge_pruning(self, episode_id: int, region_name: str, graph: NeuronGraph) -> None:
+        # Effective weights, all edges in one tensor op: in dale_mode="softplus"
+        # the raw parameter of a near-zero edge is a large negative number, not
+        # a small one. One host transfer for the whole graph.
+        table = graph.edge_table()
+        below = (table.weight.abs() < self.prune_edge_threshold).nonzero().flatten().tolist()
+        below_ids = [table.edge_ids[i] for i in below]
+        below_set = set(below_ids)
         to_prune = []
-        for edge in graph.all_edges():
-            # Effective weight: in dale_mode="softplus" the raw parameter of a
-            # near-zero edge is a large negative number, not a small one.
-            if abs(graph.effective_weight(edge.edge_id)) < self.prune_edge_threshold:
-                self._edge_below_threshold[edge.edge_id] += 1
-                if self._edge_below_threshold[edge.edge_id] >= self.prune_edge_patience:
-                    to_prune.append(edge.edge_id)
-            else:
-                self._edge_below_threshold[edge.edge_id] = 0
+        for eid in below_ids:
+            self._edge_below_threshold[eid] += 1
+            if self._edge_below_threshold[eid] >= self.prune_edge_patience:
+                to_prune.append(eid)
+        for eid in [e for e in self._edge_below_threshold if e not in below_set]:
+            del self._edge_below_threshold[eid]
 
         for eid in to_prune:
             logger.debug(
@@ -504,6 +515,10 @@ class TopologyController(LoopCallback):
         if len(hidden) <= self.min_hidden_neurons:
             return False
 
+        # Gradient on ALL of a neuron's own parameters. Reading only .bias
+        # made GRU/LSTM neurons (which don't use the bias) look permanently dead.
+        own_grad = dict(zip(hidden, self._own_grad_magnitude(graph, hidden).tolist()))
+
         pruned_any = False
         for nid in hidden:
             if len(graph.hidden_ids) <= self.min_hidden_neurons:
@@ -514,11 +529,7 @@ class TopologyController(LoopCallback):
                 continue
 
             avg_importance = self._neuron_importance_accum[nid] / self._accum_steps
-
-            neuron = graph.get_neuron(nid)
-            grad_mag = 0.0
-            if neuron.bias.grad is not None:
-                grad_mag += float(neuron.bias.grad.abs().item())
+            grad_mag = own_grad[nid]
 
             if avg_importance < self.prune_neuron_threshold and grad_mag < self.grad_eps:
                 logger.info(
@@ -599,32 +610,79 @@ class TopologyController(LoopCallback):
     # Accumulation helpers
     # ------------------------------------------------------------------
 
+    def _collect_activations(
+        self, graph: NeuronGraph, hidden: List[str]
+    ) -> Dict[str, List[float]]:
+        """
+        {hidden neuron id: every activation recorded since the last call}.
+
+        The graph records each forward it runs (forward() and forward_batch(),
+        or your own via graph.record_activations), so one call yields as many
+        samples as there were steps, not one. If nothing ran since the last
+        call, the latest activation of each neuron is used. One host transfer.
+        """
+        if not hidden:
+            return {}
+        trace = graph.drain_activation_trace()
+        if trace is None:
+            trace = graph.activation_snapshot().unsqueeze(0)
+        pos = {nid: i for i, nid in enumerate(graph.neuron_index)}
+        cols = torch.tensor([pos[nid] for nid in hidden], device=trace.device)
+        rows = trace.index_select(1, cols)[-self.act_history_len:]      # [S, H]
+        return dict(zip(hidden, rows.t().tolist()))
+
+    @staticmethod
+    def _own_grad_magnitude(graph: NeuronGraph, nids: List[str]) -> torch.Tensor:
+        """Σ|grad| over every parameter of each neuron (GRU/LSTM gates included),
+        as one [len(nids)] tensor. No host sync."""
+        zero = torch.zeros((), device=graph._device)
+        parts = []
+        for nid in nids:
+            total = zero
+            for p in graph.get_neuron(nid).parameters():
+                if p.grad is not None:
+                    total = total + p.grad.abs().sum()
+            parts.append(total)
+        if not parts:
+            return torch.zeros(0, device=graph._device)
+        return torch.stack(parts)
+
     def _accumulate_neuron_importance(
-        self, hidden: List[str], total_w: Dict[str, float], graph: NeuronGraph
+        self,
+        hidden: List[str],
+        total_w: Dict[str, float],
+        graph: NeuronGraph,
+        samples: Optional[Dict[str, List[float]]] = None,
     ) -> None:
-        """I(v) = Σ|w_e| * (‖h‖₁/d + ε) — delegates to neuron.importance()."""
+        """I(v) = Σ|w_e| * (mean|h|/d + ε), mean taken over this call's samples."""
         if not hidden:
             self._accum_steps += 1
             return
+        if samples is None:
+            samples = self._collect_activations(graph, hidden)
         for nid in hidden:
-            neuron = graph.get_neuron(nid)
-            self._neuron_importance_accum[nid] += neuron.importance(total_w[nid])
+            vals = samples[nid]
+            mean_abs = sum(abs(v) for v in vals) / max(len(vals), 1)
+            dim = graph.get_neuron(nid)._hidden_dim
+            self._neuron_importance_accum[nid] += total_w[nid] * (mean_abs / dim + 1e-8)
         self._accum_steps += 1
 
     def _accumulate_activations(
-        self, hidden: List[str], graph: NeuronGraph
+        self,
+        hidden: List[str],
+        graph: NeuronGraph,
+        samples: Optional[Dict[str, List[float]]] = None,
     ) -> None:
-        """Record signed activation per hidden neuron into per-neuron history deques."""
+        """Append every sampled signed activation to each hidden neuron's history deque."""
         if not hidden:
             return
+        if samples is None:
+            samples = self._collect_activations(graph, hidden)
         for nid in hidden:
             if nid not in self._act_history:
                 self._act_history[nid] = deque(maxlen=self.act_history_len)
-            neuron = graph.get_neuron(nid)
-            h = neuron._current
-            # Signed value — sign matters for merge detection (Option B)
-            val = float(h.item()) if h.numel() == 1 else float(h.abs().mean().item())
-            self._act_history[nid].append(val)
+            # Signed values — sign matters for merge detection (Option B)
+            self._act_history[nid].extend(samples[nid])
 
     # ------------------------------------------------------------------
     # Shared per-episode edge pass (one pass serves both grad-util + importance)
@@ -636,32 +694,33 @@ class TopologyController(LoopCallback):
         hidden: List[str],
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """
-        Single O(N+E) pass → two dicts keyed by hidden neuron id:
-          grad_mag:  |bias.grad| + Σ|edge.weight.grad| for incident edges
-          total_w:   Σ|edge.weight| for incident edges
+        Two dicts keyed by hidden neuron id:
+          grad_mag:  Σ|grad| over the neuron's own parameters + Σ|edge grad|
+                     over incident edges
+          total_w:   Σ|effective weight| over incident edges
 
-        Uses abs(p.item()) to avoid creating per-param temporary tensors.
+        Computed on the whole edge table at once (scatter-add per neuron) and
+        moved to the host in a single transfer, so the cost in GPU round trips
+        does not grow with the number of edges.
         """
-        hidden_set = set(hidden)
+        if not hidden:
+            return {}, {}
+        table = graph.edge_table()
+        n = graph.n_neurons()
+        abs_w, abs_g = table.weight.abs(), table.grad.abs()
+        per_neuron_w = torch.zeros(n, device=abs_w.device)
+        per_neuron_g = torch.zeros(n, device=abs_w.device)
+        for ends in (table.src, table.dst):
+            per_neuron_w = per_neuron_w.index_add(0, ends, abs_w)
+            per_neuron_g = per_neuron_g.index_add(0, ends, abs_g)
 
-        grad_mag: Dict[str, float] = {}
-        total_w:  Dict[str, float] = {nid: 0.0 for nid in hidden}
+        pos = {nid: i for i, nid in enumerate(graph.neuron_index)}
+        cols = torch.tensor([pos[nid] for nid in hidden], device=abs_w.device)
+        grad = per_neuron_g.index_select(0, cols) + self._own_grad_magnitude(graph, hidden)
+        weight = per_neuron_w.index_select(0, cols)
+        grad_l, weight_l = torch.stack([grad, weight]).tolist()
 
-        for nid in hidden:
-            g = graph.get_neuron(nid).bias.grad
-            grad_mag[nid] = abs(g.item()) if g is not None else 0.0
-
-        for edge in graph.all_edges():
-            w = abs(graph.effective_weight(edge.edge_id))
-            g = abs(edge.weight.grad.item()) if edge.weight.grad is not None else 0.0
-            if edge.src in hidden_set:
-                grad_mag[edge.src] += g
-                total_w[edge.src]  += w
-            if edge.dst in hidden_set:
-                grad_mag[edge.dst] += g
-                total_w[edge.dst]  += w
-
-        return grad_mag, total_w
+        return dict(zip(hidden, grad_l)), dict(zip(hidden, weight_l))
 
     # ------------------------------------------------------------------
     # Diagnostics

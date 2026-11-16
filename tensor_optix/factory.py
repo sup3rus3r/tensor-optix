@@ -1063,7 +1063,7 @@ def _make_neuroevo_feature_extractor(
         def save_weights(self, path):
             super().save_weights(path)
             torch.save(
-                {"topology": graph.to_dict(), "graph": graph.state_dict(), "proj": _proj_cell["np"]},
+                {"topology": graph.to_dict(include_weights=False), "graph": graph.state_dict(), "proj": _proj_cell["np"]},
                 os.path.join(path, "neuro_graph.pt"),
             )
 

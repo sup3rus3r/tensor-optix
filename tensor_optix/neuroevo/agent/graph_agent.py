@@ -29,6 +29,7 @@ from tensor_optix.core.device import get_device
 
 from ..graph.neuron_graph import NeuronGraph
 from ..graph.topology_ops import add_input_neuron
+from ..optimizer.topology_aware_adam import TopologyAwareAdam
 
 
 class GraphAgent(BaseAgent):
@@ -103,8 +104,10 @@ class GraphAgent(BaseAgent):
             _hp.update(hyperparams.params)
         self._hyperparams = HyperparamSet(params=_hp, episode_id=0)
 
-        self.optimizer = torch.optim.Adam(params, lr=_hp["learning_rate"])
+        self.optimizer = TopologyAwareAdam(params, lr=_hp["learning_rate"])
         self._graph_struct_version = self.graph._struct_version
+        self._opt_ff_vec = self.graph._ff_weight_vec
+        self._opt_ff_ids = self.graph._ff_edge_ids
         self._episode_count = 0
 
     # ------------------------------------------------------------------
@@ -228,7 +231,7 @@ class GraphAgent(BaseAgent):
     def save_weights(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
         state = {
-            "topology": self.graph.to_dict(),
+            "topology": self.graph.to_dict(include_weights=False),
             "graph":    self.graph.state_dict(),
             "episode":  self._episode_count,
         }
@@ -252,7 +255,7 @@ class GraphAgent(BaseAgent):
         # self.graph may now be a different object entirely (topology branch
         # above), so force a resync regardless of version-number coincidence.
         self._graph_struct_version = -1
-        self._sync_optimizer()
+        self._sync_optimizer(carry_state=False)   # weights jumped; old momentum is meaningless
 
     @classmethod
     def from_checkpoint(cls, path: str, device: str = "auto") -> "GraphAgent":
@@ -334,13 +337,20 @@ class GraphAgent(BaseAgent):
             # after this in act()/learn() — rebuilding here would be premature
             # since the graph is still dirty and hasn't repacked its weights yet.
 
-    def _sync_optimizer(self) -> None:
+    def _sync_optimizer(self, carry_state: bool = True) -> None:
         """
         Re-fetch graph.parameters() into the optimizer whenever the graph's
         packed weight structure has been rebuilt since the optimizer was last
         (re)built — e.g. after TopologyController grow/prune/merge, after
         add_input_neuron, or after any other structural mutation. Cheap no-op
         when nothing has changed.
+
+        A rebuild replaces the packed edge-weight vector with a new Parameter,
+        so a fresh optimizer is needed, but Adam's momentum is carried over:
+        per edge (matched by edge id) for the packed vector, and as-is for
+        every Parameter that survived (neuron biases and gates, log_std,
+        delayed-edge weights). Edges that are new start from zero moments.
+        carry_state=False starts from scratch (used after a checkpoint load).
         """
         self.graph.ensure_built()
         if self.graph._struct_version == self._graph_struct_version:
@@ -349,74 +359,30 @@ class GraphAgent(BaseAgent):
         if self.continuous:
             params.append(self.log_std)
         lr = self.optimizer.param_groups[0]["lr"]
-        self.optimizer = torch.optim.Adam(params, lr=lr)
+        new_opt = TopologyAwareAdam(params, lr=lr)
+        if carry_state:
+            new_opt.carry_over(
+                self.optimizer,
+                old_packed=self._opt_ff_vec, old_ids=self._opt_ff_ids,
+                new_packed=self.graph._ff_weight_vec, new_ids=self.graph._ff_edge_ids,
+            )
+        self.optimizer = new_opt
         self._graph_struct_version = self.graph._struct_version
+        self._opt_ff_vec = self.graph._ff_weight_vec
+        self._opt_ff_ids = self.graph._ff_edge_ids
 
     def _batch_forward(self, obs_batch: torch.Tensor) -> torch.Tensor:
         """
-        Vectorized batch forward over the graph.
-
-        Instead of looping over B observations, we keep an activation buffer
-        [B, n_neurons] and propagate in topological order. Each neuron's
-        pre-activation is a sum of weighted columns — pure tensor ops, no
-        Python loop over B.
+        Batch forward over the graph from a zero state, which is exactly what
+        act() computes (it resets the graph before every step). Runs through
+        NeuronGraph.forward_batch, so it handles every neuron type and reads
+        the packed weight vector, which is where edge gradients accumulate.
         """
-        B = obs_batch.shape[0]
-        graph = self.graph
-        dev = self.device
-
-        order = graph._topological_order()
-        input_ids = graph.input_ids
-
-        # Map every neuron id to a column index in the activation buffer
-        all_ids = list(input_ids) + list(order)
-        nid_to_col: dict[str, int] = {nid: i for i, nid in enumerate(all_ids)}
-        n_total = len(all_ids)
-        n_input = len(input_ids)
-
-        # act[nid] = [B] activation tensor for that neuron (no in-place writes)
-        act: dict[str, torch.Tensor] = {}
-
-        # Inject inputs
-        for i, nid in enumerate(input_ids):
-            act[nid] = obs_batch[:, i]
-
-        for nid in order:
-            neuron = graph._neurons[nid]  # type: ignore
-            pre = torch.zeros(B, device=dev)
-            for eid in graph._in_edges.get(nid, []):
-                edge = graph._edges[eid]
-                src = edge.src
-                # Delayed edges read the source's history, which is all zeros
-                # after the per-step reset_state() in act() — no contribution.
-                if edge.delay == 0 and src in act:
-                    pre = pre + graph._effective_rec_weight(edge) * act[src]
-            act[nid] = self._stateless_neuron_out(neuron, pre)
-
-        return torch.stack([act[nid] for nid in graph.output_ids], dim=1)  # [B, n_outputs]
-
-    @staticmethod
-    def _stateless_neuron_out(neuron, pre: torch.Tensor) -> torch.Tensor:
-        """
-        Output of `neuron` for pre-activation `pre` starting from a zero
-        internal state — exactly what neuron.step() produces right after
-        reset_state(), which is how act() drives the graph. Keeps the
-        training forward identical to the acting forward for every neuron
-        type, not just point neurons.
-        """
-        from ..graph.neuron import GRUNeuron, LSTMNeuron
-        if isinstance(neuron, GRUNeuron):
-            # h = 0  =>  h' = z * n   (the reset gate multiplies h and vanishes)
-            z = torch.sigmoid(neuron.uz * pre + neuron.bz)
-            n = torch.tanh(neuron.un * pre + neuron.bn)
-            return z * n
-        if isinstance(neuron, LSTMNeuron):
-            # h = c = 0  =>  c' = i * g,  h' = o * tanh(c')
-            i = torch.sigmoid(neuron.ui * pre + neuron.bi)
-            g = torch.tanh(neuron.ug * pre + neuron.bg)
-            o = torch.sigmoid(neuron.uo * pre + neuron.bo)
-            return o * torch.tanh(i * g)
-        return neuron._activation_fn(pre + neuron.bias.squeeze(0))
+        n_in = len(self.graph.input_ids)
+        if obs_batch.shape[1] > n_in:
+            obs_batch = obs_batch[:, :n_in]
+        out, _ = self.graph.forward_batch(obs_batch)
+        return out
 
     def _bootstrap_value(self, episode_data: EpisodeData) -> float:
         """V(s_T) for a window that ended mid-episode; 0.0 when it ended on a
@@ -469,19 +435,25 @@ class GraphAgent(BaseAgent):
 
 class RecurrentGraphAgent(GraphAgent):
     """
-    GraphAgent subclass that supports TrainableGRUNeuron / TrainableLSTMNeuron.
+    GraphAgent whose policy keeps memory across timesteps: GRU/LSTM hidden
+    and cell states and delayed-edge history carry over from one act() call
+    to the next, and learn() trains that same recurrent policy by truncated
+    BPTT.
 
-    When the graph contains any neuron with is_recurrent=True, learn() switches
-    from the default shuffled-minibatch PPO to sequential chunk-based training
-    (truncated BPTT). Inference via act() is unchanged — it still calls the
-    parent step() path with detached hidden states.
+    act() and learn() compute the same function. act() keeps a GraphState
+    and steps it with NeuronGraph.forward_batch; the state resets at episode
+    start when the pipeline calls reset_hidden() (BatchPipeline does, as for
+    TorchRecurrentPPOAgent). learn() replays the window from the state act()
+    started it with, resetting wherever act() did, so the log-probabilities it
+    computes before updating are exactly the behaviour policy's. Each chunk of
+    chunk_len steps then trains from the state act() had at the chunk's start.
 
-    Known limitation: act() resets the graph state before every step, so the
-    policy that collects data is memoryless, while learn() optimises the
-    unrolled recurrent forward. The two coincide only where recurrent state
-    carries no information; treat the recurrent path as experimental and
-    prefer GraphAgent (whose training forward matches act() exactly) unless
-    you drive the unrolled forward yourself via recurrent_forward().
+    If learn() receives a window that act() did not produce (e.g. data from
+    elsewhere), it starts from zeros and resets after every done.
+
+    When the graph holds no state at all (only point neurons, no delayed
+    edges) the recurrent and stateless policies are the same function, and
+    learn() uses GraphAgent's shuffled-minibatch PPO.
 
     Extra hyperparams:
       chunk_len (int, default 64): BPTT truncation length in timesteps.
@@ -492,12 +464,41 @@ class RecurrentGraphAgent(GraphAgent):
         "chunk_len": 64,
     }
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._state = None              # GraphState act() is carrying
+        self._state_version = -1        # graph._struct_version the state belongs to
+        self._window_start = None       # state before the first act() of the window
+        self._reset_flags: list = []    # per act(): did the state start from zero?
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
+    def reset_hidden(self) -> None:
+        """Zero the recurrent state. Pipelines call this at episode start."""
+        self._state = None
+
+    def act(self, observation) -> any:
+        obs = self._to_tensor(observation)
+        self._maybe_grow_inputs(obs)
+        self._sync_optimizer()
+        self.graph.ensure_built()
+        if self._state is not None and self._state_version != self.graph._struct_version:
+            self._state = None          # topology changed: old state has the wrong layout
+        if not self._reset_flags:
+            self._window_start = self._state
+        self._reset_flags.append(self._state is None)
+        with torch.no_grad():
+            out, self._state = self.graph.forward_batch(obs.unsqueeze(0), self._state)
+        self._state_version = self.graph._struct_version
+        action, log_prob = self._sample_action(out[0])
+        self._last_log_prob = log_prob
+        return action
+
     def learn(self, episode_data: EpisodeData) -> dict:
-        if not self._has_recurrent_neurons():
+        if not self._graph_has_state():
+            self._consume_window(len(episode_data.rewards), None)
             return super().learn(episode_data)
         return self._recurrent_learn(episode_data)
 
@@ -507,75 +508,75 @@ class RecurrentGraphAgent(GraphAgent):
 
     def recurrent_forward(self, obs_sequence: torch.Tensor, chunk_len: int = 64) -> torch.Tensor:
         """
-        Process T timesteps in order with truncated BPTT every chunk_len steps.
+        Run T timesteps in order from a zero state, carrying the graph's
+        recurrent state (GRU/LSTM hidden and cell states, delayed-edge history)
+        from step to step, with truncated BPTT every chunk_len steps.
+
+        This is NeuronGraph.forward_batch unrolled, so it computes exactly what
+        forward() computes step by step: delayed edges read the source's
+        activation from `delay` steps earlier.
 
         Returns [T, n_outputs].
         """
         T = obs_sequence.shape[0]
+        n_in = len(self.graph.input_ids)
+        if obs_sequence.shape[1] > n_in:
+            obs_sequence = obs_sequence[:, :n_in]
+        state = None
         outputs = []
-
-        self._reset_recurrent_train_states()
-
         for t in range(T):
             if t > 0 and t % chunk_len == 0:
-                self._detach_recurrent_train_states()
-
-            out = self._sequential_step(obs_sequence[t])
-            outputs.append(out)
-
+                state = state.detach()
+            out, state = self.graph.forward_batch(obs_sequence[t:t + 1], state)
+            outputs.append(out[0])
         return torch.stack(outputs)  # [T, n_outputs]
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _has_recurrent_neurons(self) -> bool:
-        return any(
-            getattr(n, "is_recurrent", False)
-            for n in self.graph._neurons.values()
-        )
+    def _graph_has_state(self) -> bool:
+        """True if anything carries information across timesteps: a GRU/LSTM
+        neuron (any variant) or a delayed edge."""
+        from ..graph.neuron import Neuron
+        self.graph.ensure_built()
+        if self.graph._max_rec_delay > 0:
+            return True
+        return any(type(n) is not Neuron for n in self.graph._neurons.values())
 
-    def _reset_recurrent_train_states(self) -> None:
-        for neuron in self.graph._neurons.values():
-            if getattr(neuron, "is_recurrent", False):
-                neuron.reset_train_state()
+    def _window_plan(self, T: int, dones):
+        """(reset flags, start state) for a window of T steps: what act() did
+        if act() produced this window, else zeros with a reset after each done."""
+        if len(self._reset_flags) >= T:
+            start = self._window_start
+            if start is not None and self._state_version != self.graph._struct_version:
+                start = None
+            return list(self._reset_flags[:T]), start
+        return [t == 0 or bool(dones[t - 1]) for t in range(T)], None
 
-    def _detach_recurrent_train_states(self) -> None:
-        for neuron in self.graph._neurons.values():
-            if getattr(neuron, "is_recurrent", False):
-                if hasattr(neuron, "_h_train"):
-                    neuron._h_train = neuron._h_train.detach()
-                if hasattr(neuron, "_c_train"):
-                    neuron._c_train = neuron._c_train.detach()
+    def _consume_window(self, T: int, state_after) -> None:
+        """Drop the act() bookkeeping for the T steps just learned from."""
+        self._reset_flags = self._reset_flags[T:]
+        self._window_start = state_after if self._reset_flags else None
 
-    def _sequential_step(self, obs: torch.Tensor) -> torch.Tensor:
-        """
-        Single-timestep forward through the graph using recurrent_step() for
-        recurrent neurons and _activation_fn for point neurons.
-        obs: [n_inputs]
-        Returns: [n_outputs]
-        """
-        graph = self.graph
-        act: dict[str, torch.Tensor] = {}
-
-        for i, nid in enumerate(graph.input_ids):
-            act[nid] = obs[i].unsqueeze(0)  # keep scalar as [1]
-
-        for nid in graph._topological_order():
-            neuron = graph._neurons[nid]
-            pre = torch.zeros(1, device=self.device)
-            for eid in graph._in_edges.get(nid, []):
-                edge = graph._edges[eid]
-                src = edge.src
-                if src in act:
-                    pre = pre + graph._effective_rec_weight(edge) * act[src]
-
-            if getattr(neuron, "is_recurrent", False):
-                act[nid] = neuron.recurrent_step(pre)
-            else:
-                act[nid] = self._stateless_neuron_out(neuron, pre)
-
-        return torch.stack([act[nid] for nid in graph.output_ids]).squeeze(-1)  # [n_outputs]
+    def _replay(self, obs_t, flags, start, begin, end, chunk_len, chunk_starts=None):
+        """Run steps [begin, end) of the window through forward_batch, starting
+        from `start`, zeroing the state wherever flags says act() did, and
+        detaching it every chunk_len steps. Returns (outputs [end-begin, n_out],
+        state after the last step). Records the state at every chunk start in
+        chunk_starts when given."""
+        state = start
+        outs = []
+        for t in range(begin, end):
+            if flags[t]:
+                state = None
+            elif t > begin and (t - begin) % chunk_len == 0 and state is not None:
+                state = state.detach()
+            if chunk_starts is not None and (t - begin) % chunk_len == 0:
+                chunk_starts.append(None if state is None else state.detach())
+            out, state = self.graph.forward_batch(obs_t[t:t + 1], state)
+            outs.append(out[0])
+        return torch.stack(outs), state
 
     def _recurrent_learn(self, episode_data: EpisodeData) -> dict:
         self._sync_optimizer()
@@ -585,54 +586,71 @@ class RecurrentGraphAgent(GraphAgent):
         obs_t = torch.tensor(
             np.array(episode_data.observations), dtype=torch.float32, device=self.device
         )
+        n_in = len(self.graph.input_ids)
+        if obs_t.shape[1] > n_in:
+            obs_t = obs_t[:, :n_in]
         act_t = torch.tensor(
             np.array(episode_data.actions),
             dtype=torch.long if not self.continuous else torch.float32,
             device=self.device,
         )
         rew_t = torch.tensor(episode_data.rewards, dtype=torch.float32, device=self.device)
-        # See GraphAgent.learn(): without recorded log-probs, evaluate the
-        # collected actions under the pre-update BEHAVIOUR policy. act() drives
-        # the graph statelessly (reset_state() every step), so that is the
-        # stateless forward — not the unrolled one the update below trains.
+        T = obs_t.shape[0]
+        flags, start = self._window_plan(T, episode_data.dones)
+
+        # Replay the window exactly as act() ran it, before any update: this
+        # gives the behaviour policy's log-probs and values, and the state
+        # each training chunk has to start from.
+        chunk_starts: list = []
+        with torch.no_grad():
+            out_old, state_T = self._replay(obs_t, flags, start, 0, T, chunk_len, chunk_starts)
+            old_lp_eval, _, values = self._evaluate_actions(out_old, act_t)
+            last_value = 0.0
+            final_obs = getattr(episode_data, "final_obs", None)
+            dones = episode_data.dones
+            if (
+                final_obs is not None and not isinstance(final_obs, (list, tuple))
+                and len(dones) and not dones[-1]
+            ):
+                f = self._to_tensor(final_obs).unsqueeze(0)
+                if f.shape[1] == n_in:
+                    out_f, _ = self.graph.forward_batch(f, state_T)
+                    last_value = float(out_f[0, -1].item())
+        self._consume_window(T, None if state_T is None else state_T.detach())
+
         if episode_data.log_probs:
             old_lp = torch.tensor(episode_data.log_probs, dtype=torch.float32, device=self.device)
         else:
-            with torch.no_grad():
-                old_lp, _, _ = self._evaluate_actions(self._batch_forward(obs_t), act_t)
+            old_lp = old_lp_eval
 
-        # Compute values with detached inference pass
-        with torch.no_grad():
-            values = self._batch_values(obs_t)
         advantages, returns = compute_gae(
             rewards=rew_t.cpu().numpy().tolist(),
             values=values.cpu().numpy().tolist(),
             dones=episode_data.dones,
             gamma=hp["gamma"],
             gae_lambda=hp["gae_lambda"],
+            last_value=last_value,
         )
         adv_t = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         ret_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
         adv_t = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
 
-        T = obs_t.shape[0]
         total_loss = total_pg = total_vf = total_ent = 0.0
         n_updates = 0
 
         for _ in range(hp["n_epochs"]):
             # Sequential chunk windows — no shuffling
-            for start in range(0, T, chunk_len):
-                end = min(start + chunk_len, T)
-                if end - start < 2:
+            for k, begin in enumerate(range(0, T, chunk_len)):
+                end = min(begin + chunk_len, T)
+                if end - begin < 2:
                     continue
 
-                ob_chunk = obs_t[start:end]        # [chunk, obs_dim]
-                ac_chunk = act_t[start:end]        # [chunk]
-                old_lp_chunk = old_lp[start:end]   # [chunk]
-                adv_chunk = adv_t[start:end]        # [chunk]
-                ret_chunk = ret_t[start:end]        # [chunk]
+                ac_chunk = act_t[begin:end]
+                old_lp_chunk = old_lp[begin:end]
+                adv_chunk = adv_t[begin:end]
+                ret_chunk = ret_t[begin:end]
 
-                out_chunk = self.recurrent_forward(ob_chunk, chunk_len=chunk_len)  # [chunk, n_outputs]
+                out_chunk, _ = self._replay(obs_t, flags, chunk_starts[k], begin, end, chunk_len)
                 new_lp, entropy, values_chunk = self._evaluate_actions(out_chunk, ac_chunk)
 
                 ratio = torch.exp(new_lp - old_lp_chunk)
