@@ -326,7 +326,7 @@ agent = GraphAgent(graph, obs_dim=4, n_actions=2)
 </table>
 <p>All types implement the same protocol (<code>step()</code>, <code>importance()</code>, <code>can_merge_with()</code>, <code>make_relay()</code>, <code>split_copy()</code>) - <code>NeuronGraph</code> and <code>TopologyController</code> are type-blind.</p>
 <h2 id="trainable-recurrent-neurons">Trainable recurrent neurons</h2>
-<p><code>TrainableGRUNeuron</code>/<code>TrainableLSTMNeuron</code> set <code>is_recurrent = True</code>. <code>RecurrentGraphAgent</code> detects this and switches from shuffled-minibatch PPO to sequential chunk training with truncated BPTT:</p>
+<p><code>TrainableGRUNeuron</code>/<code>TrainableLSTMNeuron</code> let gradients flow back through their hidden state. Use them with <code>RecurrentGraphAgent</code>, which keeps the graph's state across <code>act()</code> calls (reset at episode start via <code>reset_hidden()</code>) and trains with sequential chunks and truncated BPTT, replaying exactly what <code>act()</code> computed:</p>
 <pre><code class="language-python">from tensor_optix.neuroevo import TrainableGRUNeuron, TrainableLSTMNeuron, RecurrentGraphAgent
 from tensor_optix.core.types import HyperparamSet
 
@@ -339,7 +339,8 @@ agent = RecurrentGraphAgent(
     graph, obs_dim=4, n_actions=2,
     hyperparams=HyperparamSet(params={&quot;chunk_len&quot;: 64}),
 )
-# Falls back to standard shuffled-minibatch PPO if no recurrent neurons are present
+# Falls back to standard shuffled-minibatch PPO if the graph holds no state
+# (no GRU/LSTM neurons, no delayed edges)
 </code></pre>
 <h2 id="the-topology-controller">The topology controller</h2>
 <pre><code class="language-python">from tensor_optix.neuroevo import TopologyController

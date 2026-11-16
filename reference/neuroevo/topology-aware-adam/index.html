@@ -262,6 +262,20 @@ network continues uninterrupted.
         Parameters not in the optimizer's tracked groups are silently ignored.
         &quot;&quot;&quot;
 
+    def carry_over(self, old, old_packed=None, old_ids=None,
+                   new_packed=None, new_ids=None) -&gt; None:
+        &quot;&quot;&quot;
+        Copy Adam state from `old` after a topology rebuild replaced some
+        parameters with new objects.
+
+        A parameter that is the same object in both optimizers keeps its state.
+        The packed edge-weight vector is a new Parameter after every rebuild:
+        pass the old and new vector with the edge id of each position
+        (NeuronGraph._ff_edge_ids at the time of each rebuild) and positions
+        are matched by edge id. A surviving edge keeps its momentum wherever it
+        moved; a new edge starts from zero.
+        &quot;&quot;&quot;
+
     def step(self, closure=None): ...
     def zero_grad(self, set_to_none: bool = True) -&gt; None: ...
     def state_dict(self): ...
@@ -279,7 +293,9 @@ network continues uninterrupted.
 optimizer = TopologyAwareAdam(graph.parameters(), lr=3e-4)
 optimizer.notify_topology_change(new_params)  # call after any topology mutation
 </code></pre>
-<p><code>TopologyController</code> does <strong>not</strong> call <code>notify_topology_change</code> for you automatically - if you're using <code>TopologyController</code> as a callback with a <code>GraphAgent</code>, the agent's own optimizer (constructed internally) would need to be a <code>TopologyAwareAdam</code> instance and wired to receive this notification after each mutation. For most users relying on <code>make_agent(..., neuroevo=True)</code>, this is an advanced customization point rather than something you need to manage directly.</p>
+<p><code>GraphAgent</code> uses a <code>TopologyAwareAdam</code> and handles topology changes itself. Every grow, prune or merge rebuilds the graph's packed weight vector as a new <code>Parameter</code>, so the agent builds a new optimizer and calls <code>carry_over()</code> to move Adam's moments across by edge id. You do not need to call anything. Momentum is not reset for edges whose weight an operation changed in place (for example the outgoing edges halved by <code>split_neuron</code>), and <code>notify_topology_change()</code> cannot do that for single entries of the packed vector since it works per <code>Parameter</code>.</p>
+<p>Adam keeps one step counter per <code>Parameter</code>, so a new edge in a long-running packed vector has a mature step count and empty moments. Its first few updates are a few times larger than <code>lr</code>, then settle.</p>
+<p><code>load_weights()</code> starts the optimizer from scratch, since the restored weights have no relation to the old momentum.</p>
               
             </div>
           </div><footer>

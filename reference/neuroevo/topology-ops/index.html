@@ -252,7 +252,12 @@ def split_neuron(graph, neuron_id) -&gt; tuple[str, str]:
     Math:
         incoming edges: both copies receive full weight
         outgoing edges: both copies send w/2  (sum = w, output preserved)
-        bias:           both copies receive b/2
+        bias:           both copies keep the full bias, so each computes
+                        exactly what the original did
+
+    The bias is not halved: the copy's activation is f(w_in.x + b), and the
+    halved outgoing edges only sum back to the original output if both copies
+    produce that same activation.
 
     Returns (original_id, new_id). Original neuron keeps its id.
     &quot;&quot;&quot;

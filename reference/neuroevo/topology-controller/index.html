@@ -300,9 +300,15 @@ Multi-region support:
         merge_similarity_threshold: Pearson correlation above which neurons merge.
         merge_check_interval:    Check for merge candidates every N episodes.
         act_history_len:         Per-neuron activation history window length
-                                  for merge detection.
+                                  for merge detection. Every forward the graph
+                                  runs (forward() or forward_batch()) is
+                                  recorded, so one call contributes as many
+                                  samples as there were steps. If you run your
+                                  own forward pass, report its activations with
+                                  graph.record_activations(h).
         min_score_buffer:        Minimum eval scores required before grow check runs.
-        max_neurons:             Hard cap on total neurons per region.
+        max_neurons:             Hard cap on total neurons per region (default 256).
+                                  Pass None for no ceiling.
         min_hidden_neurons:      Minimum hidden neurons kept during pruning per region.
         &quot;&quot;&quot;
 

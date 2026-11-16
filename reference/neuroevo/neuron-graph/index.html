@@ -178,6 +178,16 @@
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#forward-pass-and-compilation">Forward pass and compilation</a>
     </li>
+    <li class="toctree-l4"><a class="reference internal" href="#device">Device</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#batched-forward-with-explicit-state">Batched forward with explicit state</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#edge-access">Edge access</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#activation-recording">Activation recording</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#delayed-edges">Delayed edges</a>
+    </li>
     <li class="toctree-l4"><a class="reference internal" href="#serialization">Serialization</a>
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#dales-law">Dale's Law</a>
@@ -328,21 +338,60 @@ def forward(self, obs: torch.Tensor) -&gt; torch.Tensor: ...
 </code></pre>
 <p><code>NeuronGraph</code> runs in eager mode by default because the forward pass mutates Python-side neuron state (<code>neuron._current</code>, <code>push_history</code>), which <code>torch.compile</code> cannot safely trace without replaying those side effects. The backend for <code>compile_forward()</code> is selected automatically: <code>inductor</code> on Linux/macOS, <code>aot_eager</code> on Windows.</p>
 <p>Internally, a fast vectorized path (<code>_fast_forward</code>) is used automatically for "uniform" graphs (no recurrent edges, all non-input neurons share the same point-neuron type) - one matmul per topological level per activation group, instead of a per-neuron Python loop.</p>
-<h3 id="serialization">Serialization</h3>
-<pre><code class="language-python">def to_dict(self) -&gt; dict:
+<h3 id="device">Device</h3>
+<p><code>NeuronGraph(device=None)</code> and <code>BrainNetwork(device=None)</code> take an explicit device. With <code>None</code> they use the global tensor-optix device, which is <code>"cpu"</code> unless you call <code>tensor_optix.set_device("cuda")</code> or <code>tensor_optix.auto_device()</code>. The default is not changed to CUDA automatically.</p>
+<h3 id="batched-forward-with-explicit-state">Batched forward with explicit state</h3>
+<pre><code class="language-python">def initial_state(self, batch_size: int = 1) -&gt; GraphState: ...
+
+def forward_batch(self, obs: Tensor, state: Optional[GraphState] = None
+                  ) -&gt; tuple[Tensor, GraphState]:
     &quot;&quot;&quot;
-    Serialize the full graph topology (structure only - weights come from
-    state_dict). JSON-serializable; captures enough information for
-    from_dict() to reconstruct an identical graph that accepts the original
-    state_dict without key mismatches.
+    One timestep for a whole batch. obs [B, n_inputs] -&gt; (out [B, n_outputs],
+    next state). The recurrent state is passed in and returned instead of
+    living inside the neurons.
+    &quot;&quot;&quot;
+
+@dataclass
+class GraphState:
+    h: Tensor            # [B, n] previous activations
+    c: Tensor            # [B, n] LSTM cell state
+    hist: Optional[Tensor]  # [B, max_delay, n] past activations, newest first
+    def detach(self) -&gt; &quot;GraphState&quot;: ...
+</code></pre>
+<p><code>forward_batch</code> computes the same function as running <code>forward()</code> on each row from a reset graph, as a few tensor ops per topological level instead of a Python loop over neurons. It handles point, GRU and LSTM neurons (and the Trainable variants) and delayed edges. Neuron objects are only read for their parameters, so <code>_current</code>, <code>_h</code>, <code>_c</code> and the history buffers are not touched. Gradients flow through the returned state, so an unrolled sequence trains by backprop through time; call <code>state.detach()</code> every k steps to truncate. Plain <code>GRUNeuron</code> and <code>LSTMNeuron</code> keep detaching their own hidden state each step, as their <code>step()</code> does; the Trainable variants do not. A custom <code>Neuron</code> subclass raises <code>NotImplementedError</code>.</p>
+<h3 id="edge-access">Edge access</h3>
+<pre><code class="language-python">def edge_table(self) -&gt; EdgeTable:
+    &quot;&quot;&quot;All edges as aligned tensors: edge_ids, src, dst (neuron indices),
+    weight (effective, post-Dale, detached) and grad (gradient of the stored
+    parameter, 0 before any backward).&quot;&quot;&quot;
+</code></pre>
+<p>Read edge gradients from here. For packed feedforward edges <code>edge.weight</code> is a view that sits outside the forward graph, so <code>edge.weight.grad</code> is always empty; the gradient lives on the packed vector. <code>edge_table()</code> does it for the whole graph at once with no per-edge host sync.</p>
+<h3 id="activation-recording">Activation recording</h3>
+<pre><code class="language-python">def enable_activation_trace(self, capacity: int = 100) -&gt; None: ...
+def record_activations(self, h: Tensor) -&gt; None:
+    &quot;&quot;&quot;h is [n] or [S, n], columns in neuron_index order.&quot;&quot;&quot;
+def drain_activation_trace(self) -&gt; Optional[Tensor]: ...
+def activation_snapshot(self) -&gt; Tensor: ...
+</code></pre>
+<p><code>forward()</code> and <code>forward_batch()</code> record every step; <code>TopologyController</code> turns the recorder on and drains it each episode. If you run your own forward pass, call <code>record_activations(h)</code> with its activations so the controller can see them.</p>
+<h3 id="delayed-edges">Delayed edges</h3>
+<p>A delayed edge <code>u -&gt; v</code> with delay <code>d</code> reads <code>u</code>'s activation from <code>d</code> steps ago, so <code>u</code> is the neuron that stores history. Earlier versions set the history flag on <code>v</code> instead, which meant a delayed edge between two different neurons always delivered zeros unless <code>u</code> happened to have a delayed input of its own (a self loop worked, which is why it went unnoticed).</p>
+<h3 id="serialization">Serialization</h3>
+<pre><code class="language-python">def to_dict(self, include_weights: bool = True) -&gt; dict:
+    &quot;&quot;&quot;
+    Serialize the graph. JSON-serializable. With include_weights=True (the
+    default) every parameter is stored under &quot;state&quot;, so from_dict() returns a
+    graph that computes the same function. With include_weights=False only the
+    structure is stored; from_dict() then gives freshly initialised weights and
+    you load state_dict() yourself (GraphAgent checkpoints do this).
     &quot;&quot;&quot;
 
 @classmethod
-def from_dict(cls, d: dict) -&gt; &quot;NeuronGraph&quot;:
+def from_dict(cls, d: dict, device=None) -&gt; &quot;NeuronGraph&quot;:
     &quot;&quot;&quot;
-    Reconstruct a NeuronGraph from a topology dict produced by to_dict().
-    Neurons are added with their original IDs so state_dict keys match
-    exactly after a subsequent load_state_dict() call.
+    Reconstruct a NeuronGraph from a dict produced by to_dict(). Neurons are
+    added with their original IDs so state_dict keys match exactly. Loads the
+    weights if the dict carries them.
     &quot;&quot;&quot;
 </code></pre>
 <h3 id="dales-law">Dale's Law</h3>
@@ -386,8 +435,9 @@ def all_neuron_ids(self) -&gt; List[str]: ...
 <p><code>_topological_order()</code> uses Kahn's algorithm over feedforward (<code>d=0</code>) edges only - recurrent edges always read from history, so they impose no within-timestep ordering constraint.</p>
 <h3 id="in-place-restore-and-forward-hooks">In-place restore and forward hooks</h3>
 <pre><code class="language-python">def restore_from_dict(self, d: dict) -&gt; &quot;NeuronGraph&quot;:
-    &quot;&quot;&quot;Rebuild THIS graph object in place from a to_dict() topology.
-    Parameters are re-created; follow with load_state_dict().&quot;&quot;&quot;
+    &quot;&quot;&quot;Rebuild THIS graph object in place from a to_dict() dict. Parameters are
+    re-created; loaded from the dict if it carries weights, otherwise follow
+    with load_state_dict().&quot;&quot;&quot;
 </code></pre>
 <p>Use this (not <code>from_dict</code>) when other objects hold a reference to the graph. <code>graph._post_forward_hooks</code> is a list of zero-argument callables run after every <code>forward()</code>; <code>HebbianHook</code> uses it to sample activations.</p>
               
