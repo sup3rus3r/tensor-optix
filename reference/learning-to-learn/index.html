@@ -128,6 +128,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
@@ -629,16 +631,20 @@ def run_reevaluation(store, *, baseline_experiment_id, agent_factory, evaluator,
     deployed_baseline_eval row, returns the real score.&quot;&quot;&quot;
 </code></pre>
 <pre><code class="language-python">class DeploymentObserver:
-    def __init__(self, store, *, task_env, algorithm, study_id, scheduler: Optional[BackoffScheduler] = None):
-        &quot;&quot;&quot;Wraps BackoffScheduler (reused as-is, store-free, numpy-only --
+    def __init__(self, store, *, task_env, algorithm, study_id,
+                 monitor: Optional[ConvergenceMonitor] = None, acute_k: float = 4.0):
+        &quot;&quot;&quot;Wraps ConvergenceMonitor (reused as-is, store-free, numpy-only --
         not reimplemented) with a per-re-evaluation-cycle calling
-        convention instead of per-episode.&quot;&quot;&quot;
+        convention instead of per-episode. Defaults: timescales (3, 8, 24)
+        cycles, COOLING after 3 / DORMANT after 10 cycles without new
+        ground. Degradation fires on a confirmed collapse, or on an acute
+        drop: one cycle more than acute_k noise SDs below the peak.&quot;&quot;&quot;
 
     def observe(self, score: float) -&gt; ObservationResult: ...
     def score_history(self, *, limit: int = 100) -&gt; List[float]: ...
     def replay_history(self) -&gt; None:
         &quot;&quot;&quot;Reconstructs ledger-backed history and replays it through the
-        scheduler -- makes Observer state durable across process restarts
+        monitor -- makes Observer state durable across process restarts
         with zero new persistence code.&quot;&quot;&quot;
 
 @dataclass
@@ -649,6 +655,7 @@ class ObservationResult:
     is_degrading: bool
     degradation_fired: bool
     best_score: Optional[float]
+    report: Optional[ConvergenceReport]   # the monitor's full report for this cycle
 </code></pre>
 <pre><code class="language-python">def propose_and_run(store, *, agent_factory, pipeline_factory, task_env, algorithm,
                      solve_threshold, source_task_envs, budget, trial_steps, seeds,

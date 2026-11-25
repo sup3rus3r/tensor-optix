@@ -64,6 +64,8 @@
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#checkpointing-and-early-stopping">Checkpointing and early stopping</a>
     </li>
+    <li class="toctree-l2"><a class="reference internal" href="#training-until-convergence">Training until convergence</a>
+    </li>
     <li class="toctree-l2"><a class="reference internal" href="#hyperparameter-tuning">Hyperparameter tuning</a>
     </li>
     <li class="toctree-l2"><a class="reference internal" href="#learning-rate-schedules">Learning-rate schedules</a>
@@ -129,6 +131,8 @@
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
@@ -329,7 +333,61 @@ model = TorchMLModel(net, loss_fn=nn.CrossEntropyLoss(),
 )
 </code></pre>
 <p><code>early_stopping_patience</code> works even without <code>checkpoint_dir</code> set. "New best" is tracked independently of whether checkpoints are being persisted to disk. <code>checkpoint_dir</code> only controls whether that best state is saved and restorable later.</p>
-<p>Convergence/plateau detection reuses <code>BackoffScheduler</code> from the RL core, with defaults re-tuned for per-epoch validation curves instead of the RL defaults. Per-epoch validation curves are typically smoother and evaluated far less often than per-episode RL reward. See <a href="../../reference/ml-core/"><code>tensor_optix.ml_core.trainer.ML_BACKOFF_DEFAULTS</code></a> for the exact values.</p>
+<h2 id="training-until-convergence">Training until convergence</h2>
+<p><code>fit()</code> acts on the same <a href="../../reference/core/convergence/"><code>ConvergenceMonitor</code></a> the RL loop uses, observing the validation <code>primary_score</code> once per epoch. Pass <code>epochs=None</code> to let tensor-optix decide when to stop:</p>
+<pre><code class="language-python">history = model.fit((X_train, y_train), (X_val, y_val), epochs=None)
+print(history.stop_reason)      # &quot;converged&quot;
+print(history.epochs_run, history.best_epoch)
+print(history.convergence[-1])  # the final ConvergenceReport
+</code></pre>
+<p>A run stops at whichever of these comes first:</p>
+<table>
+<thead>
+<tr>
+<th>Stop</th>
+<th>When</th>
+<th><code>stop_reason</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>epochs</code></td>
+<td>the fixed budget is used up (when given)</td>
+<td><code>"epochs"</code></td>
+</tr>
+<tr>
+<td><code>max_epochs</code></td>
+<td>an optional cap, off by default</td>
+<td><code>"max_epochs"</code></td>
+</tr>
+<tr>
+<td><code>early_stopping_patience</code></td>
+<td>that many epochs without a new best (when given)</td>
+<td><code>"early_stopping"</code></td>
+</tr>
+<tr>
+<td>convergence</td>
+<td>the monitor reaches DORMANT: no new ground for 20 epochs and no slow rise still in progress (needs <code>val_data</code>; turn it off with <code>stop_on_convergence=False</code>)</td>
+<td><code>"converged"</code></td>
+</tr>
+</tbody>
+</table>
+<p>The best checkpoint is restored before <code>fit()</code> returns, however the run ended. <code>epochs=None</code> requires <code>val_data</code> or a <code>max_epochs</code> cap.</p>
+<p>Callbacks:</p>
+<ul>
+<li><code>on_improvement(metrics)</code>: every new best.</li>
+<li><code>on_no_improvement(metrics)</code>: every epoch without one.</li>
+<li><code>on_plateau(metrics)</code>: <strong>once</strong>, on entering COOLING. SPSA's <code>on_cooling</code> also widens its search at that point.</li>
+<li><code>on_dormant(epoch)</code>: once, on entering DORMANT.</li>
+<li><code>on_convergence(epoch, report)</code>: on every regime or state change.</li>
+</ul>
+<p>ML defaults (<code>tensor_optix.ml_core.trainer.ML_CONVERGENCE_DEFAULTS</code>): timescales of 3 / 8 / 24 epochs, COOLING after 5 epochs without new ground, DORMANT after 20, persistence 2. Pass your own monitor to change them:</p>
+<pre><code class="language-python">from tensor_optix import ConvergenceMonitor
+model.fit(train, val, epochs=None,
+          convergence=ConvergenceMonitor(timescales=(3, 8, 24), cooling_patience=5,
+                                         dormant_patience=40, min_delta=1e-3))
+</code></pre>
+<p>With <code>epochs=None</code>, a fixed-length schedule such as <code>CosineAnnealingLR(epochs=50)</code> reaches its final learning rate at its own <code>epochs</code> and stays there. A warning says so.</p>
 <h2 id="hyperparameter-tuning">Hyperparameter tuning</h2>
 <p>If your model overrides <code>default_param_bounds</code> (the same mechanism <code>MLAgent</code>/RL agents use), <code>Trainer</code> activates <code>SPSAOptimizer</code> automatically, tuning hyperparameters once per epoch from the validation score:</p>
 <pre><code class="language-python">class MyModel(TorchMLModel):

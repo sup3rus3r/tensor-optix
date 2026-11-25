@@ -120,6 +120,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
@@ -264,7 +266,7 @@ class MyLogger(LoopCallback):
     def on_dormant(self, episode_id):
         print(f&quot;Converged at episode {episode_id}&quot;)
 </code></pre>
-<p>Override any subset of: <code>on_loop_start</code>, <code>on_loop_stop</code>, <code>on_episode_end(episode_id, eval_metrics)</code>, <code>on_improvement(snapshot)</code>, <code>on_plateau(episode_id, state)</code>, <code>on_dormant(episode_id)</code>, <code>on_degradation(episode_id, eval_metrics)</code>, <code>on_hyperparam_update(old_params, new_params)</code>. A callback that raises inside any hook is caught and logged as a warning by <code>LoopController</code> - it will not crash the training run.</p>
+<p>Override any subset of: <code>on_loop_start</code>, <code>on_loop_stop</code>, <code>on_episode_end(episode_id, eval_metrics)</code>, <code>on_improvement(snapshot)</code>, <code>on_plateau(episode_id, state)</code>, <code>on_dormant(episode_id)</code>, <code>on_degradation(episode_id, eval_metrics)</code>, <code>on_hyperparam_update(old_params, new_params)</code>, <code>on_convergence(episode_id, report)</code>. <code>on_plateau</code> and <code>on_dormant</code> fire once, on entering COOLING / DORMANT; <code>on_convergence</code> fires on every regime or state change with a <a href="../../reference/core/convergence/#convergencereport"><code>ConvergenceReport</code></a>. Hooks a duck-typed callback does not define are skipped. A callback that raises inside any hook is caught and logged as a warning by <code>LoopController</code> - it will not crash the training run.</p>
 <p><code>HebbianHook</code> and <code>NeuromodulatorSignal</code> (neuroevo subsystem) are also <code>LoopCallback</code> subclasses and can be passed alongside the above via <code>callbacks=</code>.</p>
 <h2 id="reference">Reference</h2>
 <p>Full constructor parameters: <a href="../../reference/callbacks/">Callbacks reference</a>.</p>

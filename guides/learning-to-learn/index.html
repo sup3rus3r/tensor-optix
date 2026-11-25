@@ -130,6 +130,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
@@ -384,7 +386,7 @@ config = RuntimeConfig(task_env=&quot;CartPole-v1&quot;, algorithm=&quot;PPO&quo
 runtime = LiveAdaptiveRuntime(store, config, agent_factory=make_agent, pipeline_factory=make_pipeline)
 observations, recommendations = runtime.run()
 </code></pre>
-<p>Each cycle: re-evaluates the deployed agent with a short, real, inference-only rollout (standing in for live traffic); feeds the score through a <code>DeploymentObserver</code> (a thin wrapper around the existing <code>BackoffScheduler</code> trend/degradation state machine — reused exactly as-is, not reimplemented); and, on degradation or a scheduled research cycle, consults <code>NanonetsSelector</code> to rank a fixed shortlist of strategy operations, runs the winners through <code>StrategyTrialRunner</code>, and issues a durable recommendation.</p>
+<p>Each cycle: re-evaluates the deployed agent with a short, real, inference-only rollout (standing in for live traffic); feeds the score through a <code>DeploymentObserver</code> (a thin wrapper around the shared <code>ConvergenceMonitor</code> — reused exactly as-is, not reimplemented — that fires degradation on a confirmed collapse or an acute single-cycle drop); and, on degradation or a scheduled research cycle, consults <code>NanonetsSelector</code> to rank a fixed shortlist of strategy operations, runs the winners through <code>StrategyTrialRunner</code>, and issues a durable recommendation.</p>
 <p><strong>The loop is recommend-only by construction, not by convention.</strong> <code>PromotionPolicy</code> is hardcoded inside the runtime with <code>approval_mode="human"</code> — there is no field on <code>RuntimeConfig</code>, no CLI flag, no environment variable that reaches that value. Recommendations are written as auditable ledger <code>EventRecord</code>s, never just a line of stdout that scrolls away. Nothing in the loop ever calls <code>store.approve_strategy</code>.</p>
 <p>Promoting a candidate to actually become the deployed baseline requires two separate, explicit actions outside the loop:</p>
 <pre><code class="language-python">from tensor_optix.runtime import promote_candidate_to_baseline

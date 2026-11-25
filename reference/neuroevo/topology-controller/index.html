@@ -108,6 +108,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../core/checkpoint_registry/">checkpoint_registry</a>
@@ -279,7 +281,9 @@ Multi-region support:
         Parameters
         ----------
         regions:                Dict mapping region name → NeuronGraph.
-        scheduler:               The BackoffScheduler inside LoopController.
+        scheduler:               The LoopController's BackoffScheduler (forwards restarts
+                                 to its ConvergenceMonitor) or the monitor itself
+                                 (controller.monitor).
         grow_op:                 'insert_edge' | 'split_neuron' | 'add_edge'
         grow_grad_threshold:     Minimum fraction of hidden neurons with |∇| &gt;
                                   grad_eps required to allow grow.

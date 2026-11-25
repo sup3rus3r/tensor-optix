@@ -116,6 +116,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
@@ -254,11 +256,11 @@ optimizer.run()
 </thead>
 <tbody>
 <tr>
-<td>improvement</td>
+<td>improvement (every <code>IMPROVING</code> observation)</td>
 <td><code>η *= 0.9</code> - pull back exploration while genuinely learning</td>
 </tr>
 <tr>
-<td>plateau (<code>COOLING</code>)</td>
+<td>entering <code>COOLING</code> (once)</td>
 <td><code>η *= 1.5</code>, capped at <code>4 × η_base</code> - push exploration harder when stuck</td>
 </tr>
 <tr>

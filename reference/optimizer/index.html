@@ -108,6 +108,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
@@ -287,8 +289,8 @@
     base_interval: int = 1,
     backoff_factor: float = 2.0,
     max_interval_episodes: int = 100,
-    plateau_threshold: int = 5,
-    dormant_threshold: int = 20,
+    plateau_threshold: Optional[int] = None,
+    dormant_threshold: Optional[int] = None,
     degradation_threshold: float = 0.95,
     min_degradation_drop: float = 1e-4,
     noise_k: float = 2.0,
@@ -312,8 +314,8 @@
     diag_min_episodes: int = 5,
     min_consecutive_degradations: int = 3,
     convergence_patience: int = 5,
-    cv_threshold: float = 0.05,
-    gap_threshold: float = 0.20,
+    cv_threshold: Optional[float] = None,     # deprecated, no effect
+    gap_threshold: Optional[float] = None,    # deprecated, no effect
     target_score: Optional[float] = None,
     # ── Trial-level search (TrialOrchestrator) ──
     agent_factory: Optional[Callable[[Dict[str, Any]], BaseAgent]] = None,
@@ -326,8 +328,16 @@
 )
 </code></pre>
 <p>Either <code>agent</code> or <code>agent_factory</code> must be provided, and either <code>pipeline</code> or <code>pipeline_factory</code>.</p>
-<p><code>RLOptimizer</code> builds, internally: a <code>TFEvaluator</code> (default, if none given), an <code>SPSAOptimizer</code> seeded from the agent's <code>default_param_bounds</code>/<code>default_log_params</code> (if no optimizer given, or if a given <code>SPSAOptimizer</code> has no bounds yet), a <code>CheckpointRegistry</code>, a <code>BackoffScheduler</code>, and a <code>DiagnosticController</code> - then wraps them all in a <code>LoopController</code>.</p>
-<p>Off-policy agents (<code>agent.is_on_policy == False</code>) get more patient defaults automatically: if <code>dormant_threshold</code> is left at its default <code>20</code>, it's lowered to <code>15</code>; if <code>min_episodes_before_dormant</code> is left at <code>0</code>, it's raised to <code>agent.default_min_episodes_before_dormant</code> (default <code>100</code>).</p>
+<p><code>RLOptimizer</code> builds, internally: a <code>TFEvaluator</code> (default, if none given), an <code>SPSAOptimizer</code> seeded from the agent's <code>default_param_bounds</code>/<code>default_log_params</code> (if no optimizer given, or if a given <code>SPSAOptimizer</code> has no bounds yet), a <code>CheckpointRegistry</code>, a <code>BackoffScheduler</code> (evaluation cadence), and a <code>DiagnosticController</code> - then wraps them all in a <code>LoopController</code>, which builds the <a href="../core/convergence/"><code>ConvergenceMonitor</code></a> that drives convergence.</p>
+<p>Convergence parameters:</p>
+<ul>
+<li><strong><code>plateau_threshold</code> / <code>dormant_threshold</code>:</strong> cooling / dormant patience, in episodes. <code>None</code> uses the monitor defaults (32 / 160).</li>
+<li><strong><code>noise_k</code>:</strong> the significance of every trend test, in standard errors.</li>
+<li><strong><code>min_episodes_before_dormant</code>:</strong> DORMANT is never entered before this episode.</li>
+<li><strong><code>min_consecutive_degradations</code>:</strong> observations a new regime, including a collapse, must hold before it is reported.</li>
+<li><strong>No effect:</strong> <code>score_window</code>, <code>trend_window</code>, <code>degradation_threshold</code> and <code>min_degradation_drop</code> only affect a standalone <code>BackoffScheduler</code>. <code>cv_threshold</code> / <code>gap_threshold</code> are deprecated and do nothing.</li>
+</ul>
+<p>Off-policy agents (<code>agent.is_on_policy == False</code>): if <code>min_episodes_before_dormant</code> is left at <code>0</code>, it's raised to <code>agent.default_min_episodes_before_dormant</code> (default <code>100</code>).</p>
 <h3 id="methods">Methods</h3>
 <pre><code class="language-python">def run(self) -&gt; None:
     &quot;&quot;&quot;

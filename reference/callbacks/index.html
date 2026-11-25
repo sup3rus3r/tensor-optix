@@ -108,6 +108,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../core/checkpoint_registry/">checkpoint_registry</a>
@@ -340,7 +342,7 @@
 <p>Records a run into the experiment ledger - documented with the ledger in <a href="../learning-to-learn/#experimentledgercallback">Learning-to-Learn reference</a>.</p>
 <p>See <a href="../../guides/logging-callbacks/">Logging and dashboards</a> for usage and writing your own <code>LoopCallback</code>.</p>
 <h3 id="step-numbering">Step numbering</h3>
-<p><code>WandbCallback</code> and <code>TensorBoardCallback</code> log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires <code>on_improvement</code> / <code>on_plateau</code> / <code>on_degradation</code>, then <code>on_hyperparam_update</code>, then <code>on_episode_end</code>; steps are kept monotonic across those hooks so Weights &amp; Biases does not drop the hyperparameter entries.</p>
+<p><code>WandbCallback</code> and <code>TensorBoardCallback</code> log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires <code>on_improvement</code>, then <code>on_convergence</code> / <code>on_plateau</code> / <code>on_degradation</code> / <code>on_dormant</code> (each at most once, on entry), then <code>on_hyperparam_update</code>, then <code>on_episode_end</code>; steps are kept monotonic across those hooks so Weights &amp; Biases does not drop the hyperparameter entries.</p>
               
             </div>
           </div><footer>

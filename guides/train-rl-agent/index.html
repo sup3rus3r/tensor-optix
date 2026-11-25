@@ -122,6 +122,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
@@ -276,9 +278,9 @@ opt = RLOptimizer(
     # Optional external scorer run at checkpoint evaluation (e.g. held-out backtest)
     checkpoint_score_fn=lambda a: evaluate(a, held_out_env),
 
-    # Convergence parameters
-    dormant_threshold=10,            # consecutive non-improving evals -&gt; DORMANT
-    min_episodes_before_dormant=50,  # statistical warmup before convergence detection activates
+    # Convergence parameters (patience in episodes; defaults 32 / 160)
+    dormant_threshold=100,           # episodes without new ground -&gt; DORMANT
+    min_episodes_before_dormant=50,  # never DORMANT before this episode
 )
 
 opt.run()
@@ -346,7 +348,7 @@ opt.add_callback(RichDashboardCallback())        # Rich live terminal panel
 opt.add_callback(WandbCallback(project=&quot;run&quot;))
 opt.add_callback(TensorBoardCallback(log_dir=&quot;./tb&quot;))
 </code></pre>
-<p>Custom callbacks subclass <code>LoopCallback</code> and override any of <code>on_loop_start</code>, <code>on_loop_stop</code>, <code>on_episode_end</code>, <code>on_improvement</code>, <code>on_plateau</code>, <code>on_dormant</code>, <code>on_degradation</code>, <code>on_hyperparam_update</code>. See <a href="../logging-callbacks/">Logging and dashboards</a> and the <a href="../../reference/callbacks/">Callbacks reference</a>.</p>
+<p>Custom callbacks subclass <code>LoopCallback</code> and override any of <code>on_loop_start</code>, <code>on_loop_stop</code>, <code>on_episode_end</code>, <code>on_improvement</code>, <code>on_plateau</code>, <code>on_dormant</code>, <code>on_degradation</code>, <code>on_hyperparam_update</code>, <code>on_convergence</code>. See <a href="../logging-callbacks/">Logging and dashboards</a> and the <a href="../../reference/callbacks/">Callbacks reference</a>.</p>
 <h2 id="verbose-mode">Verbose mode</h2>
 <p><code>verbose=True</code> (optionally with <code>verbose_log_file=...</code>) prints a per-eval breakdown: raw/smoothed/best score, trend slope vs. adaptive floor, loop state, and any hyperparameter changes from the active optimizer - useful when tuning convergence thresholds for a new environment.</p>
               

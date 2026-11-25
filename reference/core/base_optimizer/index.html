@@ -112,6 +112,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../checkpoint_registry/">checkpoint_registry</a>
@@ -264,7 +266,16 @@
         &quot;&quot;&quot;Called when a new best score is achieved. Override to react.&quot;&quot;&quot;
 
     def on_plateau(self, metrics_history: List[EvalMetrics]) -&gt; None:
-        &quot;&quot;&quot;Called when a plateau is detected. Override to react.&quot;&quot;&quot;
+        &quot;&quot;&quot;Called when the run goes DORMANT (converged or stuck). Override to react.&quot;&quot;&quot;
+
+    def on_cooling(self, metrics_history: List[EvalMetrics]) -&gt; None:
+        &quot;&quot;&quot;
+        Called once when the run enters COOLING: no new ground for the cooling
+        patience, but not yet given up on. This is the moment to change
+        something -- by default, the same reaction as a plateau (widen the
+        search), early enough that the wider search actually gets to run.
+        &quot;&quot;&quot;
+        self.on_plateau(metrics_history)
 
     @property
     def is_probing(self) -&gt; bool:

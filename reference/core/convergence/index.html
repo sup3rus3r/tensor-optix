@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../../img/favicon.ico" />
+    <title>convergence - tensor-optix</title>
+    <link rel="stylesheet" href="../../../css/theme.css" />
+    <link rel="stylesheet" href="../../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "convergence";
+        var mkdocs_page_input_path = "reference\\core\\convergence.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../../">Overview</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" >core</a>
+    <ul class="current">
+                <li class="toctree-l2"><a class="reference internal" href="../types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2 current"><a class="reference internal current" href="#">convergence</a>
+    <ul class="current">
+    <li class="toctree-l3"><a class="reference internal" href="#what-it-answers">What it answers</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#how-it-reads-the-curve">How it reads the curve</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#constructor">Constructor</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#methods">Methods</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#convergencereport">ConvergenceReport</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#what-each-loop-does-with-it">What each loop does with it</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#behaviour-under-simulation">Behaviour under simulation</a>
+    </li>
+    </ul>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">API Reference</li>
+          <li class="breadcrumb-item">core</li>
+      <li class="breadcrumb-item active">convergence</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/reference/core/convergence.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="convergence">convergence</h1>
+<p><code>tensor_optix.core.convergence</code> — the one convergence detector every training loop uses: <code>LoopController</code> (RL), the ML <code>Trainer</code>, <code>MultiAgentRunner</code> (one per seat) and the runtime <code>DeploymentObserver</code>.</p>
+<pre><code class="language-python">from tensor_optix import ConvergenceMonitor, ConvergenceRegime
+
+monitor = ConvergenceMonitor()             # defaults below
+report = monitor.observe(score, at=episode_id)
+report.regime          # what the curve is doing
+report.state           # LoopState: ACTIVE / COOLING / DORMANT
+</code></pre>
+<h2 id="what-it-answers">What it answers</h2>
+<p>After every observation the monitor reports two separate things.</p>
+<p><strong>The regime</strong>: what the score curve is doing, judged against the best level the run has reached (its <em>peak</em>):</p>
+<table>
+<thead>
+<tr>
+<th>Regime</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>WARMUP</code></td>
+<td>Too little history to read trends.</td>
+</tr>
+<tr>
+<td><code>IMPROVING</code></td>
+<td>New ground: above the peak.</td>
+</tr>
+<tr>
+<td><code>PLATEAU</code></td>
+<td>Flat, at the peak.</td>
+</tr>
+<tr>
+<td><code>REGRESSED_CLIMBING</code></td>
+<td>Below the peak and climbing back. Getting back to the peak is <strong>not</strong> improvement.</td>
+</tr>
+<tr>
+<td><code>REGRESSED_STALLED</code></td>
+<td>Below the peak and not climbing.</td>
+</tr>
+<tr>
+<td><code>COLLAPSING</code></td>
+<td>Falling away from the peak.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The state</strong> (<code>LoopState</code>): how long it has been since real progress.</p>
+<ul>
+<li><strong>ACTIVE</strong> — <code>IMPROVING</code> was seen within <code>cooling_patience</code>.</li>
+<li><strong>COOLING</strong> — no new ground for <code>cooling_patience</code>.</li>
+<li><strong>DORMANT</strong> — no new ground for <code>dormant_patience</code>.</li>
+</ul>
+<p>Patience is measured in the caller's own units of <code>at</code> (episodes, windows or epochs), never in evaluation counts.</p>
+<h2 id="how-it-reads-the-curve">How it reads the curve</h2>
+<p>Three timescales are read together, by default the last 8, 32 and 128 observations. For each it computes:</p>
+<ul>
+<li>the <strong>level</strong>: the mean, with its standard error;</li>
+<li>the <strong>slope</strong>: an OLS fit against the real positions <code>at</code>, with its standard error.</li>
+</ul>
+<p>Irregular evaluation spacing is therefore handled by the regression itself.</p>
+<p><strong>Noise</strong> is estimated from the robust spread (MAD) of first differences. A change of slope, such as a rise flattening into a plateau, is a step in the mean of those differences. Steps are located by a CUSUM test and removed first, so a bending curve is not mistaken for noise. Lag-1 autocorrelation comes from the same differences; for AR(1) noise, corr(dₜ, dₜ₋₁) = −(1−ρ)/2. Every standard error is then inflated by √((1+ρ)/(1−ρ)).</p>
+<p><strong>The peak</strong> is the best medium-scale level, minus one standard error. A lucky window therefore cannot set an unbeatable bar. During an established rise (a significant medium slope plus a sustained <code>IMPROVING</code> streak), the medium mean lags the true level. In that case the peak follows the top of the rise. That fast-tracked top is provisional: after a full medium window of plateau it settles to the medium-scale estimate. A run that collapses first keeps the fast-tracked top, because that is the level it has to get back to.</p>
+<p><strong>The rules</strong>:</p>
+<ul>
+<li><strong><code>IMPROVING</code></strong>, by any one of three paths:</li>
+<li><em>Fast:</em> the short level clears the peak by 2 SE, and the medium level is above the peak.</li>
+<li><em>Slow:</em> the medium level clears the peak, and the medium or long slope is significantly rising. The long window resolves slopes too gentle for the short one.</li>
+<li><em>Continuation:</em> inside an ongoing <code>IMPROVING</code> streak, the medium slope is still significant and the short level has not fallen below the peak.</li>
+<li><strong><code>COLLAPSING</code></strong>: the medium slope is significantly falling and the short level is far below the peak.</li>
+<li><strong><code>REGRESSED_*</code></strong>: both the medium and the short level are below the peak by more than their combined uncertainty. Climbing or stalled is decided by the short or medium slope.</li>
+<li><strong>Persistence</strong>: a new regime must hold for <code>persist</code> consecutive observations before it is reported. This absorbs clusters of false alarms from overlapping windows.</li>
+</ul>
+<p><strong>Warm-up</strong> has separate mechanics. For the first <code>medium</code> observations, and for the first few after a restart or restore:</p>
+<ul>
+<li><strong>Improvement</strong>: the mean of the last 4 scores beats a reference level by a significant margin. The reference is the level at the previous improvement during the first warm-up, and the peak after a restart or restore.</li>
+<li><strong>Collapse</strong>: that mean and the newest score both fall below the peak by twice the margin.</li>
+<li><strong>Patience</strong> doesn't run until a noise estimate exists (5 observations).</li>
+</ul>
+<p><strong>DORMANT</strong> is withheld in three cases:</p>
+<ul>
+<li>while the long-scale slope is still significantly rising (a slow learner is not converged);</li>
+<li>while a collapse is being confirmed or is in progress;</li>
+<li>right after a rollback, while the restored policy's scores can't be read yet.</li>
+</ul>
+<h2 id="constructor">Constructor</h2>
+<pre><code class="language-python">ConvergenceMonitor(
+    timescales=(8, 32, 128),      # (short, medium, long) observations; first `medium` = warm-up
+    cooling_patience=32,          # units of `at` without IMPROVING -&gt; COOLING
+    dormant_patience=160,         # units of `at` without IMPROVING -&gt; DORMANT
+    z=2.0,                        # significance (standard errors) of every test
+    persist=3,                    # observations a new regime must hold
+    min_delta=0.0,                # smallest absolute gain over the peak that counts
+    min_at_before_dormant=0,      # DORMANT never before this position
+    autocorrelation=True,         # correct SEs for AR(1) noise
+)
+</code></pre>
+<h2 id="methods">Methods</h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>observe(score, at=None, probing=False)</code></td>
+<td>Record one score and return a <code>ConvergenceReport</code>. <code>at</code> must not decrease; it defaults to the observation count. With <code>probing=True</code> (a deliberate perturbation such as an SPSA probe) a collapse is never confirmed.</td>
+</tr>
+<tr>
+<td><code>restart(at=None)</code></td>
+<td>A new policy variant (spawn, topology change). The peak is kept, so the variant must still beat it. Trend history and patience start afresh.</td>
+</tr>
+<tr>
+<td><code>note_restored(at=None)</code></td>
+<td>The peak weights were restored (rollback). Trend history is cleared. The peak and the patience clock are kept, because restoring is not progress.</td>
+</tr>
+<tr>
+<td><code>reset_scale()</code></td>
+<td>The score scale changed. Forget everything, including the peak.</td>
+</tr>
+<tr>
+<td><code>defer_dormant()</code></td>
+<td>The owning loop refuses DORMANT for now. Step back to COOLING so DORMANT can be entered again later.</td>
+</tr>
+</tbody>
+</table>
+<p>Read-only views: <code>state</code>, <code>regime</code>, <code>peak</code>, <code>best_score</code>, <code>last_report</code>, <code>n_observations</code>.</p>
+<h2 id="convergencereport">ConvergenceReport</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>regime</code>, <code>state</code></td>
+<td>as above</td>
+</tr>
+<tr>
+<td><code>scales</code></td>
+<td><code>{"short" / "medium" / "long": ScaleReading(n, level, level_se, slope, slope_se)}</code>, for the windows that are full</td>
+</tr>
+<tr>
+<td><code>sigma</code>, <code>rho</code></td>
+<td>per-observation noise and its lag-1 autocorrelation</td>
+</tr>
+<tr>
+<td><code>peak</code>, <code>peak_at</code>, <code>best_score</code></td>
+<td>bias-corrected peak level, where it was last raised, highest raw score</td>
+</tr>
+<tr>
+<td><code>gap_to_peak</code></td>
+<td>(peak − short level) / sigma; positive means below the peak</td>
+</tr>
+<tr>
+<td><code>since_improvement</code></td>
+<td>units of <code>at</code> since the last <code>IMPROVING</code></td>
+</tr>
+<tr>
+<td><code>below_peak_for</code></td>
+<td>units of <code>at</code> spent in <code>REGRESSED_*</code> / <code>COLLAPSING</code></td>
+</tr>
+<tr>
+<td><code>eta_to_peak</code></td>
+<td>units of <code>at</code> to climb back at the current slope (<code>inf</code> unless <code>REGRESSED_CLIMBING</code>)</td>
+</tr>
+<tr>
+<td><code>improved</code>, <code>peak_raised</code></td>
+<td>this observation was <code>IMPROVING</code> / raised the peak</td>
+</tr>
+<tr>
+<td><code>regime_changed</code>, <code>entered_cooling</code>, <code>entered_dormant</code>, <code>collapse_confirmed</code></td>
+<td>transitions on this observation, so loops act <strong>once, on entry</strong></td>
+</tr>
+<tr>
+<td><code>is_regressed</code></td>
+<td>property: regime is one of the two <code>REGRESSED_*</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-each-loop-does-with-it">What each loop does with it</h2>
+<table>
+<thead>
+<tr>
+<th>Transition</th>
+<th>RL <code>LoopController</code></th>
+<th>ML <code>Trainer</code></th>
+<th><code>MultiAgentRunner</code> (per seat)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>improved</code></td>
+<td><code>optimizer.on_improvement</code>, RND η × 0.9</td>
+<td><code>spsa.on_improvement</code></td>
+<td><code>optimizer.on_improvement</code></td>
+</tr>
+<tr>
+<td><code>entered_cooling</code></td>
+<td><code>optimizer.on_cooling</code>, RND η × 1.5, <code>on_plateau</code> callback</td>
+<td><code>spsa.on_cooling</code>, <code>on_plateau</code> callback</td>
+<td><code>optimizer.on_cooling</code>, <code>on_plateau</code></td>
+</tr>
+<tr>
+<td><code>collapse_confirmed</code></td>
+<td><code>on_degradation</code>, plus rollback when enabled (on-policy only)</td>
+<td>—</td>
+<td><code>on_degradation</code>, plus rollback when enabled (on-policy only)</td>
+</tr>
+<tr>
+<td><code>entered_dormant</code></td>
+<td><code>optimizer.on_plateau</code>, <code>on_dormant</code>, stop unless a callback resumes</td>
+<td><code>on_dormant</code>, stop (<code>stop_reason="converged"</code>)</td>
+<td><code>optimizer.on_plateau</code>, <code>on_converged</code></td>
+</tr>
+<tr>
+<td>any regime or state change</td>
+<td><code>on_convergence(episode_id, report)</code></td>
+<td><code>on_convergence(epoch, report)</code></td>
+<td><code>on_convergence(agent_id, window_id, report)</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="behaviour-under-simulation">Behaviour under simulation</h2>
+<p>Noise σ = 5 around a level of 100, 20 seeds:</p>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Result (median)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Flat plateau, false <code>IMPROVING</code> per 2,800 episodes</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Flat plateau, episodes to DORMANT</td>
+<td>213</td>
+</tr>
+<tr>
+<td>Dip −30, then recovery to the same level, counted as <code>IMPROVING</code></td>
+<td>0</td>
+</tr>
+<tr>
+<td>Dip −30, delay until reported as regressed / collapsing</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Drop −15 that stays, delay to <code>REGRESSED_STALLED</code></td>
+<td>31</td>
+</tr>
+<tr>
+<td>Collapse −30, delay to confirmed</td>
+<td>4</td>
+</tr>
+<tr>
+<td>Learning resumes at +0.5 / +0.2 / +0.05 per episode, delay to <code>IMPROVING</code></td>
+<td>19 / 28 / 78</td>
+</tr>
+<tr>
+<td>Steady slow learner (+0.05 per episode), ever DORMANT</td>
+<td>never</td>
+</tr>
+</tbody>
+</table>
+<p>Cost is about 0.2 ms per observation.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../loop_controller/" class="btn btn-neutral float-left" title="loop_controller"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../backoff_scheduler/" class="btn btn-neutral float-right" title="backoff_scheduler">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../loop_controller/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../backoff_scheduler/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../../..";</script>
+    <script src="../../../js/theme_extra.js"></script>
+    <script src="../../../js/theme.js"></script>
+      <script src="../../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

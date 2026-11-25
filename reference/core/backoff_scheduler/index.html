@@ -108,15 +108,19 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2 current"><a class="reference internal current" href="#">backoff_scheduler</a>
     <ul class="current">
     <li class="toctree-l3"><a class="reference internal" href="#backoffscheduler">BackoffScheduler</a>
         <ul>
     <li class="toctree-l4"><a class="reference internal" href="#constructor">Constructor</a>
     </li>
-    <li class="toctree-l4"><a class="reference internal" href="#trend-detection">Trend detection</a>
+    <li class="toctree-l4"><a class="reference internal" href="#cadence">Cadence</a>
     </li>
-    <li class="toctree-l4"><a class="reference internal" href="#state-machine">State machine</a>
+    <li class="toctree-l4"><a class="reference internal" href="#trend-detection-standalone-legacy">Trend detection (standalone / legacy)</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#state-machine-standalone-legacy">State machine (standalone / legacy)</a>
     </li>
     <li class="toctree-l4"><a class="reference internal" href="#properties">Properties</a>
     </li>
@@ -234,6 +238,14 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="tensor_optixcorebackoff_scheduler">tensor_optix.core.backoff_scheduler</h1>
+<p><strong>Role since the convergence redesign.</strong></p>
+<p><code>LoopController</code> uses <code>BackoffScheduler</code> only for <strong>cadence</strong>: <code>should_adapt()</code> and <code>advance_interval()</code> decide when the costly steps run (validation rollouts, <code>optimizer.suggest</code>). Convergence detection and the ACTIVE / COOLING / DORMANT state belong to <a href="../convergence/"><code>ConvergenceMonitor</code></a>.</p>
+<ul>
+<li><code>plateau_threshold</code> / <code>dormant_threshold</code> default to <code>None</code>. When set explicitly, the owning loop uses them as the monitor's cooling / dormant patience, in episodes.</li>
+<li><code>noise_k</code> becomes the monitor's significance <code>z</code>, and <code>min_episodes_before_dormant</code> its <code>min_at_before_dormant</code>.</li>
+<li><code>record_restart()</code> also restarts the attached monitor.</li>
+<li>The trend and state-machine methods below still work for standalone use, but no loop reads them. <code>is_converged()</code> is deprecated: no loop has ever called it.</li>
+</ul>
 <h2 id="backoffscheduler">BackoffScheduler</h2>
 <pre><code class="language-python">class BackoffScheduler:
     &quot;&quot;&quot;
@@ -270,8 +282,8 @@
     base_interval: int = 1,
     backoff_factor: float = 2.0,
     max_interval_episodes: int = 100,
-    plateau_threshold: int = 5,
-    dormant_threshold: int = 20,
+    plateau_threshold: Optional[int] = None,   # None: standalone state machine uses 5
+    dormant_threshold: Optional[int] = None,   # None: standalone state machine uses 20
     degradation_threshold: float = 0.95,
     min_degradation_drop: float = 1e-4,
     min_episodes_before_dormant: int = 0,
@@ -294,7 +306,18 @@
         min_episodes_before_degradation: Guard against early false positives.
     &quot;&quot;&quot;
 </code></pre>
-<h3 id="trend-detection">Trend detection</h3>
+<h3 id="cadence">Cadence</h3>
+<pre><code class="language-python">def should_adapt(self, episode_count: int) -&gt; bool:
+    &quot;&quot;&quot;True on episodes where the costly steps should run.&quot;&quot;&quot;
+
+def advance_interval(self, improved: bool) -&gt; None:
+    &quot;&quot;&quot;Reset the interval to base_interval on progress, back off otherwise.&quot;&quot;&quot;
+
+def attach_monitor(self, monitor) -&gt; None:
+    &quot;&quot;&quot;Link the ConvergenceMonitor a LoopController built from this
+    scheduler, so record_restart() also restarts it.&quot;&quot;&quot;
+</code></pre>
+<h3 id="trend-detection-standalone-legacy">Trend detection (standalone / legacy)</h3>
 <pre><code class="language-python">def is_improving(self) -&gt; bool:
     &quot;&quot;&quot;
     True when the recent score trend is meaningfully upward.
@@ -317,6 +340,8 @@ def is_degrading(self) -&gt; bool:
 
 def is_converged(self, cv_threshold: float = 0.05, gap_threshold: float = 0.20) -&gt; bool:
     &quot;&quot;&quot;
+    Deprecated: no loop calls this. Use ConvergenceMonitor's report.
+
     True when the policy has genuinely converged:
     flat trend AND low CV AND performing near its personal best.
 
@@ -343,7 +368,7 @@ def check_degradation(self, score: float) -&gt; bool:
         negative best=-100, threshold=0.95 → fires when score &lt; -105
     &quot;&quot;&quot;
 </code></pre>
-<h3 id="state-machine">State machine</h3>
+<h3 id="state-machine-standalone-legacy">State machine (standalone / legacy)</h3>
 <pre><code class="language-python">def record_improvement(self, score: float, append: bool = True) -&gt; None:
     &quot;&quot;&quot;
     Called when a new best score is recorded. Resets backoff and state.
@@ -370,6 +395,7 @@ def record_restart(self) -&gt; None:
     Called after DORMANT fires and PolicyManager has acted.
     Gives the new policy variant a clean slate.
     Does NOT reset best_score - the new variant must beat the existing best.
+    Also restarts the attached ConvergenceMonitor, if any.
     &quot;&quot;&quot;
 
 def record_score(self, score: float) -&gt; None:
@@ -393,7 +419,7 @@ def total_episodes(self) -&gt; int: ...
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../loop_controller/" class="btn btn-neutral float-left" title="loop_controller"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../convergence/" class="btn btn-neutral float-left" title="convergence"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../checkpoint_registry/" class="btn btn-neutral float-right" title="checkpoint_registry">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -421,7 +447,7 @@ def total_episodes(self) -&gt; int: ...
         </span>
     
     
-      <span><a href="../loop_controller/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../convergence/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../checkpoint_registry/" style="color: #fcfcfc">Next &raquo;</a></span>

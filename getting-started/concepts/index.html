@@ -126,6 +126,8 @@
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
                 </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
                 </li>
                 <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
@@ -278,11 +280,17 @@
      (on improvement or degradation)
 </code></pre>
 <ul>
-<li><strong>ACTIVE</strong> - the score is improving or it's early in training.</li>
-<li><strong>COOLING</strong> - <code>plateau_threshold</code> consecutive non-improving evals. Only windows in which at least one episode finished count as evals, and nothing counts until <code>min_completed_episodes_before_dormant</code> (default 10) episodes have finished.</li>
-<li><strong>DORMANT</strong> - <code>dormant_threshold</code> consecutive non-improving evals. By default the loop stops here and restores the best checkpoint. With a <code>PolicyManagerCallback</code> attached, <code>DORMANT</code> instead triggers a spawn/prune/stop decision.</li>
+<li><strong>ACTIVE</strong> - the run made new ground within the cooling patience, or it's early in training.</li>
+<li><strong>COOLING</strong> - no new ground for <code>plateau_threshold</code> episodes (default 32). The optimizer is told to widen its search now, while there is still time for that to help. Only windows in which at least one episode finished are scored.</li>
+<li><strong>DORMANT</strong> - no new ground for <code>dormant_threshold</code> episodes (default 160). DORMANT is withheld in three cases: while a slow rise is still significant on the long timescale, while the score is collapsing, and until <code>min_completed_episodes_before_dormant</code> (default 10) episodes have finished. By default the loop stops here and restores the best checkpoint. With a <code>PolicyManagerCallback</code> attached, <code>DORMANT</code> instead triggers a spawn/prune/stop decision.</li>
 </ul>
-<p>Transitions are <strong>not</strong> point-to-point score comparisons. <code>BackoffScheduler</code> fits a linear trend over the most recent <code>trend_window</code> scores and compares the slope against an adaptive floor (<code>noise_k ×</code> the standard deviation of the recent scores around their own linear trend, capped at 50% of <code>|best_score|</code>) - the noise estimate is detrended so that steady improvement is not mistaken for noise. A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.</p>
+<p>All three are decided by the <a href="../../reference/core/convergence/"><code>ConvergenceMonitor</code></a>:</p>
+<ul>
+<li><strong>Several timescales at once.</strong> It reads short, medium and long trends (8 / 32 / 128 observations) together, against the run's own <strong>peak</strong>: the best level reached, corrected for lucky windows.</li>
+<li><strong>One regime per observation.</strong> It reports <code>IMPROVING</code>, <code>PLATEAU</code>, <code>REGRESSED_CLIMBING</code>, <code>REGRESSED_STALLED</code> or <code>COLLAPSING</code>.</li>
+<li><strong>Climbing back is not new ground.</strong> Getting back to a level the run already reached counts as recovery, not improvement, so a dip after a good rise does not reset patience.</li>
+<li><strong>Noise.</strong> It is estimated from first differences with slope changes removed, and corrected for autocorrelation. A single unlucky episode does not look like a collapse, and a single lucky one does not look like progress.</li>
+</ul>
 <h2 id="checkpointing-is-validation-only">Checkpointing is validation-only</h2>
 <p>When a <code>val_pipeline</code> is configured, <code>primary_score</code> is the <strong>validation</strong> score, not the training score. The training score can keep climbing while validation degrades - that's overfitting, and the loop is built to act on it rather than reward it.</p>
 <p><code>run()</code> always restores the best known checkpoint before returning, regardless of how the loop ended (convergence, <code>stop()</code>, or <code>max_episodes</code>). Pass <code>checkpoint_score_fn</code> to drive checkpoint <em>selection</em> from an independent, deterministic external evaluation instead of the noisy training-window mean.</p>
