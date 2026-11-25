@@ -6,7 +6,7 @@ import numpy as np
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.resume_state import save_torch_resume_state, load_torch_resume_state
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer, episode_n_envs, window_transition_pairs
+from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer, window_transitions
 from tensor_optix.core.obs_utils import to_torch_batch, already_batched_to_torch
 
 
@@ -162,7 +162,10 @@ class TorchSACAgent(BaseAgent):
         batch_size       = int(hp.get("batch_size",         256))
         updates_per_step = float(hp.get("updates_per_step", 1))
 
-        obs_batched = to_torch_batch(list(episode_data.observations), self._device)
+        # Window observations plus each env's post-window observation, so the
+        # last step of the window is stored too (see window_transitions).
+        window_obs, env_pair_lists = window_transitions(episode_data)
+        obs_batched = to_torch_batch(window_obs, self._device)
         obs_arr  = self._encode(obs_batched).cpu().numpy()
         act_arr  = np.array(episode_data.actions,      dtype=np.float32)
         rew_arr  = episode_data.rewards
@@ -172,7 +175,7 @@ class TorchSACAgent(BaseAgent):
         # Pair each step with the NEXT step of the same environment. With a
         # VectorBatchPipeline window the flat arrays interleave n_envs envs
         # ([t * n_envs + i]), so index t + 1 belongs to a different env.
-        for env_pairs in window_transition_pairs(T, episode_n_envs(episode_data)):
+        for env_pairs in env_pair_lists:
             for t, t_next in env_pairs:
                 self._buffer.push(obs_arr[t], act_arr[t], float(rew_arr[t]),
                                    obs_arr[t_next], float(done_arr[t]))

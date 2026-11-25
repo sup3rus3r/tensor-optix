@@ -16,8 +16,14 @@ class RunningMeanStd:
         self.count = epsilon
 
     def update(self, x: np.ndarray) -> None:
-        """Update statistics with a batch of samples (shape [N, ...] or scalar)."""
+        """Update statistics with a batch of samples (shape [N, ...] or scalar).
+
+        An empty batch is ignored: it carries no information, and folding its
+        moments in (mean of nothing = NaN) would make the statistics NaN for
+        good, since every later update starts from them."""
         x = np.asarray(x, dtype=np.float64)
+        if x.size == 0:
+            return
         if x.ndim == len(self.mean.shape):
             # Single sample — wrap in batch dimension
             x = x[np.newaxis]
@@ -29,6 +35,8 @@ class RunningMeanStd:
     def _update_from_moments(
         self, batch_mean: np.ndarray, batch_var: np.ndarray, batch_count: int
     ) -> None:
+        if batch_count <= 0:
+            return
         delta = batch_mean - self.mean
         tot_count = self.count + batch_count
         new_mean = self.mean + delta * batch_count / tot_count

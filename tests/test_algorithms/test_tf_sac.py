@@ -98,7 +98,7 @@ def test_learn_returns_diagnostics(agent, episode):
 
 def test_learn_fills_buffer(agent, episode):
     agent.learn(episode)
-    assert len(agent._buffer) == T - 1
+    assert len(agent._buffer) == T  # the terminal last step is stored too
 
 
 def test_learn_no_update_when_buffer_small(agent):

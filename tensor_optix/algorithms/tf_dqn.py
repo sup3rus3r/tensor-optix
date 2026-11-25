@@ -6,7 +6,7 @@ import tensorflow as tf
 
 from tensor_optix.core.base_agent import BaseAgent
 from tensor_optix.core.types import EpisodeData, HyperparamSet
-from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer, episode_n_envs, window_transition_pairs
+from tensor_optix.core.replay_buffer import PrioritizedReplayBuffer, window_transitions
 from tensor_optix.core.obs_utils import to_batch_numpy, to_tf_batch, already_batched_to_tf, batch_index
 
 
@@ -113,7 +113,10 @@ class TFDQNAgent(BaseAgent):
         # DQN pushes the RAW observation into the buffer (not pre-encoded)
         # -- same single-network constraint as TorchDQNAgent, see
         # torch_dqn.py's learn() comment for the full rationale.
-        obs_arr  = to_batch_numpy(list(episode_data.observations))
+        # Window observations plus each env's post-window observation, so the
+        # last step of the window is stored too (see window_transitions).
+        window_obs, env_pair_lists = window_transitions(episode_data)
+        obs_arr  = to_batch_numpy(window_obs)
         act_arr  = episode_data.actions
         rew_arr  = episode_data.rewards
         done_arr = episode_data.dones
@@ -122,7 +125,7 @@ class TFDQNAgent(BaseAgent):
         # Pair each step with the NEXT step of the same environment. With a
         # VectorBatchPipeline window the flat arrays interleave n_envs envs
         # ([t * n_envs + i]), so index t + 1 belongs to a different env.
-        for env_pairs in window_transition_pairs(T, episode_n_envs(episode_data)):
+        for env_pairs in env_pair_lists:
             for t, t_next in env_pairs:
                 self._buffer.push(
                     batch_index(obs_arr, t), int(act_arr[t]), float(rew_arr[t]),

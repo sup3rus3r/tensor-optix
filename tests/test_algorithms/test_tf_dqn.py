@@ -89,7 +89,7 @@ def test_learn_returns_diagnostics(agent, episode):
 
 def test_learn_fills_buffer(agent, episode):
     agent.learn(episode)
-    assert len(agent._buffer) == T - 1  # T-1 transitions (no next_obs for last step)
+    assert len(agent._buffer) == T  # the terminal last step is stored too
 
 
 def test_learn_decays_epsilon(agent, episode):

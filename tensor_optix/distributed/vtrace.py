@@ -65,6 +65,9 @@ def compute_vtrace_targets(
     advantages  shape [T]  IS-corrected policy-gradient advantages
     """
     T = len(rewards)
+    if T == 0:
+        # Nothing to correct: no targets, no advantages.
+        return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
     not_done = 1.0 - dones.astype(np.float32)
 
     # IS ratios ρ_t = exp(log π_θ − log π_μ)

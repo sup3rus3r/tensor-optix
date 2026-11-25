@@ -41,11 +41,55 @@ def window_transition_pairs(T: int, n_envs: int = 1):
     there would stitch env i's observation to env i+1's as its "next state".
 
     The final step of each env has no successor inside the window and is not
-    paired (its next observation is not part of the window arrays).
+    paired here. Use window_transitions() to get it paired as well.
     """
     n_envs = max(1, int(n_envs))
     for env_i in range(n_envs):
         yield [(t, t + n_envs) for t in range(env_i, T - n_envs, n_envs)]
+
+
+def window_transitions(episode_data):
+    """
+    Every transition of a rollout window, including each env's last step.
+
+    Returns (observations, pair_lists): `observations` is the window's
+    observations with each env's post-window observation appended, and
+    pair_lists[env] is that env's list of (t, t_next) index pairs into it.
+
+    An env's last step is paired with:
+      * itself, when it was terminal: the done flag masks the bootstrap, so
+        the next observation is never used, but the reward is kept;
+      * the window's final_obs for that env, when the window ended mid-episode;
+      * nothing, only if the window carries no final_obs to pair it with.
+
+    final_obs is a single observation for single-env pipelines and a list
+    with one entry per env when metadata["n_envs"] is set (VectorBatchPipeline).
+    """
+    observations = list(episode_data.observations)
+    T = len(episode_data.rewards)
+    n_envs = episode_n_envs(episode_data)
+    dones = episode_data.dones
+    final = getattr(episode_data, "final_obs", None)
+    per_env = "n_envs" in (getattr(episode_data, "metadata", None) or {})
+    if per_env and isinstance(final, (list, tuple)) and len(final) == n_envs:
+        finals = list(final)
+    elif n_envs == 1 and not per_env:
+        finals = [final]
+    else:
+        finals = [None] * n_envs
+
+    pair_lists = []
+    for env_i, pairs in enumerate(window_transition_pairs(T, n_envs)):
+        pairs = list(pairs)
+        if env_i < T:
+            last = env_i + n_envs * ((T - 1 - env_i) // n_envs)
+            if dones[last]:
+                pairs.append((last, last))
+            elif finals[env_i] is not None:
+                observations.append(finals[env_i])
+                pairs.append((last, len(observations) - 1))
+        pair_lists.append(pairs)
+    return observations, pair_lists
 
 
 def _as_obs(obs):
@@ -184,17 +228,38 @@ class PrioritizedReplayBuffer:
             self._tree = _SumTree(self._capacity)
 
     def set_params(self, alpha: float = None, beta: float = None, n_step: int = None, gamma: float = None) -> None:
-        """Update tunable params at runtime (called by agent.set_hyperparams)."""
+        """Update tunable params at runtime (called by agent.set_hyperparams).
+
+        Switching between uniform (alpha=0) and prioritized (alpha>0) replay
+        moves the stored transitions to the new storage, so nothing collected
+        so far is lost. Transitions entering prioritized replay this way get
+        the current max priority, as new transitions do."""
         if alpha is not None:
-            self._alpha = float(alpha)
-            if self._alpha > 0:
+            new_alpha = float(alpha)
+            was_uniform = self._alpha == 0
+            self._alpha = new_alpha
+            if was_uniform and new_alpha > 0:
                 self._ensure_tree()
+                priority = self._tree.max_priority
+                for item in self._uniform_buf:
+                    self._tree.add(priority, item)
+                self._uniform_buf.clear()
+            elif not was_uniform and new_alpha == 0 and self._tree is not None:
+                self._uniform_buf.extend(self._tree_items_oldest_first())
+                self._tree = None
         if beta is not None:
             self._beta = float(beta)
         if n_step is not None:
             self._n_step = max(1, int(n_step))
         if gamma is not None:
             self._gamma = float(gamma)
+
+    def _tree_items_oldest_first(self) -> list:
+        tree = self._tree
+        if tree.size < tree._capacity:
+            return list(tree._data[:tree.size])
+        w = tree._write
+        return tree._data[w:] + tree._data[:w]
 
     def push(self, obs, action, reward, next_obs, done) -> None:
         obs      = _as_obs(obs)

@@ -62,7 +62,7 @@ def test_act_greedy_at_eps_zero(agent):
 
 def test_learn_fills_buffer(agent, episode):
     agent.learn(episode)
-    assert len(agent._buffer) == T - 1
+    assert len(agent._buffer) == T  # the terminal last step is stored too
 
 
 def test_learn_decays_epsilon(agent, episode):
