@@ -42,7 +42,16 @@ class BaseOptimizer(ABC):
         """Called when a new best score is achieved. Override to react."""
 
     def on_plateau(self, metrics_history: List[EvalMetrics]) -> None:
-        """Called when a plateau is detected. Override to react."""
+        """Called when the run goes DORMANT (converged or stuck). Override to react."""
+
+    def on_cooling(self, metrics_history: List[EvalMetrics]) -> None:
+        """
+        Called once when the run enters COOLING: no new ground for the cooling
+        patience, but not yet given up on. This is the moment to change
+        something -- by default, the same reaction as a plateau (widen the
+        search), early enough that the wider search actually gets to run.
+        """
+        self.on_plateau(metrics_history)
 
     @property
     def is_probing(self) -> bool:

@@ -155,7 +155,7 @@ runtime = LiveAdaptiveRuntime(store, config, agent_factory=make_agent, pipeline_
 observations, recommendations = runtime.run()
 ```
 
-Each cycle: re-evaluates the deployed agent with a short, real, inference-only rollout (standing in for live traffic); feeds the score through a `DeploymentObserver` (a thin wrapper around the existing `BackoffScheduler` trend/degradation state machine — reused exactly as-is, not reimplemented); and, on degradation or a scheduled research cycle, consults `NanonetsSelector` to rank a fixed shortlist of strategy operations, runs the winners through `StrategyTrialRunner`, and issues a durable recommendation.
+Each cycle: re-evaluates the deployed agent with a short, real, inference-only rollout (standing in for live traffic); feeds the score through a `DeploymentObserver` (a thin wrapper around the shared `ConvergenceMonitor` — reused exactly as-is, not reimplemented — that fires degradation on a confirmed collapse or an acute single-cycle drop); and, on degradation or a scheduled research cycle, consults `NanonetsSelector` to rank a fixed shortlist of strategy operations, runs the winners through `StrategyTrialRunner`, and issues a durable recommendation.
 
 **The loop is recommend-only by construction, not by convention.** `PromotionPolicy` is hardcoded inside the runtime with `approval_mode="human"` — there is no field on `RuntimeConfig`, no CLI flag, no environment variable that reaches that value. Recommendations are written as auditable ledger `EventRecord`s, never just a line of stdout that scrolls away. Nothing in the loop ever calls `store.approve_strategy`.
 

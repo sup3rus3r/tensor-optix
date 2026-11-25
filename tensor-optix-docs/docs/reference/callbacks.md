@@ -124,4 +124,4 @@ See [Logging and dashboards](../guides/logging-callbacks.md) for usage and writi
 
 ### Step numbering
 
-`WandbCallback` and `TensorBoardCallback` log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires `on_improvement` / `on_plateau` / `on_degradation`, then `on_hyperparam_update`, then `on_episode_end`; steps are kept monotonic across those hooks so Weights & Biases does not drop the hyperparameter entries.
+`WandbCallback` and `TensorBoardCallback` log hyperparameter updates at the episode currently being evaluated. Within one evaluated episode the loop fires `on_improvement`, then `on_convergence` / `on_plateau` / `on_degradation` / `on_dormant` (each at most once, on entry), then `on_hyperparam_update`, then `on_episode_end`; steps are kept monotonic across those hooks so Weights & Biases does not drop the hyperparameter entries.

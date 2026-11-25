@@ -121,6 +121,9 @@ class CountingOptimizer(BaseOptimizer):
     def on_plateau(self, metrics_history):
         self.plateaus += 1
 
+    def on_cooling(self, metrics_history):
+        self.coolings = getattr(self, "coolings", 0) + 1
+
 
 def _run(agents, pipeline, **kw):
     pipeline.set_agents(dict(agents))
@@ -194,6 +197,7 @@ def test_optimizer_is_told_about_improvement_and_plateau():
     _run(agents, Pipeline(seats=("a",), n_windows=200), optimizer={"a": opt},
          plateau_threshold=2, dormant_threshold=4, min_completed_episodes_before_converged=0)
     assert opt.improvements >= 1      # the first scored window
+    assert opt.coolings == 1          # once, on entering COOLING
     assert opt.plateaus == 1          # once, when the seat converged
 
 

@@ -1,5 +1,14 @@
 # tensor_optix.core.backoff_scheduler
 
+**Role since the convergence redesign.**
+
+`LoopController` uses `BackoffScheduler` only for **cadence**: `should_adapt()` and `advance_interval()` decide when the costly steps run (validation rollouts, `optimizer.suggest`). Convergence detection and the ACTIVE / COOLING / DORMANT state belong to [`ConvergenceMonitor`](convergence.md).
+
+- `plateau_threshold` / `dormant_threshold` default to `None`. When set explicitly, the owning loop uses them as the monitor's cooling / dormant patience, in episodes.
+- `noise_k` becomes the monitor's significance `z`, and `min_episodes_before_dormant` its `min_at_before_dormant`.
+- `record_restart()` also restarts the attached monitor.
+- The trend and state-machine methods below still work for standalone use, but no loop reads them. `is_converged()` is deprecated: no loop has ever called it.
+
 ## BackoffScheduler
 
 ```python
@@ -41,8 +50,8 @@ def __init__(
     base_interval: int = 1,
     backoff_factor: float = 2.0,
     max_interval_episodes: int = 100,
-    plateau_threshold: int = 5,
-    dormant_threshold: int = 20,
+    plateau_threshold: Optional[int] = None,   # None: standalone state machine uses 5
+    dormant_threshold: Optional[int] = None,   # None: standalone state machine uses 20
     degradation_threshold: float = 0.95,
     min_degradation_drop: float = 1e-4,
     min_episodes_before_dormant: int = 0,
@@ -66,7 +75,21 @@ def __init__(
     """
 ```
 
-### Trend detection
+### Cadence
+
+```python
+def should_adapt(self, episode_count: int) -> bool:
+    """True on episodes where the costly steps should run."""
+
+def advance_interval(self, improved: bool) -> None:
+    """Reset the interval to base_interval on progress, back off otherwise."""
+
+def attach_monitor(self, monitor) -> None:
+    """Link the ConvergenceMonitor a LoopController built from this
+    scheduler, so record_restart() also restarts it."""
+```
+
+### Trend detection (standalone / legacy)
 
 ```python
 def is_improving(self) -> bool:
@@ -91,6 +114,8 @@ def is_degrading(self) -> bool:
 
 def is_converged(self, cv_threshold: float = 0.05, gap_threshold: float = 0.20) -> bool:
     """
+    Deprecated: no loop calls this. Use ConvergenceMonitor's report.
+
     True when the policy has genuinely converged:
     flat trend AND low CV AND performing near its personal best.
 
@@ -118,7 +143,7 @@ def check_degradation(self, score: float) -> bool:
     """
 ```
 
-### State machine
+### State machine (standalone / legacy)
 
 ```python
 def record_improvement(self, score: float, append: bool = True) -> None:
@@ -147,6 +172,7 @@ def record_restart(self) -> None:
     Called after DORMANT fires and PolicyManager has acted.
     Gives the new policy variant a clean slate.
     Does NOT reset best_score - the new variant must beat the existing best.
+    Also restarts the attached ConvergenceMonitor, if any.
     """
 
 def record_score(self, score: float) -> None:

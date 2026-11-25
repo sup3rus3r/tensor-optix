@@ -27,7 +27,7 @@ class MLMetrics:
     Scored output from a BaseMLModel's evaluate() call.
 
     primary_score: higher-is-better scalar, feeding CheckpointRegistry and
-        BackoffScheduler exactly as EvalMetrics.primary_score does for RL --
+        ConvergenceMonitor exactly as EvalMetrics.primary_score does for RL --
         for a loss-based task this is -loss (matching MLAgent's existing,
         already-proven convention), so "higher is better" holds universally.
     loss: the raw loss value (for display/logging -- NOT what checkpointing
@@ -170,7 +170,7 @@ def resolve_metrics(
         computed = regression_metrics(y_true, y_pred)
         # Regression: higher-is-better score is r2 (bounded above by 1.0,
         # unlike -mae/-rmse which have no natural ceiling) -- matches how
-        # CheckpointRegistry/BackoffScheduler expect "improvement" to mean
+        # CheckpointRegistry/ConvergenceMonitor expect "improvement" to mean
         # approaching a known-good value, not an unbounded negative loss.
         return MLMetrics(
             primary_score=computed["r2"], loss=float(loss),

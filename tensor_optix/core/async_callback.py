@@ -108,6 +108,9 @@ class AsyncCallbackAdapter(LoopCallback):
     def on_degradation(self, episode_id, eval_metrics) -> None:
         self._enqueue("on_degradation", episode_id, eval_metrics)
 
+    def on_convergence(self, episode_id, report) -> None:
+        self._enqueue("on_convergence", episode_id, report)
+
     def on_hyperparam_update(self, old_params, new_params) -> None:
         self._enqueue("on_hyperparam_update", old_params, new_params)
 

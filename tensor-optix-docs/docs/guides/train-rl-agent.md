@@ -55,9 +55,9 @@ opt = RLOptimizer(
     # Optional external scorer run at checkpoint evaluation (e.g. held-out backtest)
     checkpoint_score_fn=lambda a: evaluate(a, held_out_env),
 
-    # Convergence parameters
-    dormant_threshold=10,            # consecutive non-improving evals -> DORMANT
-    min_episodes_before_dormant=50,  # statistical warmup before convergence detection activates
+    # Convergence parameters (patience in episodes; defaults 32 / 160)
+    dormant_threshold=100,           # episodes without new ground -> DORMANT
+    min_episodes_before_dormant=50,  # never DORMANT before this episode
 )
 
 opt.run()
@@ -141,7 +141,7 @@ opt.add_callback(WandbCallback(project="run"))
 opt.add_callback(TensorBoardCallback(log_dir="./tb"))
 ```
 
-Custom callbacks subclass `LoopCallback` and override any of `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvement`, `on_plateau`, `on_dormant`, `on_degradation`, `on_hyperparam_update`. See [Logging and dashboards](logging-callbacks.md) and the [Callbacks reference](../reference/callbacks.md).
+Custom callbacks subclass `LoopCallback` and override any of `on_loop_start`, `on_loop_stop`, `on_episode_end`, `on_improvement`, `on_plateau`, `on_dormant`, `on_degradation`, `on_hyperparam_update`, `on_convergence`. See [Logging and dashboards](logging-callbacks.md) and the [Callbacks reference](../reference/callbacks.md).
 
 ## Verbose mode
 

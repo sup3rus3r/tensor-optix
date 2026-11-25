@@ -81,6 +81,8 @@ class Pipeline:
 
 # good for 6 windows (best = 10 at window 5, 6 learn() calls), then collapses
 COLLAPSE = [5.0, 6.0, 7.0, 8.0, 9.0, 10.0] + [1.0] * 6
+# the same collapse, long enough for a second confirmation after the rollback
+COLLAPSE_LONG = COLLAPSE + [1.0] * 4
 
 
 def _run(scripts, tmp_path, agents=None, **kw):
@@ -101,20 +103,34 @@ def test_rolls_back_to_best_after_confirmed_degradation(tmp_path):
         def on_degradation(self, agent_id, window_id, score, rolled_back):
             events.append((agent_id, window_id, score, rolled_back))
 
-    agents, result = _run({"a": COLLAPSE}, tmp_path, rollback_on_degradation=True,
+    agents, result = _run({"a": COLLAPSE_LONG}, tmp_path, rollback_on_degradation=True,
                           min_consecutive_degradations=3, callbacks=[CB()])
     seat = result.seats["a"]
     assert seat.degradations == 2 and seat.rollbacks == 2
-    # first confirmation on the 3rd degraded window (index 8)
-    assert events[0] == ("a", 8, 1.0, True)
+    # The first window (6) is still within noise of the 4-window mean; the
+    # collapse signal starts at window 8 and is confirmed after 3 consecutive
+    # collapsing observations, at window 10.
+    assert events[0] == ("a", 10, 1.0, True)
+    # After the restore the seat's new scores are judged against its peak
+    # straight away, so the renewed collapse is confirmed 3 windows later.
+    assert events[1] == ("a", 13, 1.0, True)
     assert agents["a"].loads == 2
-    # after the last rollback (window 11) no further learn() ran: weights = best snapshot
-    assert agents["a"].w == 6
+    # the last rollback (window 13) was followed by windows 14-15 of learning
+    assert agents["a"].w == 6 + 2
 
 
-def test_disabled_by_default(tmp_path):
-    agents, result = _run({"a": COLLAPSE}, tmp_path)
-    assert result.seats["a"].degradations == 0 and agents["a"].loads == 0
+def test_rollback_disabled_by_default_but_collapse_still_reported(tmp_path):
+    events = []
+
+    class CB:
+        def on_degradation(self, agent_id, window_id, score, rolled_back):
+            events.append(rolled_back)
+
+    agents, result = _run({"a": COLLAPSE}, tmp_path, callbacks=[CB()])
+    # detected and reported...
+    assert result.seats["a"].degradations == 1 and events == [False]
+    # ...but never acted on
+    assert result.seats["a"].rollbacks == 0 and agents["a"].loads == 0
     assert agents["a"].w == len(COLLAPSE)
 
 

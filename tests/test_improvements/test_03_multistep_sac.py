@@ -295,9 +295,14 @@ class TestQTargetBiasReduction:
         # Buffer should now contain n=3 transitions
         assert agent._buffer._n_step == 3
         if len(agent._buffer) >= 32:
-            _, _, _, _, _, _, _, n_steps = agent._buffer.sample(32)
-            assert all(int(ns) == 3 for ns in n_steps), \
-                f"Expected all n_steps=3, got: {set(n_steps.tolist())}"
+            _, _, _, _, dones, _, _, n_steps = agent._buffer.sample(32)
+            # Full 3-step returns everywhere except the episode's last two
+            # transitions, whose returns are truncated by the terminal step
+            # (n=2, n=1) and therefore always end in done.
+            for ns, d in zip(n_steps, dones):
+                assert int(ns) == 3 or (int(ns) < 3 and float(d) == 1.0), \
+                    f"short n-step return off the terminal tail: n={ns}, done={d}"
+            assert max(int(ns) for ns in n_steps) == 3
 
     def test_n_step_learn_returns_finite_losses(self):
         """learn() with n=3 returns finite actor_loss and critic_loss."""

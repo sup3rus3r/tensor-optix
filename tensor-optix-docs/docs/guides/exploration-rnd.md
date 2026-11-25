@@ -29,8 +29,8 @@ optimizer.run()
 
 | Event | Effect on η |
 |---|---|
-| improvement | `η *= 0.9` - pull back exploration while genuinely learning |
-| plateau (`COOLING`) | `η *= 1.5`, capped at `4 × η_base` - push exploration harder when stuck |
+| improvement (every `IMPROVING` observation) | `η *= 0.9` - pull back exploration while genuinely learning |
+| entering `COOLING` (once) | `η *= 1.5`, capped at `4 × η_base` - push exploration harder when stuck |
 | `DORMANT` | `η = 0` - converged, stop injecting noise |
 | restart (after spawn) | `η = η_base` - reset for the new policy variant |
 

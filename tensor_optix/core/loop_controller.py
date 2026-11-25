@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections import deque
 from typing import Optional, List
 import numpy as np
@@ -8,6 +9,7 @@ from .base_optimizer import BaseOptimizer
 from .base_pipeline import BasePipeline
 from .checkpoint_registry import CheckpointRegistry
 from .backoff_scheduler import BackoffScheduler
+from .convergence import ConvergenceMonitor, ConvergenceReport
 from .checkpoint_confirmation import CheckpointConfirmationTracker
 from .reward_shape import episode_breadth
 from .types import LoopState, EvalMetrics, PolicySnapshot
@@ -36,6 +38,8 @@ class LoopCallback:
     def on_dormant(self, episode_id: int) -> None: ...
     def on_degradation(self, episode_id: int, eval_metrics: EvalMetrics) -> None: ...
     def on_hyperparam_update(self, old_params: dict, new_params: dict) -> None: ...
+    def on_convergence(self, episode_id: int, report: ConvergenceReport) -> None:
+        """Fired when the convergence regime or loop state changes."""
 
 
 class LoopController:
@@ -45,7 +49,8 @@ class LoopController:
     Orchestrates the full autonomous improvement loop:
     1. Cold start: run baseline episode, store snapshot
     2. Main loop: interact → evaluate → compare → tune → repeat
-    3. State management via BackoffScheduler
+    3. Convergence via ConvergenceMonitor (what the score curve is doing,
+       ACTIVE / COOLING / DORMANT); evaluation cadence via BackoffScheduler
     4. Checkpoint management via CheckpointRegistry
     5. Graceful shutdown on stop(), DORMANT, or max_episodes
 
@@ -80,8 +85,8 @@ class LoopController:
         diagnostic_controller: Optional["DiagnosticController"] = None,
         min_consecutive_degradations: int = 3,
         convergence_patience: int = 5,
-        cv_threshold: float = 0.05,
-        gap_threshold: float = 0.20,
+        cv_threshold: Optional[float] = None,
+        gap_threshold: Optional[float] = None,
         target_score: Optional[float] = None,
         criteria_mode: str = "none",
         criteria_k: float = 2.0,
@@ -89,7 +94,15 @@ class LoopController:
         checkpoint_confirm_window: int = 3,
         checkpoint_noise_k: float = 2.0,
         min_completed_episodes_before_dormant: int = 10,
+        convergence_monitor: Optional[ConvergenceMonitor] = None,
     ):
+        if cv_threshold is not None or gap_threshold is not None:
+            warnings.warn(
+                "cv_threshold / gap_threshold are deprecated and have no effect: "
+                "convergence is judged by ConvergenceMonitor (see its report's "
+                "regime and gap_to_peak).",
+                DeprecationWarning, stacklevel=2,
+            )
         self._agent = agent
         self._evaluator = evaluator
         self._optimizer = optimizer
@@ -97,6 +110,15 @@ class LoopController:
         self._val_pipeline = val_pipeline
         self._registry = checkpoint_registry
         self._scheduler = backoff_scheduler
+        self._monitor = convergence_monitor or self._monitor_from_scheduler(
+            backoff_scheduler, min_consecutive_degradations,
+        )
+        backoff_scheduler.attach_monitor(self._monitor)
+        # Every training window is scored when scoring is free (no validation
+        # pipeline, no external checkpoint_score_fn): the monitor then sees
+        # the whole curve, and the backoff interval only paces the costly
+        # steps (validation rollouts, optimizer.suggest).
+        self._observe_every_window = val_pipeline is None and checkpoint_score_fn is None
         self._rollback_on_degradation = rollback_on_degradation
         self._improvement_margin = improvement_margin
         self._max_episodes = max_episodes
@@ -111,10 +133,7 @@ class LoopController:
         self._val_gen = None
         self._rnd_eta_base: Optional[float] = None  # set on first state-aware eta call
         self._convergence_patience = convergence_patience
-        self._cv_threshold = cv_threshold
-        self._gap_threshold = gap_threshold
         self._target_score = target_score
-        self._consecutive_converged: int = 0
         self._consecutive_above_target: int = 0
         # Three separate concerns — kept deliberately independent:
         #
@@ -138,8 +157,6 @@ class LoopController:
         self._score_window: deque = deque(maxlen=max(1, score_smoothing))
         self._best_smoothed: Optional[float] = None
         self._best_raw: Optional[float] = None
-        self._min_consecutive_degradations = min_consecutive_degradations
-        self._consecutive_degradation_count: int = 0
 
         # Finished-episode accounting (see _account_episodes). Only active
         # when the evaluator reports "episodes_completed".
@@ -256,14 +273,14 @@ class LoopController:
         self._best_raw = ckpt_score
         self._score_window.append(eval_metrics.primary_score)
         self._best_smoothed = float(np.mean(self._score_window))
-        self._scheduler.record_improvement(self._best_smoothed)
+        self._monitor.observe(eval_metrics.primary_score, at=0)
         self._metrics_history.append(eval_metrics)
 
         logger.info(
             "Baseline established: score=%.4f smoothed=%.4f state=%s",
             eval_metrics.primary_score,
             self._best_smoothed,
-            self._scheduler.current_state.name,
+            self._monitor.state.name,
         )
         self._fire("on_episode_end", 0, eval_metrics)
         return snapshot
@@ -289,7 +306,8 @@ class LoopController:
 
             eval_metrics: Optional[EvalMetrics] = None
 
-            if self._scheduler.should_adapt(episode_id):
+            eval_due = self._scheduler.should_adapt(episode_id)
+            if eval_due or self._observe_every_window:
                 train_metrics = self._evaluator.score(episode_data, train_diagnostics)
                 train_metrics.episode_id = episode_id
 
@@ -329,8 +347,6 @@ class LoopController:
                 raw = eval_metrics.primary_score
                 self._score_window.append(raw)
                 smoothed = float(np.mean(self._score_window))
-                # Feed into scheduler's trend window before any is_improving check
-                self._scheduler.record_score(raw)
 
                 if self._verbose:
                     self._verbose_header(episode_id, raw, smoothed)
@@ -413,7 +429,7 @@ class LoopController:
                     logger.info(
                         "Episode %d: NEW BEST (ckpt) score=%.4f smoothed=%.4f state=%s interval=%d",
                         episode_id, ckpt_score, smoothed,
-                        self._scheduler.current_state.name,
+                        self._monitor.state.name,
                         self._scheduler.current_interval,
                     )
                 elif self._verbose:
@@ -427,66 +443,29 @@ class LoopController:
                             f"  CKPT     skipped (below best)  ckpt_score={ckpt_score:.2f} < best={self._best_raw:.2f}"
                         )
 
-                # ── Convergence / degradation: trend-based detection ──────────
-                # Use linear regression slope over the recent score window to
-                # determine direction of learning. A single unlucky eval cannot
-                # fire degradation or reset the improvement counter — the slope
-                # must be consistently negative for that. Similarly, improvement
-                # requires a sustained upward trend, not a single lucky spike.
-                #
-                # Falls back to point comparison (latest > best + floor) when
-                # the window is too short to fit a meaningful line (< 3 scores).
-                trend_improving = self._scheduler.is_improving()
+                # ── Convergence: multi-timescale detection ───────────────────
+                # The monitor reads short / medium / long trends together
+                # against the run's own peak and reports one regime plus the
+                # ACTIVE / COOLING / DORMANT state. A score taken under an
+                # optimizer probe is self-inflicted, so it can never confirm
+                # a collapse.
+                optimizer_is_probing = bool(getattr(self._optimizer, "is_probing", False))
+                report = self._monitor.observe(raw, at=episode_id, probing=optimizer_is_probing)
                 if self._verbose:
-                    self._verbose_trend(trend_improving)
-                if trend_improving:
+                    self._verbose_trend(report)
+                if report.improved:
                     self._best_smoothed = smoothed
-                    self._consecutive_degradation_count = 0
-                    self._consecutive_converged = 0
-                    self._scheduler.record_improvement(smoothed, append=False)
                     self._optimizer.on_improvement(eval_metrics)
                     self._update_rnd_eta("improvement")
-                elif not trend_improving:
-                    # Degradation detection only applies to on-policy agents.
-                    # Off-policy agents (DQN, SAC) use replay buffers — Q-value
-                    # oscillations during training are normal and not recoverable
-                    # via rollback. Firing degradation on them resets the
-                    # scheduler interval to 1 every episode, which prevents
-                    # DORMANT from accumulating and destroys convergence.
-                    # Rollback is already skipped for off-policy in
-                    # _handle_degradation; skipping the check here too ensures
-                    # the scheduler state machine runs cleanly for all algorithms.
-                    #
-                    # Additionally, suppress degradation during optimizer probe
-                    # episodes. When the optimizer applies a parameter perturbation
-                    # (finite-difference probe), the score drop is self-inflicted —
-                    # not a genuine policy collapse. Firing degradation here resets
-                    # the scheduler state and triggers unnecessary rollback/recovery.
-                    optimizer_is_probing = getattr(self._optimizer, "is_probing", False)
-                    agent_is_on_policy = getattr(self._agent, "is_on_policy", True)
-                    degradation_fired = False
-                    if agent_is_on_policy and not optimizer_is_probing:
-                        if self._scheduler.check_degradation(smoothed):
-                            self._consecutive_degradation_count += 1
-                            if self._consecutive_degradation_count >= self._min_consecutive_degradations:
-                                self._consecutive_degradation_count = 0
-                                self._handle_degradation(episode_id, eval_metrics)
-                                degradation_fired = True
-                        else:
-                            self._consecutive_degradation_count = 0
-                    if not degradation_fired:
-                        # Every non-improving eval advances the plateau counter,
-                        # for on-policy and off-policy agents alike. (A confirmed
-                        # degradation is the one exception: it resets the state
-                        # to ACTIVE via record_degradation instead.) The score
-                        # was already recorded above via record_score(raw).
-                        self._record_plateau(episode_id)
-                    logger.debug(
-                        "Episode %d: score=%.4f smoothed=%.4f (no improvement) state=%s interval=%d",
-                        episode_id, raw, smoothed,
-                        self._scheduler.current_state.name,
-                        self._scheduler.current_interval,
-                    )
+                    self._scheduler.advance_interval(True)
+                elif eval_due:
+                    self._scheduler.advance_interval(False)
+                self._act_on_report(episode_id, report, eval_metrics)
+                logger.debug(
+                    "Episode %d: score=%.4f smoothed=%.4f regime=%s state=%s interval=%d",
+                    episode_id, raw, smoothed, report.regime.name,
+                    report.state.name, self._scheduler.current_interval,
+                )
 
                 # ── Target score early stop ───────────────────────────────────
                 # When target_score is provided, stop as soon as the checkpoint
@@ -513,15 +492,16 @@ class LoopController:
                     else:
                         self._consecutive_above_target = 0
 
-                old_params = self._agent.get_hyperparams().params.copy()
-                new_hyperparams = self._optimizer.suggest(
-                    self._agent.get_hyperparams(),
-                    self._metrics_history,
-                )
-                self._agent.set_hyperparams(new_hyperparams)
-                self._fire("on_hyperparam_update", old_params, new_hyperparams.params)
-                if self._verbose:
-                    self._verbose_spsa(old_params, new_hyperparams.params)
+                if eval_due:
+                    old_params = self._agent.get_hyperparams().params.copy()
+                    new_hyperparams = self._optimizer.suggest(
+                        self._agent.get_hyperparams(),
+                        self._metrics_history,
+                    )
+                    self._agent.set_hyperparams(new_hyperparams)
+                    self._fire("on_hyperparam_update", old_params, new_hyperparams.params)
+                    if self._verbose:
+                        self._verbose_spsa(old_params, new_hyperparams.params)
 
             self._fire("on_episode_end", episode_id, eval_metrics)
             episode_id += 1
@@ -565,46 +545,74 @@ class LoopController:
         self._best_smoothed = None
         self._best_raw = None
         self._metrics_history.clear()
-        self._consecutive_degradation_count = 0
         self._consecutive_above_target = 0
         self._confirmation = CheckpointConfirmationTracker(**self._checkpoint_confirm_args)
         self._scheduler.reset_scale()
+        self._monitor.reset_scale()
 
-    def _record_plateau(self, episode_id: int) -> None:
-        """Advance the scheduler on a non-improving eval and act on the new state."""
+    @staticmethod
+    def _monitor_from_scheduler(scheduler: BackoffScheduler, persist: int) -> ConvergenceMonitor:
+        """
+        Default monitor. Patience comes from the scheduler's thresholds when
+        the caller set them explicitly (counted in episodes, i.e. pipeline
+        windows), otherwise from the monitor's own defaults.
+        """
+        defaults = ConvergenceMonitor()
+        dormant = scheduler.explicit_dormant_threshold
+        cooling = scheduler.explicit_plateau_threshold
+        dormant = defaults.dormant_patience if dormant is None else float(dormant)
+        cooling = defaults.cooling_patience if cooling is None else float(cooling)
+        return ConvergenceMonitor(
+            cooling_patience=min(cooling, dormant),
+            dormant_patience=dormant,
+            z=scheduler._noise_k,
+            persist=persist,
+            min_at_before_dormant=scheduler._min_episodes_before_dormant,
+        )
+
+    def _act_on_report(self, episode_id: int, report: ConvergenceReport, eval_metrics: EvalMetrics) -> None:
+        """Run the actions a convergence report calls for, each once, on entry."""
+        if report.regime_changed or report.entered_cooling or report.entered_dormant:
+            self._fire("on_convergence", episode_id, report)
+        if report.collapse_confirmed:
+            self._handle_degradation(episode_id, eval_metrics)
+            return
+        if report.entered_cooling:
+            self._update_rnd_eta("plateau")
+            self._optimizer.on_cooling(self._metrics_history)
+            self._fire("on_plateau", episode_id, report.state)
+        if not report.entered_dormant:
+            return
         if (
             self._evaluator_reports_episodes
             and self._total_completed_episodes < self._min_completed_episodes_before_dormant
         ):
-            # Too few finished episodes to call anything a plateau yet.
+            # Too few finished episodes to call anything converged yet.
+            self._monitor.defer_dormant()
             return
-        self._scheduler.record_non_improvement()
-        state = self._scheduler.current_state
-        if state == LoopState.COOLING:
-            self._update_rnd_eta("plateau")
-            self._fire("on_plateau", episode_id, state)
-        elif state == LoopState.DORMANT:
-            self._update_rnd_eta("dormant")
-            self._optimizer.on_plateau(self._metrics_history)
-            self._fire("on_dormant", episode_id)
-            # A callback that acted on DORMANT in a way that warrants more
-            # training (PolicyManagerCallback spawning / pruning a variant)
-            # says so via consume_dormant_resume(). Poll every callback —
-            # the flag is one-shot and must be cleared on each of them.
-            resume = [
-                bool(getattr(cb, "consume_dormant_resume")())
-                for cb in self._callbacks
-                if callable(getattr(cb, "consume_dormant_resume", None))
-            ]
-            if not self._stop_requested and not any(resume):
-                logger.info(
-                    "Episode %d: DORMANT — no callback resumed the loop,"
-                    " stopping by default",
-                    episode_id,
-                )
-                self._stop_requested = True
-            self._update_rnd_eta("restart")
-            self._scheduler.record_restart()
+        self._update_rnd_eta("dormant")
+        self._optimizer.on_plateau(self._metrics_history)
+        self._fire("on_dormant", episode_id)
+        # A callback that acted on DORMANT in a way that warrants more
+        # training (PolicyManagerCallback spawning / pruning a variant)
+        # says so via consume_dormant_resume(). Poll every callback —
+        # the flag is one-shot and must be cleared on each of them.
+        resume = [
+            bool(getattr(cb, "consume_dormant_resume")())
+            for cb in self._callbacks
+            if callable(getattr(cb, "consume_dormant_resume", None))
+        ]
+        if not self._stop_requested and not any(resume):
+            logger.info(
+                "Episode %d: DORMANT (%s) — no callback resumed the loop,"
+                " stopping by default",
+                episode_id, report.regime.name,
+            )
+            self._stop_requested = True
+        self._update_rnd_eta("restart")
+        # Restarts the monitor too (attached in __init__): a resumed variant
+        # keeps the peak it must beat but gets fresh trend history.
+        self._scheduler.record_restart()
 
     def _handle_degradation(self, episode_id: int, eval_metrics: EvalMetrics) -> None:
         """
@@ -622,7 +630,7 @@ class LoopController:
                 "Episode %d: DEGRADATION detected score=%.4f best=%.4f",
                 episode_id,
                 eval_metrics.primary_score,
-                self._scheduler.best_score or 0.0,
+                self._monitor.peak or 0.0,
             )
         agent_supports_rollback = getattr(self._agent, "is_on_policy", True)
         if (
@@ -631,13 +639,14 @@ class LoopController:
             and self._best_snapshot is not None
         ):
             self._registry.load_best(self._agent)
+            # Scores before the restore describe the collapsed policy.
+            self._monitor.note_restored(at=episode_id)
             logger.info("Rolled back to best snapshot (episode %d)", self._best_snapshot.episode_id)
         elif self._rollback_on_degradation and not agent_supports_rollback:
             logger.debug(
                 "Episode %d: rollback skipped — off-policy agent, replay buffer intact",
                 episode_id,
             )
-        self._scheduler.record_degradation()
         self._fire("on_degradation", episode_id, eval_metrics)
 
     # ------------------------------------------------------------------
@@ -662,26 +671,24 @@ class LoopController:
             f"  SCORE    raw={raw:8.2f}  smoothed={smoothed:8.2f}  best={best:8.2f}",
         )
 
-    def _verbose_trend(self, trend_improving: bool) -> None:
-        """Print trend analysis and state machine status."""
-        slope = self._scheduler._slope()
-        floor = self._scheduler._adaptive_floor()
-        floor_per_step = floor / self._scheduler._trend_window
-        ni  = self._scheduler.consecutive_non_improvements
-        pt  = self._scheduler._plateau_threshold
-        dt  = self._scheduler._dormant_threshold
-        iv  = self._scheduler.current_interval
-        state = self._scheduler.current_state.name
-
-        slope_str = f"{slope:+.4f}/ep" if slope is not None else "n/a (window too short)"
-        threshold_str = f"{floor_per_step:+.4f}/ep"
-        decision = "→ IMPROVING" if trend_improving else "→ not improving"
-
+    def _verbose_trend(self, report: ConvergenceReport) -> None:
+        """Print the multi-timescale reading and state machine status."""
+        parts = []
+        for name in ("short", "medium", "long"):
+            r = report.scales.get(name)
+            if r is not None:
+                parts.append(f"{name}[{r.n}] lvl={r.level:.2f} slope={r.slope:+.4f}±{r.slope_se:.4f}")
+        peak = f"{report.peak:.2f}" if report.peak is not None else "n/a"
+        sigma = f"{report.sigma:.3f}" if report.sigma is not None else "n/a"
+        self._vprint(f"  TREND    {'  '.join(parts) or 'warm-up'}")
         self._vprint(
-            f"  TREND    slope={slope_str}  threshold={threshold_str}  floor={floor:.3f}  {decision}",
+            f"  REGIME   {report.regime.name}  peak={peak}  gap={report.gap_to_peak:+.2f}sigma  "
+            f"sigma={sigma}  rho={report.rho:.2f}"
         )
         self._vprint(
-            f"  STATE    {state}  non-improvements={ni}/{dt}  plateau@{pt}  interval={iv}",
+            f"  STATE    {report.state.name}  since_improvement={report.since_improvement:.0f}"
+            f"/{self._monitor.dormant_patience:.0f}  cooling@{self._monitor.cooling_patience:.0f}"
+            f"  interval={self._scheduler.current_interval}",
         )
 
     def _verbose_spsa(self, old_params: dict, new_params: dict) -> None:
@@ -751,14 +758,28 @@ class LoopController:
 
     def _fire(self, event: str, *args) -> None:
         for cb in self._callbacks:
+            fn = getattr(cb, event, None)
+            if fn is None:
+                continue   # duck-typed callback without this hook
             try:
-                getattr(cb, event)(*args)
+                fn(*args)
             except Exception as e:
                 logger.warning("Callback %s raised during %s: %s", cb, event, e)
 
     @property
     def state(self) -> LoopState:
-        return self._scheduler.current_state
+        return self._monitor.state
+
+    @property
+    def monitor(self) -> ConvergenceMonitor:
+        """The ConvergenceMonitor driving this loop (pass it to
+        TopologyController.set_scheduler or read it from callbacks)."""
+        return self._monitor
+
+    @property
+    def convergence(self) -> Optional[ConvergenceReport]:
+        """The most recent convergence report."""
+        return self._monitor.last_report
 
     @property
     def best_snapshot(self) -> Optional[PolicySnapshot]:

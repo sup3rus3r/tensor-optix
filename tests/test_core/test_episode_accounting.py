@@ -203,9 +203,10 @@ def test_no_dormant_before_min_completed_episodes(tmp_path):
                                   min_completed_episodes_before_dormant=30)
     controller.run()
     assert rec.dormant, "flat score never reached DORMANT"
-    # cold start = episode 0; 30 finished episodes are reached at episode 29,
-    # then dormant_threshold=4 flat evals are needed.
-    assert rec.dormant[0] >= 30
+    # cold start = episode 0; 30 finished episodes are reached at episode 29.
+    # The flat run has long exceeded dormant_threshold=4 by then, so DORMANT
+    # is deferred until exactly that window, never earlier.
+    assert rec.dormant[0] == 29
 
 
 def test_env_whose_episodes_never_finish_is_scored_but_not_declared_converged(tmp_path):

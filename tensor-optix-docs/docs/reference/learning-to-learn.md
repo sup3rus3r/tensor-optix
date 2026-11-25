@@ -416,16 +416,20 @@ def run_reevaluation(store, *, baseline_experiment_id, agent_factory, evaluator,
 
 ```python
 class DeploymentObserver:
-    def __init__(self, store, *, task_env, algorithm, study_id, scheduler: Optional[BackoffScheduler] = None):
-        """Wraps BackoffScheduler (reused as-is, store-free, numpy-only --
+    def __init__(self, store, *, task_env, algorithm, study_id,
+                 monitor: Optional[ConvergenceMonitor] = None, acute_k: float = 4.0):
+        """Wraps ConvergenceMonitor (reused as-is, store-free, numpy-only --
         not reimplemented) with a per-re-evaluation-cycle calling
-        convention instead of per-episode."""
+        convention instead of per-episode. Defaults: timescales (3, 8, 24)
+        cycles, COOLING after 3 / DORMANT after 10 cycles without new
+        ground. Degradation fires on a confirmed collapse, or on an acute
+        drop: one cycle more than acute_k noise SDs below the peak."""
 
     def observe(self, score: float) -> ObservationResult: ...
     def score_history(self, *, limit: int = 100) -> List[float]: ...
     def replay_history(self) -> None:
         """Reconstructs ledger-backed history and replays it through the
-        scheduler -- makes Observer state durable across process restarts
+        monitor -- makes Observer state durable across process restarts
         with zero new persistence code."""
 
 @dataclass
@@ -436,6 +440,7 @@ class ObservationResult:
     is_degrading: bool
     degradation_fired: bool
     best_score: Optional[float]
+    report: Optional[ConvergenceReport]   # the monitor's full report for this cycle
 ```
 
 ```python

@@ -55,7 +55,9 @@ class TopologyController(LoopCallback):
         Parameters
         ----------
         regions:                Dict mapping region name → NeuronGraph.
-        scheduler:               The BackoffScheduler inside LoopController.
+        scheduler:               The LoopController's BackoffScheduler (forwards restarts
+                                 to its ConvergenceMonitor) or the monitor itself
+                                 (controller.monitor).
         grow_op:                 'insert_edge' | 'split_neuron' | 'add_edge'
         grow_grad_threshold:     Minimum fraction of hidden neurons with |∇| >
                                   grad_eps required to allow grow.

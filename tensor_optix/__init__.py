@@ -11,6 +11,7 @@ from .core.base_evaluator import BaseEvaluator
 from .core.base_optimizer import BaseOptimizer
 from .core.base_pipeline import BasePipeline
 from .core.loop_controller import LoopCallback
+from .core.convergence import ConvergenceMonitor, ConvergenceRegime, ConvergenceReport
 from .core.policy_manager import PolicyManager, PolicyManagerCallback
 from .core.ensemble_agent import EnsembleAgent
 from .core.regime_detector import RegimeDetector
@@ -28,6 +29,7 @@ __all__ = [
     "EpisodeData", "EvalMetrics", "HyperparamSet", "PolicySnapshot", "LoopState",
     "BaseAgent", "BaseEvaluator", "BaseOptimizer", "BasePipeline",
     "LoopCallback",
+    "ConvergenceMonitor", "ConvergenceRegime", "ConvergenceReport",
     "PolicyManager", "PolicyManagerCallback", "EnsembleAgent",
     "RegimeDetector", "MetaController", "MetaAction",
     "BatchPipeline", "LivePipeline",

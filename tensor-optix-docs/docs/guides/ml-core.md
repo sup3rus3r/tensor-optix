@@ -93,7 +93,46 @@ history = model.fit(
 
 `early_stopping_patience` works even without `checkpoint_dir` set. "New best" is tracked independently of whether checkpoints are being persisted to disk. `checkpoint_dir` only controls whether that best state is saved and restorable later.
 
-Convergence/plateau detection reuses `BackoffScheduler` from the RL core, with defaults re-tuned for per-epoch validation curves instead of the RL defaults. Per-epoch validation curves are typically smoother and evaluated far less often than per-episode RL reward. See [`tensor_optix.ml_core.trainer.ML_BACKOFF_DEFAULTS`](../reference/ml-core.md) for the exact values.
+## Training until convergence
+
+`fit()` acts on the same [`ConvergenceMonitor`](../reference/core/convergence.md) the RL loop uses, observing the validation `primary_score` once per epoch. Pass `epochs=None` to let tensor-optix decide when to stop:
+
+```python
+history = model.fit((X_train, y_train), (X_val, y_val), epochs=None)
+print(history.stop_reason)      # "converged"
+print(history.epochs_run, history.best_epoch)
+print(history.convergence[-1])  # the final ConvergenceReport
+```
+
+A run stops at whichever of these comes first:
+
+| Stop | When | `stop_reason` |
+|---|---|---|
+| `epochs` | the fixed budget is used up (when given) | `"epochs"` |
+| `max_epochs` | an optional cap, off by default | `"max_epochs"` |
+| `early_stopping_patience` | that many epochs without a new best (when given) | `"early_stopping"` |
+| convergence | the monitor reaches DORMANT: no new ground for 20 epochs and no slow rise still in progress (needs `val_data`; turn it off with `stop_on_convergence=False`) | `"converged"` |
+
+The best checkpoint is restored before `fit()` returns, however the run ended. `epochs=None` requires `val_data` or a `max_epochs` cap.
+
+Callbacks:
+
+- `on_improvement(metrics)`: every new best.
+- `on_no_improvement(metrics)`: every epoch without one.
+- `on_plateau(metrics)`: **once**, on entering COOLING. SPSA's `on_cooling` also widens its search at that point.
+- `on_dormant(epoch)`: once, on entering DORMANT.
+- `on_convergence(epoch, report)`: on every regime or state change.
+
+ML defaults (`tensor_optix.ml_core.trainer.ML_CONVERGENCE_DEFAULTS`): timescales of 3 / 8 / 24 epochs, COOLING after 5 epochs without new ground, DORMANT after 20, persistence 2. Pass your own monitor to change them:
+
+```python
+from tensor_optix import ConvergenceMonitor
+model.fit(train, val, epochs=None,
+          convergence=ConvergenceMonitor(timescales=(3, 8, 24), cooling_patience=5,
+                                         dormant_patience=40, min_delta=1e-3))
+```
+
+With `epochs=None`, a fixed-length schedule such as `CosineAnnealingLR(epochs=50)` reaches its final learning rate at its own `epochs` and stays there. A warning says so.
 
 ## Hyperparameter tuning
 

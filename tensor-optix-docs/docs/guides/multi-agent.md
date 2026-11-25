@@ -48,13 +48,13 @@ MultiAgentRunner(pipeline, agents).run(max_windows=500)
 
 ## Convergence and checkpoints
 
-`MultiAgentRunner` tracks every seat separately: it scores each seat's window, checkpoints a seat whenever it beats its own best score, and detects per-seat convergence with the same trend-based `BackoffScheduler` the single-agent loop uses.
+`MultiAgentRunner` tracks every seat separately: it scores each seat's window, checkpoints a seat whenever it beats its own best score, and detects per-seat convergence with its own [`ConvergenceMonitor`](../reference/core/convergence.md), the same detector the single-agent loop uses.
 
 ```python
 runner = MultiAgentRunner(
     pipeline, agents,
     checkpoint_dir="./checkpoints",   # one sub-directory per seat
-    dormant_threshold=20,             # flat windows before a seat counts as converged
+    dormant_threshold=160,            # windows without new ground before a seat counts as converged
     stop_when="all",                  # stop when every seat has converged ("any": the first)
 )
 result = runner.run(max_windows=2000)

@@ -26,13 +26,18 @@ class FitHistory:
     best_epoch: Optional[int] = None
     stopped_early: bool = False
     epochs_run: int = 0
+    # Why the run ended: "epochs", "max_epochs", "early_stopping" or
+    # "converged" (the ConvergenceMonitor reached DORMANT).
+    stop_reason: Optional[str] = None
+    # One ConvergenceReport per validated epoch.
+    convergence: List[Any] = field(default_factory=list)
 
 
 class BaseMLModel(ABC):
     """
     The only contract between a trained ML model and tensor-optix's
     ML-native checkpointing/metrics machinery (CheckpointRegistry,
-    BackoffScheduler, SPSAOptimizer -- all reused as-is from the RL core,
+    ConvergenceMonitor, SPSAOptimizer -- all reused as-is from the RL core,
     since they are genuinely algorithm-agnostic; see ml_core's module docs
     for which RL-core pieces are and are not reused).
     """
@@ -102,7 +107,7 @@ class BaseMLModel(ABC):
         self,
         train_data,
         val_data=None,
-        epochs: int = 10,
+        epochs: Optional[int] = 10,
         batch_size: int = 32,
         early_stopping_patience: Optional[int] = None,
         metrics="auto",
@@ -110,12 +115,32 @@ class BaseMLModel(ABC):
         checkpoint_dir: Optional[str] = None,
         lr_schedule: Optional[object] = None,
         augment: Optional[object] = None,
+        max_epochs: Optional[int] = None,
+        stop_on_convergence: bool = True,
+        convergence: Optional[object] = None,
     ) -> FitHistory:
         """
-        Train for up to `epochs` epochs. If val_data is given and
-        early_stopping_patience is set, stops early once the validation
-        primary_score hasn't improved for that many consecutive epochs,
-        and restores the best checkpoint's weights before returning.
+        Train for up to `epochs` epochs, or -- with ``epochs=None`` -- until
+        tensor-optix judges the run converged. The best checkpoint's weights
+        are restored before returning, however the run ended.
+
+        epochs: a fixed budget, or None to train until convergence (requires
+        val_data, or a max_epochs cap).
+
+        max_epochs: optional hard cap for an open-ended run. Off by default.
+
+        early_stopping_patience: stop once the validation primary_score hasn't
+        set a new best for that many consecutive epochs. Off by default.
+
+        stop_on_convergence: when val_data is given, stop as soon as the
+        ConvergenceMonitor reaches DORMANT (no new ground for its dormant
+        patience, and no slow rise still in progress). On by default.
+        FitHistory.stop_reason says which rule ended the run, and
+        FitHistory.convergence holds one ConvergenceReport per epoch.
+
+        convergence: a tensor_optix.core.convergence.ConvergenceMonitor to use
+        instead of the ML defaults (to change its timescales, patience or
+        min_delta).
 
         lr_schedule: an optional callable(epoch) -> float (see
         tensor_optix.ml_core.lr_schedules for StepLR/CosineAnnealingLR/
@@ -146,5 +171,8 @@ class BaseMLModel(ABC):
             checkpoint_dir=checkpoint_dir,
             lr_schedule=lr_schedule,
             augment=augment,
+            max_epochs=max_epochs,
+            stop_on_convergence=stop_on_convergence,
+            convergence=convergence,
         )
         return trainer.run(train_data, val_data)

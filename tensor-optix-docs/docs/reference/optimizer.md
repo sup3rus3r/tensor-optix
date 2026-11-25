@@ -53,8 +53,8 @@ def __init__(
     base_interval: int = 1,
     backoff_factor: float = 2.0,
     max_interval_episodes: int = 100,
-    plateau_threshold: int = 5,
-    dormant_threshold: int = 20,
+    plateau_threshold: Optional[int] = None,
+    dormant_threshold: Optional[int] = None,
     degradation_threshold: float = 0.95,
     min_degradation_drop: float = 1e-4,
     noise_k: float = 2.0,
@@ -78,8 +78,8 @@ def __init__(
     diag_min_episodes: int = 5,
     min_consecutive_degradations: int = 3,
     convergence_patience: int = 5,
-    cv_threshold: float = 0.05,
-    gap_threshold: float = 0.20,
+    cv_threshold: Optional[float] = None,     # deprecated, no effect
+    gap_threshold: Optional[float] = None,    # deprecated, no effect
     target_score: Optional[float] = None,
     # ── Trial-level search (TrialOrchestrator) ──
     agent_factory: Optional[Callable[[Dict[str, Any]], BaseAgent]] = None,
@@ -94,9 +94,17 @@ def __init__(
 
 Either `agent` or `agent_factory` must be provided, and either `pipeline` or `pipeline_factory`.
 
-`RLOptimizer` builds, internally: a `TFEvaluator` (default, if none given), an `SPSAOptimizer` seeded from the agent's `default_param_bounds`/`default_log_params` (if no optimizer given, or if a given `SPSAOptimizer` has no bounds yet), a `CheckpointRegistry`, a `BackoffScheduler`, and a `DiagnosticController` - then wraps them all in a `LoopController`.
+`RLOptimizer` builds, internally: a `TFEvaluator` (default, if none given), an `SPSAOptimizer` seeded from the agent's `default_param_bounds`/`default_log_params` (if no optimizer given, or if a given `SPSAOptimizer` has no bounds yet), a `CheckpointRegistry`, a `BackoffScheduler` (evaluation cadence), and a `DiagnosticController` - then wraps them all in a `LoopController`, which builds the [`ConvergenceMonitor`](core/convergence.md) that drives convergence.
 
-Off-policy agents (`agent.is_on_policy == False`) get more patient defaults automatically: if `dormant_threshold` is left at its default `20`, it's lowered to `15`; if `min_episodes_before_dormant` is left at `0`, it's raised to `agent.default_min_episodes_before_dormant` (default `100`).
+Convergence parameters:
+
+- **`plateau_threshold` / `dormant_threshold`:** cooling / dormant patience, in episodes. `None` uses the monitor defaults (32 / 160).
+- **`noise_k`:** the significance of every trend test, in standard errors.
+- **`min_episodes_before_dormant`:** DORMANT is never entered before this episode.
+- **`min_consecutive_degradations`:** observations a new regime, including a collapse, must hold before it is reported.
+- **No effect:** `score_window`, `trend_window`, `degradation_threshold` and `min_degradation_drop` only affect a standalone `BackoffScheduler`. `cv_threshold` / `gap_threshold` are deprecated and do nothing.
+
+Off-policy agents (`agent.is_on_policy == False`): if `min_episodes_before_dormant` is left at `0`, it's raised to `agent.default_min_episodes_before_dormant` (default `100`).
 
 ### Methods
 

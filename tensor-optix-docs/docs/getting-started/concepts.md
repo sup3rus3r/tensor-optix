@@ -26,11 +26,16 @@ ACTIVE → COOLING → DORMANT → (watchdog shutdown | policy spawn)
      (on improvement or degradation)
 ```
 
-- **ACTIVE** - the score is improving or it's early in training.
-- **COOLING** - `plateau_threshold` consecutive non-improving evals. Only windows in which at least one episode finished count as evals, and nothing counts until `min_completed_episodes_before_dormant` (default 10) episodes have finished.
-- **DORMANT** - `dormant_threshold` consecutive non-improving evals. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
+- **ACTIVE** - the run made new ground within the cooling patience, or it's early in training.
+- **COOLING** - no new ground for `plateau_threshold` episodes (default 32). The optimizer is told to widen its search now, while there is still time for that to help. Only windows in which at least one episode finished are scored.
+- **DORMANT** - no new ground for `dormant_threshold` episodes (default 160). DORMANT is withheld in three cases: while a slow rise is still significant on the long timescale, while the score is collapsing, and until `min_completed_episodes_before_dormant` (default 10) episodes have finished. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
 
-Transitions are **not** point-to-point score comparisons. `BackoffScheduler` fits a linear trend over the most recent `trend_window` scores and compares the slope against an adaptive floor (`noise_k ×` the standard deviation of the recent scores around their own linear trend, capped at 50% of `|best_score|`) - the noise estimate is detrended so that steady improvement is not mistaken for noise. A single unlucky episode in an otherwise-improving run does not look like a collapse, and a single lucky episode in an otherwise-flat run does not look like genuine progress.
+All three are decided by the [`ConvergenceMonitor`](../reference/core/convergence.md):
+
+- **Several timescales at once.** It reads short, medium and long trends (8 / 32 / 128 observations) together, against the run's own **peak**: the best level reached, corrected for lucky windows.
+- **One regime per observation.** It reports `IMPROVING`, `PLATEAU`, `REGRESSED_CLIMBING`, `REGRESSED_STALLED` or `COLLAPSING`.
+- **Climbing back is not new ground.** Getting back to a level the run already reached counts as recovery, not improvement, so a dip after a good rise does not reset patience.
+- **Noise.** It is estimated from first differences with slope changes removed, and corrected for autocorrelation. A single unlucky episode does not look like a collapse, and a single lucky one does not look like progress.
 
 ## Checkpointing is validation-only
 

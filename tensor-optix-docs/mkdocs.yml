@@ -35,6 +35,7 @@ nav:
           - base_optimizer: reference/core/base_optimizer.md
           - base_pipeline: reference/core/base_pipeline.md
           - loop_controller: reference/core/loop_controller.md
+          - convergence: reference/core/convergence.md
           - backoff_scheduler: reference/core/backoff_scheduler.md
           - checkpoint_registry: reference/core/checkpoint_registry.md
           - diagnostic_controller: reference/core/diagnostic_controller.md

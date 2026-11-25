@@ -6,7 +6,7 @@ EpisodeData: fit()/predict()/evaluate() instead of act()/learn(), epochs
 and batches instead of episodes, and real classification/regression
 metrics (accuracy, F1, confusion matrix, MAE, R2) instead of mean episode
 return. See each module's docstring for which pieces of the RL core are
-reused as-is (CheckpointRegistry, BackoffScheduler, SPSAOptimizer, the
+reused as-is (CheckpointRegistry, ConvergenceMonitor, SPSAOptimizer, the
 core dataclasses) versus genuinely new (BaseMLModel, Trainer, the metrics
 registry, the framework adapters).
 

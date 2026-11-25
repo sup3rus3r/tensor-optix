@@ -65,8 +65,8 @@ class RLOptimizer:
         base_interval: int = 1,
         backoff_factor: float = 2.0,
         max_interval_episodes: int = 100,
-        plateau_threshold: int = 5,
-        dormant_threshold: int = 20,
+        plateau_threshold: Optional[int] = None,
+        dormant_threshold: Optional[int] = None,
         degradation_threshold: float = 0.95,
         min_degradation_drop: float = 1e-4,
         noise_k: float = 2.0,
@@ -90,8 +90,8 @@ class RLOptimizer:
         diag_min_episodes: int = 5,
         min_consecutive_degradations: int = 3,
         convergence_patience: int = 5,
-        cv_threshold: float = 0.05,
-        gap_threshold: float = 0.20,
+        cv_threshold: Optional[float] = None,
+        gap_threshold: Optional[float] = None,
         target_score: Optional[float] = None,
         criteria_mode: str = "none",
         criteria_k: float = 2.0,
@@ -204,12 +204,12 @@ class RLOptimizer:
         # Off-policy agents (DQN, SAC) need more patience before convergence.
         # Each agent class may declare default_min_episodes_before_dormant to express
         # its own warmup timing (e.g. DQN=60 for epsilon decay, SAC=30 for Q-stability).
+        # plateau_threshold / dormant_threshold are the ConvergenceMonitor's
+        # cooling / dormant patience in episodes; None uses its defaults.
         agent_is_on_policy = getattr(agent, "is_on_policy", True)
         dormant_threshold = kw["dormant_threshold"]
         min_episodes_before_dormant = kw["min_episodes_before_dormant"]
         if not agent_is_on_policy:
-            if dormant_threshold == 20:
-                dormant_threshold = 15
             if min_episodes_before_dormant == 0:
                 min_episodes_before_dormant = getattr(
                     agent, "default_min_episodes_before_dormant", 100

@@ -24,7 +24,17 @@ class LoopCallback:
     def on_dormant(self, episode_id: int) -> None: ...
     def on_degradation(self, episode_id: int, eval_metrics: EvalMetrics) -> None: ...
     def on_hyperparam_update(self, old_params: dict, new_params: dict) -> None: ...
+    def on_convergence(self, episode_id: int, report: ConvergenceReport) -> None: ...
 ```
+
+Callbacks need not subclass `LoopCallback`: hooks a duck-typed callback does not define are skipped.
+
+| Hook | Fires |
+|---|---|
+| `on_plateau(episode_id, state)` | once, when the run **enters** COOLING |
+| `on_dormant(episode_id)` | once, when the run enters DORMANT |
+| `on_degradation(episode_id, eval_metrics)` | once per confirmed collapse, for on-policy **and** off-policy agents (rollback only for on-policy) |
+| `on_convergence(episode_id, report)` | whenever the convergence regime or the loop state changes; `report` is a [`ConvergenceReport`](convergence.md#convergencereport) |
 
 ## LoopController
 
@@ -36,7 +46,8 @@ class LoopController:
     Orchestrates the full autonomous improvement loop:
     1. Cold start: run baseline episode, store snapshot
     2. Main loop: interact → evaluate → compare → tune → repeat
-    3. State management via BackoffScheduler
+    3. Convergence via ConvergenceMonitor (what the score curve is doing,
+       ACTIVE / COOLING / DORMANT); evaluation cadence via BackoffScheduler
     4. Checkpoint management via CheckpointRegistry
     5. Graceful shutdown on stop(), DORMANT, or max_episodes
 
@@ -75,8 +86,8 @@ def __init__(
     diagnostic_controller: Optional["DiagnosticController"] = None,
     min_consecutive_degradations: int = 3,
     convergence_patience: int = 5,
-    cv_threshold: float = 0.05,
-    gap_threshold: float = 0.20,
+    cv_threshold: Optional[float] = None,      # deprecated, no effect
+    gap_threshold: Optional[float] = None,     # deprecated, no effect
     target_score: Optional[float] = None,
     criteria_mode: str = "none",
     criteria_k: float = 2.0,
@@ -84,13 +95,21 @@ def __init__(
     checkpoint_confirm_window: int = 3,
     checkpoint_noise_k: float = 2.0,
     min_completed_episodes_before_dormant: int = 10,
+    convergence_monitor: Optional[ConvergenceMonitor] = None,
 )
 ```
+
+- `convergence_monitor`: the [`ConvergenceMonitor`](convergence.md) driving convergence. When omitted, one is built from the scheduler:
+  - **Patience:** an explicitly set `plateau_threshold` / `dormant_threshold` becomes the monitor's cooling / dormant patience, in episodes. Otherwise the monitor defaults apply (32 / 160).
+  - **Significance:** `noise_k` sets the significance `z`.
+  - **Earliest DORMANT:** `min_episodes_before_dormant` becomes `min_at_before_dormant`.
+  - **Persistence:** `min_consecutive_degradations` sets how many observations a new regime must hold.
+- `cv_threshold` / `gap_threshold` are deprecated and do nothing (they fed an `is_converged()` check that the loop never called); passing either emits a `DeprecationWarning`.
 
 Three separate concerns are kept deliberately independent inside the controller:
 
 1. **Checkpoint saving** - driven by `checkpoint_score` (the output of `checkpoint_score_fn(agent)` when provided, otherwise raw `primary_score`, then run through composite scoring and confirmation - see below). The best checkpoint is the one with the highest true policy quality; an external deterministic eval is more accurate than the noisy training-window mean.
-2. **Convergence / degradation detection** - driven by the *smoothed* `primary_score` (rolling mean of the last `score_smoothing` evals), so a single lucky window can't set an unreachable "best" that permanently blocks `DORMANT`.
+2. **Convergence / degradation detection** - the raw `primary_score` of every observed window feeds the `ConvergenceMonitor`, which does its own multi-timescale smoothing and peak tracking (see [convergence](convergence.md)).
 3. **`checkpoint_score_fn`** - optional `Callable[[BaseAgent], float]` called after every eval episode to measure true policy quality independently of the training signal.
 
 ### Avoiding "unicorn" checkpoints
@@ -149,15 +168,28 @@ def state(self) -> LoopState: ...
 
 @property
 def best_snapshot(self) -> Optional[PolicySnapshot]: ...
+
+@property
+def monitor(self) -> ConvergenceMonitor: ...        # pass to TopologyController.set_scheduler
+
+@property
+def convergence(self) -> Optional[ConvergenceReport]: ...   # most recent report
 ```
+
+## Observation cadence
+
+When scoring is free (no `val_pipeline`, no `checkpoint_score_fn`), **every window is scored and observed**, so the monitor sees the whole curve. Checkpoint decisions run on every observed window too. The `BackoffScheduler` interval then paces only the costly steps:
+
+- `optimizer.suggest`;
+- the validation rollout, when a `val_pipeline` is set. In that case the monitor observes the validation scores at their real episode positions.
+
+The interval resets to `base_interval` on improvement and backs off by `backoff_factor` on each due evaluation without improvement.
 
 ## Degradation handling
 
-`_handle_degradation()`:
+A collapse is confirmed by the monitor: the `COLLAPSING` regime must hold for `min_consecutive_degradations` (default 3) consecutive observations. It is never confirmed on a window scored under an optimizer probe (`optimizer.is_probing`), because that drop is self-inflicted. On confirmation `_handle_degradation()` runs once:
 
 ```
-Called when watchdog detects performance drop.
-
 Rollback is skipped for off-policy agents (agent.is_on_policy == False)
 even when rollback_on_degradation=True. Off-policy agents maintain a
 replay buffer containing experience from all past policies - restoring
@@ -166,34 +198,38 @@ that immediately drag the policy back down. Their buffers naturally
 smooth through degradations without rollback.
 ```
 
-Rollback fires when all of: `rollback_on_degradation=True`, the agent is on-policy, and a best snapshot exists. Degradation itself must first be *confirmed*: the smoothed score has to sit below `best × degradation_threshold` for `min_consecutive_degradations` (default 3) consecutive non-probe evals before `_handle_degradation()` runs, `on_degradation` fires, and the scheduler returns to `ACTIVE`.
+`on_degradation` fires for every agent. Rollback happens only when all three hold: `rollback_on_degradation=True`, the agent is on-policy, and a best snapshot exists. After a rollback the monitor is told (`note_restored`):
 
-## Plateau accounting
+- **History:** scores from the collapsed policy are dropped from the trend history.
+- **Peak and patience:** both are kept, since restoring is not progress.
+- **No early DORMANT:** the run cannot be declared DORMANT until the restored policy's scores can be read.
+- **Renewed collapse:** if the restored policy collapses again, that is detected and rolled back again.
 
-Every eval whose trend is not improving advances the scheduler's non-improvement counter (`BackoffScheduler.record_non_improvement()`), for on-policy and off-policy agents alike and whether or not the optimizer is probing. The single exception is the eval on which a degradation is confirmed. Consequences:
+## Convergence actions
 
-- The eval interval backs off (`backoff_factor`) while the score is flat, so not every window is evaluated. Use `backoff_factor=1.0` to evaluate every window.
-- `ACTIVE → COOLING` fires `on_plateau`; `COOLING → DORMANT` calls `optimizer.on_plateau()`, fires `on_dormant`, and then applies the DORMANT rule below.
+Each action runs **once, on entry**:
+
+- **Entering COOLING:** `optimizer.on_cooling()` (by default the same reaction as a plateau: widen the search, early enough for it to run), RND η × 1.5, and `on_plateau` fires.
+- **Entering DORMANT:** `optimizer.on_plateau()`, RND η = 0, `on_dormant` fires, then the DORMANT rule below.
+- **Every `IMPROVING` observation:** `optimizer.on_improvement()` and RND η × 0.9.
+
+A regressed run is **reported** (`on_convergence`, `report.gap_to_peak`, `report.eta_to_peak`) and keeps counting toward DORMANT, because climbing back to the peak is not progress. A collapsing run does not count toward DORMANT, so it is never declared converged at its collapsed level.
 
 ## What happens at DORMANT
 
 After `on_dormant` callbacks have run, the loop stops unless a callback asks for more training:
 
-- A callback may expose `consume_dormant_resume() -> bool`. It is polled once per DORMANT event on every callback; if any returns `True` (and no callback called `stop()`), the scheduler is restarted (`record_restart()`) and training continues.
+- A callback may expose `consume_dormant_resume() -> bool`. It is polled once per DORMANT event on every callback. If any returns `True` (and no callback called `stop()`), the scheduler and monitor are restarted (`record_restart()`) and training continues. The new variant must still beat the run's peak.
 - `PolicyManagerCallback` returns `True` when that DORMANT event spawned or pruned a variant. Budget exhausted, a `MetaController` `STOP`/`NO_OP`, or passive mode (no `agent_factory`) leave the default in place.
 - Otherwise the loop stops and the best checkpoint is restored.
-
-## Degradation suppression during optimizer probes
-
-When an online optimizer (SPSA, Backoff) applies a finite-difference probe perturbation, the resulting score drop is self-inflicted, not a genuine policy collapse. The main loop checks `optimizer.is_probing` and `agent.is_on_policy` before firing degradation handling - probes and off-policy noise are both excluded from the degradation path.
 
 ## RND eta scheduling
 
 `_update_rnd_eta(event)` adjusts `RNDPipeline`'s intrinsic-reward scale at loop state transitions, when the **training** pipeline exposes `set_eta` (the validation pipeline is only consulted if the training pipeline does not):
 
 ```
-improvement → eta *= 0.9   (getting better, pull back exploration)
-plateau     → eta *= 1.5   (stuck, push exploration; capped at 4x base)
+improvement → eta *= 0.9   (every IMPROVING observation: pull back exploration)
+plateau     → eta *= 1.5   (once, on entering COOLING: push exploration; capped at 4x base)
 dormant     → eta = 0      (converged, stop injecting noise)
 restart     → eta = base   (reset after dormant restart)
 ```
@@ -202,7 +238,7 @@ This is a no-op (zero cost) for pipelines that don't implement `set_eta`. See [E
 
 ## Verbose output
 
-`verbose=True` prints a per-eval diagnostic block (score, trend, state machine, optimizer step). Output goes through `tensor_optix.utils.console.safe_print`, which replaces glyphs the output stream cannot encode (e.g. box-drawing characters on a Windows cp1252 console or a redirected stdout) with `?` instead of raising `UnicodeEncodeError`. Pass `verbose_log_file=` to write the same output to a UTF-8 file.
+`verbose=True` prints a per-eval diagnostic block: the score, each timescale's level and slope ± SE, the regime with peak / gap / noise, the state with patience, and the optimizer step. Output goes through `tensor_optix.utils.console.safe_print`, which replaces glyphs the output stream cannot encode (e.g. box-drawing characters on a Windows cp1252 console or a redirected stdout) with `?` instead of raising `UnicodeEncodeError`. Pass `verbose_log_file=` to write the same output to a UTF-8 file.
 
 ## Scores are finished-episode returns
 
@@ -210,8 +246,8 @@ A window is a fixed number of steps, not an episode, so the loop keeps track of 
 
 - **Returns are tracked across windows.** `BatchPipeline`, `VectorBatchPipeline` and the multi-agent pipelines keep a running return per environment (or seat) between windows and publish the full returns of the episodes that *finished* in a window as `EpisodeData.metadata["episode_returns"]`. An episode that spans five windows is scored once, with its whole return, in the window where it ends.
 - **The default evaluators** (`TorchEvaluator` / `TFEvaluator`) use the mean of those returns as `primary_score` and report `metrics["episodes_completed"]`. With a custom `primary_score_fn` the count is not reported and none of the rules below apply.
-- **A window in which no episode finished is not an evaluation.** The agent still learns from it, but there is no checkpoint decision, no trend update, no plateau count and no hyperparameter step; `on_episode_end` fires with `eval_metrics=None`, exactly as for windows skipped by the eval interval.
-- **Before the first episode ever finishes** there is nothing better to score with, so windows are scored by mean per-step reward. When the first episode finishes the scale changes from per-step reward to episode return, so the best score, the trend window and the metrics history are reset at that point - otherwise a per-step best such as `-1.0` could never be beaten by a return such as `-200`.
-- **`min_completed_episodes_before_dormant`** (default `10`): non-improving evals do not count toward `COOLING`/`DORMANT` until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to `0`.
+- **A window in which no episode finished is not an evaluation.** The agent still learns from it, but there is no checkpoint decision, no monitor observation and no hyperparameter step; `on_episode_end` fires with `eval_metrics=None`.
+- **Before the first episode ever finishes** there is nothing better to score with, so windows are scored by mean per-step reward. When the first episode finishes the scale changes from per-step reward to episode return, so the best score, the monitor (`reset_scale()`) and the metrics history are reset at that point - otherwise a per-step best such as `-1.0` could never be beaten by a return such as `-200`.
+- **`min_completed_episodes_before_dormant`** (default `10`): DORMANT is deferred (`monitor.defer_dormant()`) until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to `0`.
 
 With a validation pipeline the same rules are applied to the validation windows (`val_episodes_completed`), since the validation score is what drives the loop.

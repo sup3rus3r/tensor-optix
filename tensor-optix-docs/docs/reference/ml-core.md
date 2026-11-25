@@ -47,7 +47,7 @@ class BaseMLModel(ABC):
         self,
         train_data,
         val_data=None,
-        epochs: int = 10,
+        epochs: Optional[int] = 10,
         batch_size: int = 32,
         early_stopping_patience: Optional[int] = None,
         metrics="auto",
@@ -55,14 +55,24 @@ class BaseMLModel(ABC):
         checkpoint_dir: Optional[str] = None,
         lr_schedule: Optional[Callable[[int], float]] = None,
         augment: Optional[Callable] = None,
+        max_epochs: Optional[int] = None,
+        stop_on_convergence: bool = True,
+        convergence: Optional[ConvergenceMonitor] = None,
     ) -> FitHistory:
         """
-        Train for up to `epochs` epochs. If val_data is given and
-        early_stopping_patience is set, stops early once the validation
-        primary_score hasn't improved for that many consecutive epochs,
-        and restores the best checkpoint's weights before returning.
-        "New best" is tracked independently of whether checkpoint_dir is
-        set -- early stopping works even with no disk checkpointing.
+        Train for up to `epochs` epochs, or -- with epochs=None -- until
+        the ConvergenceMonitor judges the run converged (requires val_data,
+        or a max_epochs cap). The best checkpoint's weights are restored
+        before returning, however the run ended. "New best" is tracked
+        independently of whether checkpoint_dir is set.
+
+        max_epochs: optional hard cap for an open-ended run; off by default.
+        early_stopping_patience: stop after that many epochs without a new
+        best; off by default.
+        stop_on_convergence: with val_data, stop when the monitor reaches
+        DORMANT (no new ground for its dormant patience, no slow rise still
+        in progress). On by default.
+        convergence: a ConvergenceMonitor replacing the ML defaults.
 
         lr_schedule: callable(epoch) -> float, applied once per epoch.
         Mutually exclusive with SPSA tuning of learning_rate for this run
@@ -83,8 +93,10 @@ class FitHistory:
     train_loss: List[float]          # mean training loss per epoch
     val_metrics: List[MLMetrics]      # one MLMetrics per epoch (only if val_data given)
     best_epoch: Optional[int]         # index of the best-scoring epoch
-    stopped_early: bool                # True if early stopping fired
-    epochs_run: int                    # actual epochs completed (<= epochs if stopped early)
+    stopped_early: bool                # True if early stopping or convergence ended the run
+    epochs_run: int                    # actual epochs completed
+    stop_reason: Optional[str]         # "epochs" | "max_epochs" | "early_stopping" | "converged"
+    convergence: List[ConvergenceReport]   # one report per validated epoch
 ```
 
 ## Trainer
@@ -102,15 +114,19 @@ class Trainer:
          tf.data.Dataset inputs are passed through untouched.
       2. If val_data given, call model.evaluate(val_data) -> MLMetrics.
       3. Compare MLMetrics.primary_score against the best score seen this
-         run. On improvement: reset the early-stopping counter, record the
-         epoch as best, and (if checkpoint_dir is set) call
-         CheckpointRegistry.save(). On no improvement: advance the
-         early-stopping counter and feed BackoffScheduler.record_non_improvement().
-      4. If an SPSA-tunable model (default_param_bounds set), call
+         run. On a new best: reset the early-stopping counter, record the
+         epoch as best, (if checkpoint_dir is set) CheckpointRegistry.save(),
+         fire on_improvement. Otherwise advance the counter and fire
+         on_no_improvement.
+      4. Feed the score to the ConvergenceMonitor (at=epoch). Fire
+         on_convergence on regime / state changes; on IMPROVING tell SPSA
+         (on_improvement); on entering COOLING tell SPSA (on_cooling) and
+         fire on_plateau once.
+      5. If an SPSA-tunable model (default_param_bounds set), call
          SPSAOptimizer.suggest() with the accumulated EvalMetrics history
          and apply the suggestion via model.set_hyperparams().
-      5. Stop if early_stopping_patience epochs have passed with no
-         improvement.
+      6. Stop on early_stopping_patience, or -- when stop_on_convergence --
+         when the monitor enters DORMANT (on_dormant fires first).
 
     After the loop, if checkpoint_dir was set and at least one checkpoint
     was saved, restores the best checkpoint's weights via
@@ -120,7 +136,7 @@ class Trainer:
     def __init__(
         self,
         model,
-        epochs: int,
+        epochs: Optional[int],
         batch_size: int,
         early_stopping_patience: Optional[int],
         metrics,
@@ -128,24 +144,26 @@ class Trainer:
         checkpoint_dir: Optional[str],
         lr_schedule: Optional[Callable[[int], float]] = None,
         augment: Optional[Callable] = None,
+        max_epochs: Optional[int] = None,
+        stop_on_convergence: bool = True,
+        convergence: Optional[ConvergenceMonitor] = None,
     ): ...
 
     def run(self, train_data, val_data) -> FitHistory: ...
 ```
 
 ```python
-# BackoffScheduler defaults used by Trainer -- re-tuned from the RL core's
-# defaults (trend_window=8, score_window=20, noise_k=2.0) for per-epoch
-# validation curves, which are typically smoother and evaluated far less
-# often than per-episode RL reward.
-ML_BACKOFF_DEFAULTS = dict(
-    trend_window=4,
-    score_window=8,
-    noise_k=1.0,
-    plateau_threshold=5,
-    dormant_threshold=20,
-    min_episodes_before_degradation=3,
+# ConvergenceMonitor settings used by Trainer -- per-epoch validation
+# curves are far smoother than per-episode RL returns and a run is tens of
+# epochs, so every window is short; patience keeps COOLING after 5 /
+# DORMANT after 20 epochs without new ground.
+ML_CONVERGENCE_DEFAULTS = dict(
+    timescales=(3, 8, 24),
+    cooling_patience=5,
+    dormant_patience=20,
+    persist=2,
 )
+# (replaces the former ML_BACKOFF_DEFAULTS)
 ```
 
 ## MLMetrics
@@ -154,7 +172,7 @@ ML_BACKOFF_DEFAULTS = dict(
 @dataclass
 class MLMetrics:
     """Scored output from a BaseMLModel's evaluate() call."""
-    primary_score: float   # higher-is-better; feeds CheckpointRegistry/BackoffScheduler
+    primary_score: float   # higher-is-better; feeds CheckpointRegistry/ConvergenceMonitor
     loss: float              # raw loss value, for display only
     task_type: str            # "classification" | "regression" | "other"
     metrics: Dict[str, float]  # accuracy, f1_macro, confusion_matrix_<i>_<j>, mae, r2, ...

@@ -49,7 +49,7 @@ class MyLogger(LoopCallback):
         print(f"Converged at episode {episode_id}")
 ```
 
-Override any subset of: `on_loop_start`, `on_loop_stop`, `on_episode_end(episode_id, eval_metrics)`, `on_improvement(snapshot)`, `on_plateau(episode_id, state)`, `on_dormant(episode_id)`, `on_degradation(episode_id, eval_metrics)`, `on_hyperparam_update(old_params, new_params)`. A callback that raises inside any hook is caught and logged as a warning by `LoopController` - it will not crash the training run.
+Override any subset of: `on_loop_start`, `on_loop_stop`, `on_episode_end(episode_id, eval_metrics)`, `on_improvement(snapshot)`, `on_plateau(episode_id, state)`, `on_dormant(episode_id)`, `on_degradation(episode_id, eval_metrics)`, `on_hyperparam_update(old_params, new_params)`, `on_convergence(episode_id, report)`. `on_plateau` and `on_dormant` fire once, on entering COOLING / DORMANT; `on_convergence` fires on every regime or state change with a [`ConvergenceReport`](../reference/core/convergence.md#convergencereport). Hooks a duck-typed callback does not define are skipped. A callback that raises inside any hook is caught and logged as a warning by `LoopController` - it will not crash the training run.
 
 `HebbianHook` and `NeuromodulatorSignal` (neuroevo subsystem) are also `LoopCallback` subclasses and can be passed alongside the above via `callbacks=`.
 

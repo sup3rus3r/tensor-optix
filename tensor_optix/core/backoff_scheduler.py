@@ -1,11 +1,25 @@
 from collections import deque
+from typing import Optional
 import numpy as np
 from .types import LoopState
 
 
 class BackoffScheduler:
     """
-    Controls adaptation interval and state transitions.
+    Controls the evaluation / adaptation interval.
+
+    Since the convergence redesign, ``LoopController`` uses this class only
+    for its *cadence* (``should_adapt`` / ``advance_interval``): when the
+    costly steps (validation pipeline, ``optimizer.suggest``) run. Convergence
+    detection and the ACTIVE / COOLING / DORMANT state live in
+    ``tensor_optix.core.convergence.ConvergenceMonitor``.
+
+    The trend / state-machine methods below are kept for standalone use and
+    backward compatibility. ``plateau_threshold`` and ``dormant_threshold``,
+    when given explicitly, become the monitor's cooling / dormant patience
+    (in episodes) for the loop that owns this scheduler.
+
+    Legacy behaviour of the standalone state machine:
 
     Improvement and degradation are detected via **linear trend** over the
     recent score window, not point-to-point comparison.
@@ -37,8 +51,8 @@ class BackoffScheduler:
         base_interval: int = 1,
         backoff_factor: float = 2.0,
         max_interval_episodes: int = 100,
-        plateau_threshold: int = 5,
-        dormant_threshold: int = 20,
+        plateau_threshold: Optional[int] = None,
+        dormant_threshold: Optional[int] = None,
         degradation_threshold: float = 0.95,
         min_degradation_drop: float = 1e-4,
         min_episodes_before_dormant: int = 0,
@@ -63,8 +77,14 @@ class BackoffScheduler:
         self._base_interval = base_interval
         self._backoff_factor = backoff_factor
         self._max_interval = max_interval_episodes
-        self._plateau_threshold = plateau_threshold
-        self._dormant_threshold = dormant_threshold
+        # None = "not set by the caller": the standalone state machine uses the
+        # historical 5 / 20, and an owning LoopController uses the monitor's
+        # own defaults instead of these.
+        self.explicit_plateau_threshold = plateau_threshold
+        self.explicit_dormant_threshold = dormant_threshold
+        self._plateau_threshold = 5 if plateau_threshold is None else int(plateau_threshold)
+        self._dormant_threshold = 20 if dormant_threshold is None else int(dormant_threshold)
+        self._monitor = None
         self._degradation_threshold = degradation_threshold
         self._min_degradation_drop = min_degradation_drop
         self._min_episodes_before_dormant = min_episodes_before_dormant
@@ -247,12 +267,33 @@ class BackoffScheduler:
         self._current_interval = self._base_interval
         self._state = LoopState.ACTIVE
 
+    def attach_monitor(self, monitor) -> None:
+        """
+        Link the ConvergenceMonitor that a LoopController built from this
+        scheduler, so code that still resets the scheduler directly (e.g.
+        TopologyController after a topology change) also restarts the
+        monitor that actually drives convergence.
+        """
+        self._monitor = monitor
+
+    def advance_interval(self, improved: bool) -> None:
+        """Cadence only: reset to base on progress, back off otherwise."""
+        if improved:
+            self._current_interval = self._base_interval
+        else:
+            self._current_interval = min(
+                max(1, int(self._current_interval * self._backoff_factor)),
+                self._max_interval,
+            )
+
     def record_restart(self) -> None:
         """
         Called after DORMANT fires and PolicyManager has acted.
         Gives the new policy variant a clean slate.
         Does NOT reset best_score — the new variant must beat the existing best.
         """
+        if self._monitor is not None:
+            self._monitor.restart()
         self._consecutive_non_improvements = 0
         self._current_interval = self._base_interval
         self._state = LoopState.ACTIVE
@@ -265,6 +306,9 @@ class BackoffScheduler:
 
     def is_converged(self, cv_threshold: float = 0.05, gap_threshold: float = 0.20) -> bool:
         """
+        Deprecated: no loop calls this. Use ConvergenceMonitor's report
+        (``regime == PLATEAU`` with ``state == DORMANT``) instead.
+
         True when the policy has genuinely converged:
         flat trend AND low CV AND performing near its personal best.
 

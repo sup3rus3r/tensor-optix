@@ -82,7 +82,8 @@ class TopologyController(LoopCallback):
         score buffer and statistical thresholds; cooldowns and grad-util
         buffers are per-region.
     scheduler:
-        The BackoffScheduler inside LoopController.
+        The LoopController's BackoffScheduler (forwards restarts to its
+        ConvergenceMonitor) or the monitor itself (controller.monitor).
     grow_op:
         'insert_edge' | 'split_neuron' | 'add_edge'
     grow_grad_threshold:
@@ -441,7 +442,17 @@ class TopologyController(LoopCallback):
         add_free_edge(graph, src=src, dst=dst, delay=random.randint(1, 3))
 
     def _reset_scheduler(self) -> None:
+        """
+        A topology change makes a new network: give it fresh convergence
+        patience. Accepts a BackoffScheduler (the one a LoopController was
+        built with -- it forwards the restart to the loop's monitor) or the
+        loop's ConvergenceMonitor itself (``controller.monitor``).
+        """
         if self.scheduler is None:
+            return
+        if not hasattr(self.scheduler, "record_restart"):
+            # ConvergenceMonitor: keeps its peak, restarts trends and patience.
+            self.scheduler.restart()
             return
         if self.backoff_reset_factor == 0.0:
             self.scheduler.record_restart()
@@ -454,6 +465,9 @@ class TopologyController(LoopCallback):
             from tensor_optix.core.types import LoopState as LS
             self.scheduler._state = LS.ACTIVE
             self.scheduler._consecutive_non_improvements = 0
+            monitor = getattr(self.scheduler, "_monitor", None)
+            if monitor is not None:
+                monitor.restart()
 
     # ------------------------------------------------------------------
     # Gradient utilisation

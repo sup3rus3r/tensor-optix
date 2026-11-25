@@ -104,22 +104,23 @@ class MultiAgentRunner:
         checkpoint_dir: Optional[str] = None,
         max_snapshots: int = 10,
         improvement_margin: float = 0.0,
-        plateau_threshold: int = 5,
-        dormant_threshold: int = 20,
+        plateau_threshold: Optional[int] = None,   # cooling patience, windows (None: 32)
+        dormant_threshold: Optional[int] = None,   # dormant patience, windows (None: 160)
         min_windows_before_dormant: int = 0,
         min_completed_episodes_before_converged: int = 10,
-        noise_k: float = 2.0,
-        score_window: int = 20,
-        trend_window: int = 8,
+        noise_k: float = 2.0,                      # significance of every trend test
+        score_window: Optional[int] = None,        # deprecated, no effect
+        trend_window: Optional[int] = None,        # deprecated, no effect
         optimizer="auto",                  # per-seat tuning: "auto" | None | callable(agent) | {agent_id: optimizer}
         self_play: Optional[SelfPlayConfig] = None,
         rollback_on_degradation: bool = False,
-        degradation_threshold: float = 0.95,
-        min_consecutive_degradations: int = 3,
+        degradation_threshold: Optional[float] = None,   # deprecated, no effect
+        min_consecutive_degradations: int = 3,     # observations a new regime must hold
         stop_when: str = "all",            # "all" | "any"
         stop_on_convergence: bool = True,
         restore_best: bool = True,
         callbacks: Optional[List[Any]] = None,
+        convergence: Optional[Callable[[], ConvergenceMonitor]] = None,   # builds each seat's monitor
     ): ...
 
     def run(self, max_windows: Optional[int] = None) -> MultiAgentRunResult: ...
@@ -132,6 +133,8 @@ class MultiAgentRunner:
     def best_scores(self) -> Dict[Hashable, Optional[float]]: ...
     @property
     def best_snapshots(self) -> Dict[Hashable, Optional[PolicySnapshot]]: ...
+    @property
+    def convergence(self) -> Dict[Hashable, Optional[ConvergenceReport]]: ...   # latest report per seat
 ```
 
 Each window, for every seat that took at least one step:
@@ -139,11 +142,11 @@ Each window, for every seat that took at least one step:
 1. `agent.learn(episode_data)`.
 2. The window is scored by `evaluator` (default: mean return of the episodes that completed in the window - the same default the single-agent loop uses).
 3. **Checkpoint.** If the score beats the seat's best by more than `improvement_margin`, the seat is saved to its own `CheckpointRegistry` under `<checkpoint_dir>/<agent_id>`. With `checkpoint_dir=None` best scores are still tracked but nothing is written or restored.
-4. **Convergence.** The score feeds the seat's own `BackoffScheduler`. A seat whose score trend stays flat for `plateau_threshold` consecutive windows is `COOLING`; after `dormant_threshold` it is `DORMANT`, i.e. converged. A later upward trend puts it back to `ACTIVE`. Every window is evaluated (no eval-interval backoff).
+4. **Convergence.** The score feeds the seat's own [`ConvergenceMonitor`](core/convergence.md). A seat that has made no new ground for `plateau_threshold` windows is `COOLING`. After `dormant_threshold` windows it is `DORMANT`, i.e. converged, unless a slow rise is still significant on the long timescale. New ground puts it back to `ACTIVE`; climbing back to its own peak does not. Every window is evaluated.
 
 A seat with no turn in a window is skipped entirely - not learned, not scored, and not counted toward its plateau counter.
 
-**Scores are finished-episode returns.** The pipelines track each seat's return across windows. A window in which a seat finished no episode still trains that seat but is not scored (no checkpoint, no plateau count). Until a seat's first episode finishes its windows are scored by mean per-step reward; when it does, that seat's best score and trend are reset because the scale changes. A seat cannot plateau or converge before `min_completed_episodes_before_converged` (default `10`) episodes have finished - set it to `0` for environments whose episodes never end. `SeatResult.completed_episodes` reports the count.
+**Scores are finished-episode returns.** The pipelines track each seat's return across windows. A window in which a seat finished no episode still trains that seat but is not scored (no checkpoint, no plateau count). Until a seat's first episode finishes its windows are scored by mean per-step reward; when it does, that seat's best score and trend are reset because the scale changes. A seat cannot converge before `min_completed_episodes_before_converged` (default `10`) episodes have finished - set it to `0` for environments whose episodes never end. `SeatResult.completed_episodes` reports the count.
 
 **When the run stops**
 
@@ -195,6 +198,7 @@ class MultiAgentCallback:
     def on_converged(self, agent_id, window_id: int) -> None: ...
     def on_hyperparam_update(self, agent_id, old_params: dict, new_params: dict) -> None: ...
     def on_degradation(self, agent_id, window_id: int, score: float, rolled_back: bool) -> None: ...
+    def on_convergence(self, agent_id, window_id: int, report: ConvergenceReport) -> None: ...
     def on_run_stop(self, reason: str) -> None: ...
 ```
 
@@ -213,19 +217,19 @@ Every seat has its own optimizer, driven by that seat's own scores - the same on
 
 A single optimizer instance cannot be shared between seats (optimizers hold per-run state); passing one with more than one seat raises `ValueError`.
 
-After every *scored* window the seat's optimizer receives the seat's `EvalMetrics` history (last 200) and its suggestion is applied with `agent.set_hyperparams()`; `on_hyperparam_update` fires when anything changed. `optimizer.on_improvement()` is called when the seat's trend is improving and `optimizer.on_plateau()` when the seat converges. Windows that are not scored (no finished episode, no turn, or frozen for self-play) do not step the optimizer.
+After every *scored* window the seat's optimizer receives the seat's `EvalMetrics` history (last 200) and its suggestion is applied with `agent.set_hyperparams()`; `on_hyperparam_update` fires when anything changed. `optimizer.on_improvement()` is called on every `IMPROVING` observation, `optimizer.on_cooling()` once when the seat enters COOLING, and `optimizer.on_plateau()` once when the seat converges. Windows that are not scored (no finished episode, no turn, or frozen for self-play) do not step the optimizer.
 
 A seat's score also moves when the other seats change, so the tuning signal is noisier than in single-agent training.
 
-### Rollback on degradation
+### Collapse detection and rollback
 
-Off by default; `rollback_on_degradation=True` requires `checkpoint_dir`.
+Collapses are **detected and reported for every seat**: `on_degradation(agent_id, window_id, score, rolled_back)` fires when the seat's monitor confirms a collapse. Confirmation means the `COLLAPSING` regime held for `min_consecutive_degradations` consecutive windows, judged against the seat's own peak and noise. Rollback is off by default; `rollback_on_degradation=True` requires `checkpoint_dir`.
 
-- A scored window is **degraded** when the seat's score is below `best - max(|best| * (1 - degradation_threshold), noise floor)`, where the noise floor is the seat's own adaptive floor (so ordinary score noise does not qualify).
-- After `min_consecutive_degradations` degraded windows in a row the degradation is **confirmed**: `on_degradation` fires, and for an on-policy agent the seat's best checkpoint is restored and training continues. Off-policy agents are reported (`rolled_back=False`) but never rolled back - their replay buffer would pull restored weights straight back.
-- Degraded windows do not count toward the plateau counter, and a confirmed degradation resets it, so a collapsed seat is not declared converged at its collapsed level.
-- Windows in which the seat's optimizer is probing never count.
-- **With self-play enabled**, only windows in which at least one *other* seat was played by a pool snapshot count. In a competitive game a score also drops when the opponent improves, which is not a collapse; windows against a frozen opponent are the ones where the opposition did not change. Windows against all-live opponents neither count nor reset the streak.
+- With rollback on, an on-policy seat's best checkpoint is restored and training continues. The monitor forgets the collapsed scores but keeps the peak, and a renewed collapse is rolled back again.
+- Off-policy agents are reported (`rolled_back=False`) but never rolled back: their replay buffer would pull restored weights straight back.
+- A collapsing seat does not count toward convergence, so it is never declared converged at its collapsed level.
+- Windows in which the seat's optimizer is probing never confirm a collapse.
+- **With self-play enabled**, only windows in which at least one *other* seat was played by a pool snapshot can confirm a collapse. In a competitive game a score also drops when the opponent improves, which is not a collapse; windows against a frozen opponent are the ones where the opposition did not change.
 
 Without self-play, use rollback for cooperative games. In a competitive game without a pool it would undo real learning whenever the opponent gets better.
 
