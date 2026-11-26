@@ -24,7 +24,7 @@ from .baseline import ROLE_BASELINE_EVAL
 # thousands, so the windows are short; patience keeps the historical
 # COOLING after 3 / DORMANT after 10 cycles without new ground.
 OBSERVER_CONVERGENCE_DEFAULTS = dict(
-    timescales=(3, 8, 24), cooling_patience=3, dormant_patience=10, persist=2,
+    timescales=(4, 12, 48), cooling_patience=3, dormant_patience=10, persist=2,
 )
 
 
@@ -47,6 +47,12 @@ class DeploymentObserver:
       * an acute drop: a single cycle more than ``acute_k`` noise standard
         deviations below the peak. Each cycle already averages many
         rollouts, so one cycle that far down is strong evidence on its own.
+
+    ``degradation_fired`` is one-shot per episode of trouble: after it fires
+    it re-arms only once the score is back at the peak (PLATEAU or
+    IMPROVING), so a policy that stays down -- or an acute drop that is then
+    confirmed as a collapse -- triggers one research cycle, not one per cycle.
+    ``is_degrading`` reports the ongoing condition on every cycle.
     """
 
     def __init__(
@@ -66,6 +72,7 @@ class DeploymentObserver:
         self._monitor = monitor or ConvergenceMonitor(**OBSERVER_CONVERGENCE_DEFAULTS)
         self._acute_k = float(acute_k)
         self._cycle = 0
+        self._alarm_active = False
 
     @property
     def monitor(self) -> ConvergenceMonitor:
@@ -82,10 +89,15 @@ class DeploymentObserver:
         )
         report = self._monitor.observe(score, at=self._cycle)
         collapsing = report.regime == ConvergenceRegime.COLLAPSING
+        if report.regime in (ConvergenceRegime.PLATEAU, ConvergenceRegime.IMPROVING) and not acute:
+            self._alarm_active = False          # recovered: re-arm
+        fired = (report.collapse_confirmed or acute) and not self._alarm_active
+        if fired:
+            self._alarm_active = True
         return ObservationResult(
             cycle=self._cycle, score=score, state=report.state,
             is_degrading=collapsing or acute,
-            degradation_fired=report.collapse_confirmed or acute,
+            degradation_fired=fired,
             best_score=report.best_score, report=report,
         )
 

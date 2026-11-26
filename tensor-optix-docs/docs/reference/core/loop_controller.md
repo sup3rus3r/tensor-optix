@@ -203,7 +203,7 @@ smooth through degradations without rollback.
 - **History:** scores from the collapsed policy are dropped from the trend history.
 - **Peak and patience:** both are kept, since restoring is not progress.
 - **No early DORMANT:** the run cannot be declared DORMANT until the restored policy's scores can be read.
-- **Renewed collapse:** if the restored policy collapses again, that is detected and rolled back again.
+- **Renewed collapse:** if the restored policy collapses again before it has been back at the peak, the collapse is reported (`on_degradation`) but **not** rolled back a second time. A restore that did not help points at something other than the weights (environment, hyperparameters), and repeating it would loop forever.
 
 ## Convergence actions
 
@@ -213,7 +213,17 @@ Each action runs **once, on entry**:
 - **Entering DORMANT:** `optimizer.on_plateau()`, RND η = 0, `on_dormant` fires, then the DORMANT rule below.
 - **Every `IMPROVING` observation:** `optimizer.on_improvement()` and RND η × 0.9.
 
-A regressed run is **reported** (`on_convergence`, `report.gap_to_peak`, `report.eta_to_peak`) and keeps counting toward DORMANT, because climbing back to the peak is not progress. A collapsing run does not count toward DORMANT, so it is never declared converged at its collapsed level.
+A regressed run is **reported** (`on_convergence`, `report.gap_to_peak`, `report.eta_to_peak`) and keeps counting toward DORMANT, because climbing back to the peak is not progress.
+
+- **While collapsing:** DORMANT is withheld while a collapse is being confirmed or is in progress.
+- **Once the fall is past:** a run that stays down turns into `REGRESSED_STALLED`. Patience keeps running from the last real improvement, so the run is eventually declared DORMANT and stops, and `run()` restores the best weights.
+
+**DORMANT behaviour:**
+
+- **Sticky:** once DORMANT, only new ground or a confirmed collapse leaves it.
+- **Not during warm-up:** DORMANT is never entered while the trends are still in warm-up. During warm-up the evaluation interval does not back off either, so the monitor gets the observations it needs.
+- **Final state:** when the loop stops at DORMANT, `state` and `convergence.state` both read DORMANT.
+- **Running again:** a repeated `run()` starts a new monitor segment and keeps the peak.
 
 ## What happens at DORMANT
 
@@ -248,6 +258,6 @@ A window is a fixed number of steps, not an episode, so the loop keeps track of 
 - **The default evaluators** (`TorchEvaluator` / `TFEvaluator`) use the mean of those returns as `primary_score` and report `metrics["episodes_completed"]`. With a custom `primary_score_fn` the count is not reported and none of the rules below apply.
 - **A window in which no episode finished is not an evaluation.** The agent still learns from it, but there is no checkpoint decision, no monitor observation and no hyperparameter step; `on_episode_end` fires with `eval_metrics=None`.
 - **Before the first episode ever finishes** there is nothing better to score with, so windows are scored by mean per-step reward. When the first episode finishes the scale changes from per-step reward to episode return, so the best score, the monitor (`reset_scale()`) and the metrics history are reset at that point - otherwise a per-step best such as `-1.0` could never be beaten by a return such as `-200`.
-- **`min_completed_episodes_before_dormant`** (default `10`): DORMANT is deferred (`monitor.defer_dormant()`) until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to `0`.
+- **`min_completed_episodes_before_dormant`** (default `10`): DORMANT is held (`monitor.hold_dormant()`: neither entered nor reported) until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to `0`.
 
 With a validation pipeline the same rules are applied to the validation windows (`val_episodes_completed`), since the validation score is what drives the loop.

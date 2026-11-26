@@ -61,12 +61,16 @@ class AsyncCallbackAdapter(LoopCallback):
             except queue.Empty:
                 continue
             try:
-                getattr(self._inner, event)(*args)
+                fn = getattr(self._inner, event, None)
+                if fn is not None:
+                    fn(*args)
             except Exception as e:
                 logger.warning(
                     "AsyncCallbackAdapter: inner callback %s raised during %s: %s",
                     self._inner, event, e,
                 )
+            finally:
+                self._queue.task_done()
 
     def _enqueue(self, event: str, *args) -> None:
         try:
@@ -77,6 +81,7 @@ class AsyncCallbackAdapter(LoopCallback):
         # Drop the oldest pending event to make room for this one.
         try:
             self._queue.get_nowait()
+            self._queue.task_done()
             with self._lock:
                 self._dropped_count += 1
         except queue.Empty:
@@ -110,6 +115,19 @@ class AsyncCallbackAdapter(LoopCallback):
 
     def on_convergence(self, episode_id, report) -> None:
         self._enqueue("on_convergence", episode_id, report)
+
+    def consume_dormant_resume(self) -> bool:
+        """
+        Synchronous pass-through: the loop needs the answer immediately after
+        on_dormant, so a wrapped PolicyManagerCallback can still resume it.
+        on_dormant is delivered first so the inner callback has decided.
+        """
+        fn = getattr(self._inner, "consume_dormant_resume", None)
+        if not callable(fn):
+            return False
+        if not self._stop.is_set():
+            self._queue.join()      # wait until on_dormant has run on the worker
+        return bool(fn())
 
     def on_hyperparam_update(self, old_params, new_params) -> None:
         self._enqueue("on_hyperparam_update", old_params, new_params)

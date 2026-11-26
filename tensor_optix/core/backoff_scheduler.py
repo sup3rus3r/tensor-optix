@@ -346,7 +346,8 @@ class BackoffScheduler:
 
     def check_degradation(self, score: float) -> bool:
         """
-        Threshold-based degradation check called by loop_controller.
+        Threshold-based degradation check (standalone use; loops use
+        ConvergenceMonitor's collapse detection).
 
         Returns True when `score` has dropped significantly below the best
         known score (by more than (1 - degradation_threshold) × |best|).

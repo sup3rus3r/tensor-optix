@@ -60,8 +60,8 @@ history = model.fit(
 )
 print(history.val_metrics[-1].metrics)  # {'accuracy': 0.94, 'f1_macro': 0.93, ...}
 
-# or let tensor-optix decide when to stop:
-history = model.fit((X_train, y_train), (X_val, y_val), epochs=None)
+# or give no epochs and let tensor-optix decide when to stop:
+history = model.fit((X_train, y_train), (X_val, y_val))
 print(history.stop_reason)               # "converged"
 ```
 

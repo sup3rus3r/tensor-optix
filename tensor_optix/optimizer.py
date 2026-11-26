@@ -110,6 +110,14 @@ class RLOptimizer:
     ):
         if agent is None and agent_factory is None:
             raise ValueError("Either agent or agent_factory must be provided.")
+        if cv_threshold is not None or gap_threshold is not None:
+            import warnings
+            warnings.warn(
+                "cv_threshold / gap_threshold are deprecated and have no effect: "
+                "convergence is judged by ConvergenceMonitor.",
+                DeprecationWarning, stacklevel=2,
+            )
+            cv_threshold = gap_threshold = None
         if pipeline is None and pipeline_factory is None:
             raise ValueError("Either pipeline or pipeline_factory must be provided.")
 

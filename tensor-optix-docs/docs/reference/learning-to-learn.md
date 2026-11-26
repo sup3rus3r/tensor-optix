@@ -420,10 +420,12 @@ class DeploymentObserver:
                  monitor: Optional[ConvergenceMonitor] = None, acute_k: float = 4.0):
         """Wraps ConvergenceMonitor (reused as-is, store-free, numpy-only --
         not reimplemented) with a per-re-evaluation-cycle calling
-        convention instead of per-episode. Defaults: timescales (3, 8, 24)
+        convention instead of per-episode. Defaults: timescales (4, 12, 48)
         cycles, COOLING after 3 / DORMANT after 10 cycles without new
         ground. Degradation fires on a confirmed collapse, or on an acute
-        drop: one cycle more than acute_k noise SDs below the peak."""
+        drop: one cycle more than acute_k noise SDs below the peak. It is
+        one-shot: degradation_fired re-arms only once the score is back at
+        the peak, while is_degrading reports the ongoing condition."""
 
     def observe(self, score: float) -> ObservationResult: ...
     def score_history(self, *, limit: int = 100) -> List[float]: ...

@@ -28,7 +28,13 @@ ACTIVE → COOLING → DORMANT → (watchdog shutdown | policy spawn)
 
 - **ACTIVE** - the run made new ground within the cooling patience, or it's early in training.
 - **COOLING** - no new ground for `plateau_threshold` episodes (default 32). The optimizer is told to widen its search now, while there is still time for that to help. Only windows in which at least one episode finished are scored.
-- **DORMANT** - no new ground for `dormant_threshold` episodes (default 160). DORMANT is withheld in three cases: while a slow rise is still significant on the long timescale, while the score is collapsing, and until `min_completed_episodes_before_dormant` (default 10) episodes have finished. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
+- **DORMANT** - no new ground for `dormant_threshold` episodes (default 160). DORMANT is withheld in four cases:
+  - during warm-up;
+  - while a material slow rise is still significant on the longest readable timescale;
+  - while the score is collapsing;
+  - until `min_completed_episodes_before_dormant` (default 10) episodes have finished.
+
+  Once entered, only new ground or a confirmed collapse ends it. By default the loop stops here and restores the best checkpoint. With a `PolicyManagerCallback` attached, `DORMANT` instead triggers a spawn/prune/stop decision.
 
 All three are decided by the [`ConvergenceMonitor`](../reference/core/convergence.md):
 

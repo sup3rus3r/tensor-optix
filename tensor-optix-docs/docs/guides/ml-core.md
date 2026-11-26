@@ -95,14 +95,21 @@ history = model.fit(
 
 ## Training until convergence
 
-`fit()` acts on the same [`ConvergenceMonitor`](../reference/core/convergence.md) the RL loop uses, observing the validation `primary_score` once per epoch. Pass `epochs=None` to let tensor-optix decide when to stop:
+`fit()` acts on the same [`ConvergenceMonitor`](../reference/core/convergence.md) the RL loop uses. **When no `epochs` is given (the default), tensor-optix decides when to stop**: it trains until the monitor judges the run converged. The monitor reads:
+
+- the validation `primary_score` once per epoch, when `val_data` is given;
+- otherwise the training loss.
 
 ```python
-history = model.fit((X_train, y_train), (X_val, y_val), epochs=None)
+history = model.fit((X_train, y_train), (X_val, y_val))   # no epochs: train until converged
 print(history.stop_reason)      # "converged"
 print(history.epochs_run, history.best_epoch)
 print(history.convergence[-1])  # the final ConvergenceReport
+
+model.fit((X_train, y_train), (X_val, y_val), epochs=50)  # fixed budget: exactly 50 epochs
 ```
+
+`epochs=N` keeps the classic behaviour: exactly N epochs, never cut short by convergence. Pass `stop_on_convergence=True` to also allow an early stop within the budget.
 
 A run stops at whichever of these comes first:
 
@@ -111,9 +118,9 @@ A run stops at whichever of these comes first:
 | `epochs` | the fixed budget is used up (when given) | `"epochs"` |
 | `max_epochs` | an optional cap, off by default | `"max_epochs"` |
 | `early_stopping_patience` | that many epochs without a new best (when given) | `"early_stopping"` |
-| convergence | the monitor reaches DORMANT: no new ground for 20 epochs and no slow rise still in progress (needs `val_data`; turn it off with `stop_on_convergence=False`) | `"converged"` |
+| convergence | the monitor reaches DORMANT: no new ground for 20 epochs and no material slow rise still in progress. On by default only when `epochs` is not given; `stop_on_convergence=True/False` overrides that. | `"converged"` |
 
-The best checkpoint is restored before `fit()` returns, however the run ended. `epochs=None` requires `val_data` or a `max_epochs` cap.
+With `checkpoint_dir` set, the best checkpoint is restored before `fit()` returns, however the run ended (also when an exception is raised). Without `checkpoint_dir` nothing is persisted, so the final weights are returned. `epochs=None` with `stop_on_convergence=False` needs `early_stopping_patience` or `max_epochs`, or it would never stop.
 
 Callbacks:
 
@@ -123,13 +130,20 @@ Callbacks:
 - `on_dormant(epoch)`: once, on entering DORMANT.
 - `on_convergence(epoch, report)`: on every regime or state change.
 
-ML defaults (`tensor_optix.ml_core.trainer.ML_CONVERGENCE_DEFAULTS`): timescales of 3 / 8 / 24 epochs, COOLING after 5 epochs without new ground, DORMANT after 20, persistence 2. Pass your own monitor to change them:
+ML defaults (`tensor_optix.ml_core.trainer.ML_CONVERGENCE_DEFAULTS`):
+
+- **Timescales:** 4 / 12 / 48 epochs.
+- **Patience:** COOLING after 5 epochs without new ground, DORMANT after 20.
+- **Persistence:** 2 epochs.
+- **Minimum gain** (`rel_delta=1e-4`): gains smaller than 0.01 % of the peak (or of how far the run has come) are not new ground. A smooth, deterministic validation loss therefore converges instead of creeping forever.
+
+Pass your own monitor to change them. A monitor can be reused across `fit()` calls; each call starts a new segment and keeps the peak.
 
 ```python
 from tensor_optix import ConvergenceMonitor
-model.fit(train, val, epochs=None,
-          convergence=ConvergenceMonitor(timescales=(3, 8, 24), cooling_patience=5,
-                                         dormant_patience=40, min_delta=1e-3))
+model.fit(train, val,
+          convergence=ConvergenceMonitor(timescales=(4, 12, 48), cooling_patience=5,
+                                         dormant_patience=40, rel_delta=1e-3))
 ```
 
 With `epochs=None`, a fixed-length schedule such as `CosineAnnealingLR(epochs=50)` reaches its final learning rate at its own `epochs` and stays there. A warning says so.

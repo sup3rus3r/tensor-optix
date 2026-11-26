@@ -148,7 +148,8 @@ def test_every_window_is_observed_but_suggest_follows_the_backoff(tmp_path):
     # 1 cold-start + 119 main windows observed
     assert controller.monitor.n_observations == 120
     # suggest only on evaluation-due windows: far fewer than one per window
-    assert 0 < opt.suggests < 40
+    # (the interval does not back off during the 32-observation warm-up)
+    assert 0 < opt.suggests < 60
 
 
 def test_regime_changes_reach_on_convergence(tmp_path):
@@ -204,6 +205,38 @@ def test_custom_monitor_is_used_and_attached(tmp_path):
     mon.observe(1.0, at=0)
     sched.record_restart()            # legacy reset path reaches the monitor
     assert mon.state == LoopState.ACTIVE and mon.n_observations == 1
+
+
+def test_converged_run_reports_dormant_at_the_end(tmp_path):
+    controller, _, _, rec = _controller(tmp_path, [5.0] * 200)
+    controller.run()
+    assert rec.dormant
+    assert controller.state == LoopState.DORMANT
+    assert controller.convergence.state == LoopState.DORMANT
+
+
+def test_restore_that_never_recovers_is_not_repeated_forever(tmp_path):
+    # the script does not depend on the weights, so a restore cannot fix the
+    # collapse: one rollback, then the collapse is only reported
+    script = [float(i) for i in range(40)] + [0.0] * 400
+    controller, agent, _, rec = _controller(tmp_path, script, rollback_on_degradation=True)
+    controller.run()
+    assert len(rec.degradation) >= 2
+    assert agent.loads == 2          # one mid-run rollback + the final restore in run()
+    assert rec.dormant               # and the run does end
+
+
+def test_run_can_be_called_twice(tmp_path):
+    controller, _, _, _ = _controller(tmp_path, [5.0] * 60, max_episodes=20)
+    controller.run()
+    controller._pipeline.i = 0
+    controller.run()                 # positions restart at 0: must not raise
+
+
+def test_cold_start_report_reaches_on_convergence(tmp_path):
+    controller, _, _, rec = _controller(tmp_path, [5.0] * 10, max_episodes=3)
+    controller.run()
+    assert rec.reports and rec.reports[0][0] == 0
 
 
 def test_cv_and_gap_thresholds_are_deprecated(tmp_path):

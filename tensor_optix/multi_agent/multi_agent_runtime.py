@@ -35,7 +35,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Hashable, List, Optional
 
-from tensor_optix.core.convergence import ConvergenceMonitor, ConvergenceReport
+from tensor_optix.core.convergence import ConvergenceMonitor, ConvergenceRegime, ConvergenceReport
 from tensor_optix.core.base_optimizer import BaseOptimizer
 from tensor_optix.core.checkpoint_registry import CheckpointRegistry
 from tensor_optix.core.types import EvalMetrics, HyperparamSet, LoopState, PolicySnapshot
@@ -119,6 +119,7 @@ class _Seat:
         self.completed_episodes = 0
         self.reports_episodes = False
         self.scored_before_first_episode = False
+        self.restored_unrecovered = False   # rolled back, not yet back at the peak
 
 
 class MultiAgentRunner:
@@ -363,6 +364,11 @@ class MultiAgentRunner:
 
     def run(self, max_windows: Optional[int] = None) -> MultiAgentRunResult:
         self._stop_requested = False
+        for seat in self._seats.values():
+            if seat.monitor.n_observations:
+                # A repeated run(): positions restart, so each seat's monitor
+                # starts a new segment (its peak to beat is kept).
+                seat.monitor.restart(at=float(seat.windows_scored))
         self._pipeline.setup()
         self._fire("on_run_start")
         windows_run = 0
@@ -511,9 +517,18 @@ class MultiAgentRunner:
             # may simply be the opponent improving, so it cannot confirm a
             # collapse of this seat.
             probing = True
-        report = seat.monitor.observe(score, at=window_id, probing=probing)
+        # Too few finished episodes to call the seat converged yet: DORMANT
+        # is held (neither entered nor reported) until there are.
+        seat.monitor.hold_dormant(
+            seat.reports_episodes and seat.completed_episodes < self._min_completed_episodes
+        )
+        # Positions are the seat's own scored windows, so patience means the
+        # same amount of evidence for a seat that only plays now and then.
+        report = seat.monitor.observe(score, at=float(seat.windows_scored), probing=probing)
         if report.regime_changed or report.entered_cooling or report.entered_dormant:
             self._fire("on_convergence", seat.agent_id, window_id, report)
+        if report.regime in (ConvergenceRegime.PLATEAU, ConvergenceRegime.IMPROVING):
+            seat.restored_unrecovered = False
 
         if report.improved:
             seat.converged = False
@@ -527,10 +542,6 @@ class MultiAgentRunner:
                 seat.optimizer.on_cooling(seat.metrics_history)
             self._fire("on_plateau", seat.agent_id, window_id)
         if report.entered_dormant:
-            if seat.reports_episodes and seat.completed_episodes < self._min_completed_episodes:
-                # Too few finished episodes to call the seat converged yet.
-                seat.monitor.defer_dormant()
-                return
             if not seat.converged:
                 seat.converged = True
                 logger.info("MultiAgentRunner: seat %r converged at window %d", seat.agent_id, window_id)
@@ -545,15 +556,24 @@ class MultiAgentRunner:
         seat.degradations += 1
         seat.converged = False
         rolled_back = False
-        if (
+        can_roll_back = (
             self._rollback_on_degradation
             and getattr(seat.agent, "is_on_policy", True)
             and seat.registry is not None
             and seat.best_snapshot is not None
-        ):
+        )
+        if can_roll_back and seat.restored_unrecovered:
+            # The last restore never got back to the peak, so the collapse is
+            # not caused by the weights; restoring again would loop forever.
+            logger.info(
+                "MultiAgentRunner: seat %r collapsed again after an unrecovered restore — "
+                "not rolling back a second time (window %d)", seat.agent_id, window_id,
+            )
+        elif can_roll_back:
             seat.registry.load_best(seat.agent)
             discard_rollout(seat.agent)
-            seat.monitor.note_restored(at=window_id)
+            seat.monitor.note_restored(at=float(seat.windows_scored))
+            seat.restored_unrecovered = True
             seat.rollbacks += 1
             rolled_back = True
             logger.info(

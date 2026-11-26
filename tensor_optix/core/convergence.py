@@ -61,14 +61,6 @@ class ScaleReading:
     slope: float        # OLS slope, score change per unit of `at`
     slope_se: float     # standard error of that slope
 
-    @property
-    def rising(self) -> bool:
-        return self.slope > 2.0 * self.slope_se
-
-    @property
-    def falling(self) -> bool:
-        return self.slope < -2.0 * self.slope_se
-
 
 @dataclass(frozen=True)
 class ConvergenceReport:
@@ -87,7 +79,9 @@ class ConvergenceReport:
     gap_to_peak: float = 0.0               # (peak - short level) / sigma; > 0 means below
     since_improvement: float = 0.0         # units of `at` since the last IMPROVING
     below_peak_for: float = 0.0            # units of `at` spent in REGRESSED_* / COLLAPSING
-    eta_to_peak: Optional[float] = None    # units of `at` to climb back at the current slope
+    eta_to_peak: Optional[float] = None    # REGRESSED_CLIMBING: units of `at` to climb back at the
+                                           # current slope; inf when below the peak but not
+                                           # climbing; None when not below the peak
     improved: bool = False                 # IMPROVING reported on this observation
     peak_raised: bool = False
     regime_changed: bool = False
@@ -142,6 +136,41 @@ def _remove_slope_changes(d: np.ndarray, depth: int = 2, z: float = 3.5) -> np.n
     ])
 
 
+def _t_quantile(z: float, df: float) -> float:
+    """
+    Student-t quantile matching the one-sided level of normal quantile ``z``
+    (Hill's / Cornish-Fisher expansion; accurate to ~1% for df >= 1, and no
+    scipy dependency).
+    """
+    df = max(float(df), 1.0)
+    z3, z5 = z ** 3, z ** 5
+    return z + (z3 + z) / (4 * df) + (5 * z5 + 16 * z3 + 3 * z) / (96 * df * df)
+
+
+def _hampel(y: np.ndarray, sig: float, k: float = 3.0) -> np.ndarray:
+    """
+    Clip each point to (running median of 5) +- k*sigma before levels and
+    slopes are taken. The noise estimate is a robust (MAD) scale, so the means
+    it is compared with must be robust too: otherwise one spike or a heavy
+    tail moves a short mean by several of its standard errors. The two newest
+    points have no future neighbours; their reference is the trailing median
+    advanced by the median recent step, so a steady trend is not clipped.
+    """
+    n = len(y)
+    if n < 5 or sig <= 0:
+        return y
+    pad = np.concatenate([y[:2][::-1], y, y[-2:][::-1]])
+    med = np.median(np.lib.stride_tricks.sliding_window_view(pad, 5), axis=1)
+    tail = y[-5:]
+    step = float(np.median(np.diff(tail)))
+    centre = float(np.median(tail))          # sits at y[-3] for a monotone tail
+    med[-2] = centre + step
+    med[-1] = centre + 2.0 * step
+    bound = k * sig + abs(step)
+    return np.clip(y, med - bound, med + bound)
+
+
+
 class ConvergenceMonitor:
     """
     Multi-timescale convergence detector with a global peak reference.
@@ -151,9 +180,13 @@ class ConvergenceMonitor:
                      The first ``medium`` observations are warm-up.
         cooling_patience: units of ``at`` without IMPROVING before COOLING.
         dormant_patience: units of ``at`` without IMPROVING before DORMANT.
-                     DORMANT is withheld while the long-scale slope is still
-                     significantly rising (a slow learner is not converged)
-                     and while the curve is COLLAPSING.
+                     DORMANT is never entered during warm-up, and is
+                     withheld while the longest readable trend is still
+                     significantly and materially rising (a slow learner is
+                     not converged), while a collapse is pending or in
+                     progress, and while hold_dormant(True) is in effect.
+                     Once entered it is sticky: only IMPROVING or a
+                     confirmed COLLAPSING ends it.
         z:           significance, in standard errors, for every trend and
                      level comparison.
         persist:     consecutive observations a new regime must hold before
@@ -161,6 +194,14 @@ class ConvergenceMonitor:
                      false alarms). IMPROVING during warm-up is immediate.
         min_delta:   smallest absolute gain over the peak that counts as new
                      ground, on top of the statistical test. 0 by default.
+        rel_delta:   the same, relative to |peak| (e.g. 1e-4 = 0.01 %). Keeps a
+                     deterministic, ever-so-slowly improving metric (a smooth
+                     validation loss) from counting as progress forever.
+        outlier_k:   levels and slopes are computed on scores clipped to
+                     (running median of 5) +- outlier_k noise SDs (a Hampel
+                     filter; best_score still sees raw values), so one spike or
+                     a heavy-tailed noise draw cannot set the peak or confirm a
+                     collapse.
         min_at_before_dormant: DORMANT is never entered before this position.
         autocorrelation: correct standard errors for lag-1 autocorrelated
                      noise (on-policy RL scores usually are).
@@ -176,11 +217,14 @@ class ConvergenceMonitor:
         min_delta: float = 0.0,
         min_at_before_dormant: float = 0,
         autocorrelation: bool = True,
+        rel_delta: float = 0.0,
+        outlier_k: float = 3.0,
     ):
         short, medium, long_ = (int(t) for t in timescales)
-        if not (3 <= short <= medium <= long_):
+        if not (3 <= short <= medium <= long_) or long_ < 8:
             raise ValueError(
-                f"timescales must satisfy 3 <= short <= medium <= long, got {timescales}"
+                "timescales must satisfy 3 <= short <= medium <= long and long >= 8 "
+                f"(the noise estimate needs that much history), got {timescales}"
             )
         if dormant_patience < cooling_patience:
             raise ValueError("dormant_patience must be >= cooling_patience")
@@ -190,8 +234,11 @@ class ConvergenceMonitor:
         self.z = float(z)
         self.persist = max(1, int(persist))
         self.min_delta = float(min_delta)
+        self.rel_delta = float(rel_delta)
+        self.outlier_k = float(outlier_k)
         self.min_at_before_dormant = float(min_at_before_dormant)
         self.autocorrelation = bool(autocorrelation)
+        self._dormant_hold = False
         self._full_reset()
 
     # ------------------------------------------------------------------
@@ -205,7 +252,15 @@ class ConvergenceMonitor:
         self._peak: Optional[float] = None
         self._peak_at: Optional[float] = None
         self._best_score: Optional[float] = None
+        self._worst: Optional[float] = None
         self._sigma_memory: Optional[float] = None
+        self._rho_memory: Optional[float] = None
+        # Lag-1 difference correlation pooled over the whole run (EWMA): a
+        # single window's estimate is too noisy to set every SE from.
+        self._rd_pool: Optional[float] = None
+        self._rd_n = 0
+        self._yc: Optional[np.ndarray] = None   # Hampel-clipped window values
+        self._first_warmup = True          # only the run's very first warm-up
         self._clear_segment()
         self._state = LoopState.ACTIVE
         self._last_improving_at: Optional[float] = None
@@ -215,12 +270,12 @@ class ConvergenceMonitor:
         """Forget the trend history but keep the peak (restart / restore)."""
         self._at.clear()
         self._y.clear()
+        self._yc = None
         self._anchor: Optional[float] = None
         self._regime = ConvergenceRegime.WARMUP
         self._pending: Optional[ConvergenceRegime] = None
         self._pending_n = 0
         self._below_since: Optional[float] = None
-        self._warm = True
         self._restored = False             # segment started by a rollback
         self._since_improving_obs = 0      # observations since the last IMPROVING
         self._improving_streak = 0         # consecutive IMPROVING observations
@@ -241,9 +296,9 @@ class ConvergenceMonitor:
         The peak is kept, so the variant must still beat the best level the run
         has reached; trend history and patience start afresh.
         """
-        if self._y:
-            self._sigma_memory = self._sigma_rho()[0]
+        self._remember_sigma()
         self._clear_segment()
+        self._first_warmup = False
         self._state = LoopState.ACTIVE
         self._last_improving_at = at
 
@@ -253,21 +308,36 @@ class ConvergenceMonitor:
         restore describe a different policy, so trend history is cleared; the
         peak and patience clock are kept, since restoring is not progress.
         """
-        if self._y:
-            self._sigma_memory = self._sigma_rho()[0]
+        self._remember_sigma()
         last_improving = self._last_improving_at
         state = self._state
         self._clear_segment()
-        self._warm = False
+        self._first_warmup = False
         self._restored = True
         self._state = state if state != LoopState.DORMANT else LoopState.COOLING
         self._last_improving_at = last_improving
 
+    def _remember_sigma(self) -> None:
+        # Only a real estimate (>= 5 observations) is carried into the next
+        # segment; a 0.0 placeholder would bypass the "no noise yet" guards.
+        if len(self._y) >= 5:
+            self._sigma_memory, self._rho_memory = self._sigma_rho()
+
+    def hold_dormant(self, hold: bool) -> None:
+        """
+        While held, the state stops at COOLING: DORMANT is neither entered nor
+        reported (e.g. the owning loop has seen too few finished episodes to
+        judge). Releasing the hold lets DORMANT be entered on the next
+        observation if patience has run out.
+        """
+        self._dormant_hold = bool(hold)
+        if self._dormant_hold and self._state == LoopState.DORMANT:
+            self._state = LoopState.COOLING
+
     def defer_dormant(self) -> None:
         """
-        The owning loop refuses DORMANT for now (e.g. too few finished
-        episodes to judge). Step back to COOLING so DORMANT can be entered --
-        and reported -- again on a later observation.
+        One-off version of hold_dormant: step back from DORMANT to COOLING so
+        DORMANT can be entered -- and reported -- again later.
         """
         if self._state == LoopState.DORMANT:
             self._state = LoopState.COOLING
@@ -304,11 +374,20 @@ class ConvergenceMonitor:
     # Statistics
     # ------------------------------------------------------------------
 
-    def _sigma_rho(self) -> Tuple[float, float]:
+    def _sigma_rho(self, update: bool = False) -> Tuple[float, float]:
         y = np.asarray(self._y, dtype=np.float64)
+        if self._sigma_memory is not None and len(y) < self.timescales[1]:
+            # A segment after restart() / note_restored(): a few points give a
+            # poor, autocorrelation-free estimate, so the remembered (sigma,
+            # rho) of the previous segment is used until the medium window is
+            # full. (Without this an AR(1) run is judged with SEs ~3x too
+            # small right after a rollback, and "collapses" again.)
+            rho = self._rho_memory or 0.0
+            if self._rd_pool is not None and self.autocorrelation:
+                rho = float(np.clip(1.0 + 2.0 * self._rd_pool, 0.0, 0.95))
+            return self._sigma_memory, rho
         if len(y) < 5:
-            sig = self._sigma_memory if self._sigma_memory is not None else 0.0
-            return sig, 0.0
+            return 0.0, 0.0
         d = np.diff(y)
         # Differences centred on their local mean: a change of slope (a rise
         # flattening into a plateau) would otherwise widen their spread and
@@ -316,13 +395,17 @@ class ConvergenceMonitor:
         dc = _remove_slope_changes(d)
         mad = float(np.median(np.abs(dc - np.median(dc))))
         sig = 1.4826 * mad / math.sqrt(2.0)
+        # Mostly-identical differences (flat or piecewise-constant scores):
+        # their lag-1 correlation is ~0, which the AR(1) formula would read as
+        # rho ~ 1 and inflate every SE several-fold. No autocorrelation there.
+        degenerate = mad == 0.0
         if sig == 0.0:
             # Discrete-valued or piecewise-constant scores can have a zero MAD
             # while still varying; fall back to the mean absolute deviation
             # (still robust to a single step change, unlike the std).
             sig = 1.2533 * float(np.mean(np.abs(dc - np.median(dc)))) / math.sqrt(2.0)
         rho = 0.0
-        if self.autocorrelation and len(y) >= self.timescales[1]:
+        if self.autocorrelation and not degenerate:
             # Lag-1 autocorrelation from the differences: for AR(1) noise
             # corr(d_t, d_t-1) = -(1 - rho) / 2. Differences are blind to a
             # linear trend; a change of slope shows up as a step in the mean
@@ -330,17 +413,35 @@ class ConvergenceMonitor:
             # removed before the correlation is taken. (Plain
             # residuals around one fitted line would read a rise followed by
             # a plateau as strongly autocorrelated noise.)
+            # One window's estimate is noisy (p10-p90 0.41-0.81 at 127
+            # differences for a true 0.6), so it is pooled over the run with
+            # an EWMA, and never taken from fewer than 32 differences.
             denom = float((dc * dc).sum())
-            if denom > 0:
+            if update and denom > 0 and len(d) >= max(32, self.timescales[1] - 1):
+                r_d = float((dc[1:] * dc[:-1]).sum() / denom)
+                self._rd_n += 1
+                a = max(1.0 / 128.0, 1.0 / self._rd_n)
+                self._rd_pool = r_d if self._rd_pool is None else (1 - a) * self._rd_pool + a * r_d
+            if self._rd_pool is not None:
+                rho = float(np.clip(1.0 + 2.0 * self._rd_pool, 0.0, 0.95))
+            elif denom > 0 and len(d) >= 12:
+                # Before the pool exists (first warm-up): a provisional
+                # single-window estimate. It is noisy and, being clipped at 0,
+                # biased upward -- i.e. conservative (wider SEs), which is the
+                # safe side while there is little history.
                 r_d = float((dc[1:] * dc[:-1]).sum() / denom)
                 rho = float(np.clip(1.0 + 2.0 * r_d, 0.0, 0.95))
             # Differencing shrinks AR(1) noise by sqrt(1 - rho).
             sig = sig / math.sqrt(max(1e-6, 1.0 - rho))
-        scale = max(abs(float(np.mean(y))), 1.0)
-        return max(sig, 1e-12 * scale), rho
+        # Relative floor: a deterministic curve has (numerically) zero noise,
+        # which would make every 1e-15 change "significant".
+        scale = float(np.median(np.abs(y)))
+        floor = 1e-9 * scale if scale > 0 else 1e-12
+        return max(sig, floor), rho
 
     def _reading(self, k: int, sig: float, infl: float) -> ScaleReading:
-        y = np.asarray(self._y, dtype=np.float64)[-k:]
+        src = self._yc if self._yc is not None and len(self._yc) == len(self._y) else self._y
+        y = np.asarray(src, dtype=np.float64)[-k:]
         t = np.asarray(self._at, dtype=np.float64)[-k:]
         tc = t - t.mean()
         sxx = float((tc * tc).sum())
@@ -380,18 +481,27 @@ class ConvergenceMonitor:
         if self._at and at < self._at[-1]:
             raise ValueError(f"`at` must not decrease ({at} after {self._at[-1]})")
 
-        self._at.append(at)
-        self._y.append(score)
-        self._n_total += 1
         if self._best_score is None or score > self._best_score:
             self._best_score = score
+        stored = score
+        self._at.append(at)
+        self._y.append(stored)
+        self._n_total += 1
+
         if self._last_improving_at is None:
             self._last_improving_at = at
 
         prev_regime = self._regime
         prev_state = self._state
-        sig, rho = self._sigma_rho()
+        sig, rho = self._sigma_rho(update=True)
         infl = math.sqrt((1.0 + rho) / (1.0 - rho)) if rho > 0 else 1.0
+        self._yc = (
+            _hampel(np.asarray(self._y, dtype=np.float64), sig, self.outlier_k)
+            if self.outlier_k > 0 else None
+        )
+        low = float(self._yc[-1]) if self._yc is not None and len(self._yc) else stored
+        if self._worst is None or low < self._worst:
+            self._worst = low
         short, medium, long_ = self.timescales
         n = len(self._y)
 
@@ -401,7 +511,7 @@ class ConvergenceMonitor:
                 scales[name] = self._reading(k, sig, infl)
 
         peak_raised = False
-        early = (self._warm and self._n_total < medium) or n < short
+        early = (self._first_warmup and self._n_total < medium) or n < short
         if self._n_total == 1:
             # The very first score is the baseline: new ground by definition.
             self._anchor = score
@@ -411,8 +521,10 @@ class ConvergenceMonitor:
         elif early:
             raw = self._early_regime(sig, infl)
             if probing and raw == ConvergenceRegime.COLLAPSING:
-                raw = ConvergenceRegime.WARMUP
-            if raw == ConvergenceRegime.COLLAPSING:
+                # A probe's drop is self-inflicted: it neither confirms nor
+                # cancels a collapse that is being confirmed.
+                regime = prev_regime
+            elif raw == ConvergenceRegime.COLLAPSING:
                 regime = self._persisted(raw, prev_regime)
             else:
                 regime = raw
@@ -420,21 +532,29 @@ class ConvergenceMonitor:
             if regime == ConvergenceRegime.IMPROVING:
                 peak_raised = self._raise_peak(self._anchor, at)
         else:
-            if self._warm:
-                self._warm = False
-                if "medium" in scales and not self._restored:
-                    # End of the first warm-up. The warm-up peak came from
-                    # 4-point means and is provisional; replace it with the
-                    # medium-scale estimate.
+            if self._first_warmup:
+                self._first_warmup = False
+                if "medium" in scales:
+                    # End of the run's first warm-up. The warm-up peak came
+                    # from 4-point means and is provisional: deflate it by its
+                    # own uncertainty and keep the larger of that and the
+                    # medium-scale estimate (a run that already fell during
+                    # warm-up must not forget how high it had been).
                     med = scales["medium"]
+                    warm_peak = self._peak
                     self._peak = None
                     self._raise_peak(med.level - med.level_se, at)
+                    if warm_peak is not None:
+                        # 4-point mean SE = sig/2; it was selected for being
+                        # high, so deflate by z of them (2 SE), not 1.
+                        self._raise_peak(warm_peak - self.z * sig * infl, at)
             raw = self._training_regime(scales, sig, infl, n)
             if probing and raw == ConvergenceRegime.COLLAPSING:
-                raw = prev_regime if prev_regime not in (
-                    ConvergenceRegime.WARMUP, ConvergenceRegime.COLLAPSING,
-                ) else ConvergenceRegime.PLATEAU
-            regime = self._persisted(raw, prev_regime)
+                # A probe's drop is self-inflicted: it neither confirms nor
+                # cancels a collapse that is being confirmed.
+                regime = prev_regime if prev_regime != ConvergenceRegime.WARMUP else ConvergenceRegime.PLATEAU
+            else:
+                regime = self._persisted(raw, prev_regime)
             m = scales.get("medium") or self._reading(n, sig, infl)
             candidate = m.level - m.level_se
             if regime == ConvergenceRegime.IMPROVING:
@@ -482,9 +602,9 @@ class ConvergenceMonitor:
                         # and keeps the fast-tracked top.)
                         base = self._provisional_base
                         settled = self._settle_max if base is None else max(base, self._settle_max)
+                        peak_raised = self._peak is None or settled > self._peak
                         self._peak = settled
                         self._peak_at = at
-                        peak_raised = True
                         self._provisional_base = None
                         self._settle_max = None
             elif regime != ConvergenceRegime.PLATEAU:
@@ -521,7 +641,7 @@ class ConvergenceMonitor:
             self._below_since = None
 
         since = at - self._last_improving_at
-        self._state = self._next_state(since, regime, scales, at)
+        self._state = self._next_state(since, regime, scales, at, prev_state)
 
         level_s = scales["short"].level if "short" in scales else float(np.mean(self._y))
         gap = 0.0
@@ -574,14 +694,20 @@ class ConvergenceMonitor:
         y = list(self._y)
         k = min(4, len(y))
         m = float(np.mean(y[-k:]))
-        first_warmup = self._warm and not self._restored and self._n_total < self.timescales[1]
+        first_warmup = self._first_warmup
         if self._anchor is None:
             self._anchor = m
             if first_warmup:
                 return ConvergenceRegime.WARMUP
-        if self._n_total < 5 and self._sigma_memory is None and len(y) < 5:
-            return ConvergenceRegime.WARMUP
-        margin = max(self.z * sig * infl * math.sqrt(2.0 / k), self.min_delta)
+        if len(y) < 5 and self._sigma_memory is None:
+            return ConvergenceRegime.WARMUP     # no noise estimate yet
+        # The noise estimate here comes from very few differences via MAD
+        # (~37 % efficient), so the normal z is replaced by the Student-t
+        # quantile at the matching level, df = 0.37 * (n - 2).
+        # (After a restart / restore the remembered estimate is used instead,
+        # so the normal z applies there.)
+        z = _t_quantile(self.z, 0.37 * (len(y) - 2)) if first_warmup else self.z
+        margin = max(z * sig * infl * math.sqrt(2.0 / k), self._min_gain())
         ref_up = self._anchor if first_warmup else (
             self._peak if self._peak is not None else self._anchor
         )
@@ -589,7 +715,10 @@ class ConvergenceMonitor:
             self._anchor = m
             return ConvergenceRegime.IMPROVING
         ref_down = self._peak if self._peak is not None else self._anchor
-        if len(y) >= 2 or not first_warmup:
+        # In the run's first warm-up there is no earlier noise estimate to
+        # lean on; a collapse needs at least 8 points (fewer give a noise
+        # scale too unreliable to call one -- and autocorrelation is unknown).
+        if (not first_warmup and len(y) >= 2) or len(y) >= 8:
             floor = ref_down - 2.0 * margin
             if m < floor and y[-1] < floor:
                 return ConvergenceRegime.COLLAPSING
@@ -605,8 +734,9 @@ class ConvergenceMonitor:
         lg = scales.get("long")
         peak = self._peak if self._peak is not None else m.level
 
-        tol_s = max(z * s.level_se, self.min_delta)
-        tol_m = max(z * m.level_se, self.min_delta)
+        gain = self._min_gain()
+        tol_s = max(z * s.level_se, gain)
+        tol_m = max(z * m.level_se, gain)
         m_rising = m.slope > z * m.slope_se
         m_falling = m.slope < -z * m.slope_se
         s_rising = s.slope > z * s.slope_se
@@ -624,7 +754,7 @@ class ConvergenceMonitor:
         fast = s.level > peak + tol_s and m.level > peak + m.level_se and m.slope > 0
         slow = m.level > peak + tol_m and (m_rising or l_rising)
         streak = self._since_improving_obs < self.persist
-        continuing = streak and m_rising and s.level >= peak
+        continuing = streak and m_rising and s.level >= peak + gain
         if fast or slow or continuing:
             return ConvergenceRegime.IMPROVING
 
@@ -638,14 +768,22 @@ class ConvergenceMonitor:
         # window cannot put the run "below peak".
         r2 = math.sqrt(2.0)
         below = (
-            m.level < peak - max(z * r2 * m.level_se + m.level_se, self.min_delta)
-            and s.level < peak - max(z * r2 * s.level_se, self.min_delta)
+            m.level < peak - max(z * r2 * m.level_se + m.level_se, gain)
+            and s.level < peak - max(z * r2 * s.level_se, gain)
         )
         if below:
             if s_rising or m_rising:
                 return ConvergenceRegime.REGRESSED_CLIMBING
             return ConvergenceRegime.REGRESSED_STALLED
         return ConvergenceRegime.PLATEAU
+
+    def _min_gain(self) -> float:
+        if self._peak is None or self.rel_delta <= 0:
+            return self.min_delta
+        # Relative to the size of the peak or, for a metric heading to zero
+        # (a loss), to how far the run has come -- whichever is larger.
+        span = self._peak - self._worst if self._worst is not None else 0.0
+        return max(self.min_delta, self.rel_delta * max(abs(self._peak), span))
 
     def _fit_end_lower(self, m: ScaleReading, sig: float, infl: float) -> float:
         """Medium-window OLS fit evaluated at the newest point, minus its SE."""
@@ -681,22 +819,42 @@ class ConvergenceMonitor:
             return True
         return False
 
-    def _next_state(self, since: float, regime: ConvergenceRegime, scales, at: float) -> LoopState:
+    def _next_state(self, since: float, regime: ConvergenceRegime, scales, at: float,
+                    prev_state: LoopState) -> LoopState:
         if regime == ConvergenceRegime.IMPROVING:
             return LoopState.ACTIVE
-        if (
-            regime == ConvergenceRegime.COLLAPSING
-            or self._pending == ConvergenceRegime.COLLAPSING
-            or (self._restored and regime == ConvergenceRegime.WARMUP)
+        if regime == ConvergenceRegime.COLLAPSING:
+            # A collapsing run is not converged (and a converged one that
+            # collapses is no longer converged).
+            return LoopState.COOLING if prev_state == LoopState.DORMANT else prev_state
+        if prev_state == LoopState.DORMANT and not self._dormant_hold:
+            # DORMANT is sticky: only new ground or a confirmed collapse ends
+            # it, never a chance fluctuation of a trend test.
+            return LoopState.DORMANT
+        if self._pending == ConvergenceRegime.COLLAPSING or (
+            self._restored and regime == ConvergenceRegime.WARMUP
         ):
-            # A collapsing run -- one whose collapse is still being confirmed,
-            # or one just rolled back whose new scores cannot be read yet --
-            # is not converged; hold the patience state.
-            return self._state if self._state != LoopState.DORMANT else LoopState.COOLING
-        if since >= self.dormant_patience and at >= self.min_at_before_dormant:
-            lg = scales.get("long")
-            long_rising = lg is not None and lg.slope > self.z * lg.slope_se
-            if not long_rising:
+            # A collapse still being confirmed, or a just-restored policy whose
+            # scores cannot be read yet: hold the patience state.
+            return prev_state
+        dormant_allowed = (
+            regime != ConvergenceRegime.WARMUP     # trends must be readable
+            and not self._dormant_hold
+            and at >= self.min_at_before_dormant
+        )
+        if since >= self.dormant_patience and dormant_allowed:
+            # A slow learner is not converged: the longest readable trend must
+            # not still be significantly rising.
+            # "Rising" must also be material: over another dormant-patience
+            # period the trend has to add more than the minimum gain, or a
+            # near-deterministic curve creeping by 1e-9 would never stop.
+            guard = scales.get("long") or scales.get("medium")
+            still_rising = (
+                guard is not None
+                and guard.slope > self.z * guard.slope_se
+                and guard.slope * self.dormant_patience > self._min_gain()
+            )
+            if not still_rising:
                 return LoopState.DORMANT
             return LoopState.COOLING
         if since >= self.cooling_patience:

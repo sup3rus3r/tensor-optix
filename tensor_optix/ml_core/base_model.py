@@ -107,7 +107,7 @@ class BaseMLModel(ABC):
         self,
         train_data,
         val_data=None,
-        epochs: Optional[int] = 10,
+        epochs: Optional[int] = None,
         batch_size: int = 32,
         early_stopping_patience: Optional[int] = None,
         metrics="auto",
@@ -116,27 +116,32 @@ class BaseMLModel(ABC):
         lr_schedule: Optional[object] = None,
         augment: Optional[object] = None,
         max_epochs: Optional[int] = None,
-        stop_on_convergence: bool = True,
+        stop_on_convergence: Optional[bool] = None,
         convergence: Optional[object] = None,
     ) -> FitHistory:
         """
-        Train for up to `epochs` epochs, or -- with ``epochs=None`` -- until
-        tensor-optix judges the run converged. The best checkpoint's weights
-        are restored before returning, however the run ended.
+        Train until tensor-optix judges the run converged (the default,
+        ``epochs=None``), or for a fixed budget of ``epochs`` epochs.
 
-        epochs: a fixed budget, or None to train until convergence (requires
-        val_data, or a max_epochs cap).
+        epochs: None (default) -- train until the ConvergenceMonitor reaches
+        DORMANT: no new ground for its dormant patience and no slow rise still
+        in progress. It reads the validation primary_score when val_data is
+        given, otherwise the (negated) training loss. An int N runs exactly N
+        epochs; convergence does not end it early unless
+        stop_on_convergence=True.
 
         max_epochs: optional hard cap for an open-ended run. Off by default.
 
         early_stopping_patience: stop once the validation primary_score hasn't
         set a new best for that many consecutive epochs. Off by default.
 
-        stop_on_convergence: when val_data is given, stop as soon as the
-        ConvergenceMonitor reaches DORMANT (no new ground for its dormant
-        patience, and no slow rise still in progress). On by default.
+        stop_on_convergence: None (default) = on exactly when epochs is None.
         FitHistory.stop_reason says which rule ended the run, and
-        FitHistory.convergence holds one ConvergenceReport per epoch.
+        FitHistory.convergence holds one ConvergenceReport per observed epoch.
+
+        With checkpoint_dir set, the best checkpoint's weights are restored
+        before returning, however the run ended (also on an exception).
+        Without it nothing is persisted, so the final weights are returned.
 
         convergence: a tensor_optix.core.convergence.ConvergenceMonitor to use
         instead of the ML defaults (to change its timescales, patience or

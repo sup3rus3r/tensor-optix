@@ -32,10 +32,16 @@ logger = logging.getLogger(__name__)
 # the historical ML values: COOLING after 5 epochs without new ground,
 # DORMANT (stop) after 20.
 ML_CONVERGENCE_DEFAULTS = dict(
-    timescales=(3, 8, 24),
+    # (3, 8, 24) left autocorrelation unestimable (7 differences) and was the
+    # worst setting under the statistical audit; 48 epochs of history give
+    # the pooled estimate enough differences.
+    timescales=(4, 12, 48),
     cooling_patience=5,
     dormant_patience=20,
     persist=2,
+    # A smooth, deterministic validation loss keeps creeping by ever smaller
+    # amounts; gains below 0.01 % of the peak are not new ground.
+    rel_delta=1e-4,
 )
 
 
@@ -51,14 +57,17 @@ class Trainer:
     BaseMLModel API -- constructed and run internally by fit(); see that
     method's docstring.
 
-    Stopping, in order of precedence:
-      * ``epochs`` reached (when given),
-      * ``max_epochs`` reached (when given; an optional cap, off by default),
-      * ``early_stopping_patience`` epochs without a new best (when given),
-      * the ConvergenceMonitor reaching DORMANT (when ``stop_on_convergence``
-        and validation data are given).
-    The best checkpoint's weights are restored before returning, however the
-    run ended.
+    Two modes:
+      * ``epochs=None`` (the default): train until the ConvergenceMonitor
+        reaches DORMANT. The monitor reads the validation ``primary_score``
+        when ``val_data`` is given, otherwise the negated training loss.
+      * ``epochs=N``: a fixed budget of N epochs. Convergence never ends the
+        run early unless ``stop_on_convergence=True`` is passed explicitly.
+
+    Other stops: ``max_epochs`` (optional cap, off by default) and
+    ``early_stopping_patience`` (epochs without a new validation best, off by
+    default). With ``checkpoint_dir`` set, the best checkpoint's weights are
+    restored before returning, however the run ended (also on an exception).
     """
 
     def __init__(
@@ -73,7 +82,7 @@ class Trainer:
         lr_schedule: Optional[object] = None,
         augment: Optional[object] = None,
         max_epochs: Optional[int] = None,
-        stop_on_convergence: bool = True,
+        stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
     ):
         if epochs is not None and int(epochs) < 0:
@@ -90,7 +99,10 @@ class Trainer:
         self._checkpoint_dir = checkpoint_dir
         self._lr_schedule = lr_schedule
         self._augment = augment
-        self._stop_on_convergence = bool(stop_on_convergence)
+        # None = auto: convergence ends the run only when no epoch budget is set.
+        self._stop_on_convergence = (
+            self._epochs is None if stop_on_convergence is None else bool(stop_on_convergence)
+        )
 
         self._monitor = convergence or ConvergenceMonitor(**ML_CONVERGENCE_DEFAULTS)
         self._registry = (
@@ -115,15 +127,10 @@ class Trainer:
     def monitor(self) -> ConvergenceMonitor:
         return self._monitor
 
-    def _check_open_ended(self, val_data) -> None:
+    def _check_open_ended(self) -> None:
         if self._epochs is not None:
             return
-        if val_data is None and self._max_epochs is None:
-            raise ValueError(
-                "epochs=None trains until convergence, which is judged on "
-                "validation scores: pass val_data (or set max_epochs)."
-            )
-        if val_data is not None and not self._stop_on_convergence and (
+        if not self._stop_on_convergence and (
             self._early_stopping_patience is None and self._max_epochs is None
         ):
             raise ValueError(
@@ -136,14 +143,50 @@ class Trainer:
                 f"lr_schedule has a fixed length ({sched_epochs} epochs) but "
                 "epochs=None: the learning rate reaches its final value at "
                 f"epoch {sched_epochs} and stays there.",
-                UserWarning, stacklevel=3,
+                UserWarning, stacklevel=4,
             )
+
+    def _observe(self, history, score: float, epoch: int):
+        report = self._monitor.observe(score, at=epoch)
+        history.convergence.append(report)
+        if report.regime_changed or report.entered_cooling or report.entered_dormant:
+            for cb in self._callbacks:
+                _call(cb, "on_convergence", epoch, report)
+        return report
+
+    def _converged(self, history, report, epoch: int) -> bool:
+        """Fire the DORMANT hook; True when the run should stop here."""
+        if not report.entered_dormant:
+            return False
+        for cb in self._callbacks:
+            _call(cb, "on_dormant", epoch)
+        if not self._stop_on_convergence:
+            return False
+        logger.info(
+            "Converged at epoch %d (%s): no new ground for %d epochs.",
+            epoch, report.regime.name, int(report.since_improvement),
+        )
+        history.stopped_early = True
+        history.stop_reason = "converged"
+        return True
 
     def run(self, train_data, val_data) -> "FitHistory":
         from tensor_optix.ml_core.base_model import FitHistory
 
-        self._check_open_ended(val_data)
+        self._check_open_ended()
+        if self._monitor.n_observations:
+            # A monitor reused across fit() calls: epochs restart at 0, so
+            # start a new segment (the peak to beat is kept).
+            self._monitor.restart()
         history = FitHistory()
+        try:
+            self._run_epochs(history, train_data, val_data)
+        finally:
+            if self._registry is not None and self._registry.best is not None:
+                self._registry.load_best(self._model)
+        return history
+
+    def _run_epochs(self, history, train_data, val_data) -> None:
         epochs_without_improvement = 0
         best_score_seen: Optional[float] = None
         metrics_history = []  # List[EvalMetrics], grows every eval -- SPSAOptimizer.suggest()'s contract (same as LoopController's usage)
@@ -152,10 +195,10 @@ class Trainer:
         while True:
             if self._epochs is not None and epoch >= self._epochs:
                 history.stop_reason = "epochs"
-                break
+                return
             if self._max_epochs is not None and epoch >= self._max_epochs:
                 history.stop_reason = "max_epochs"
-                break
+                return
 
             if self._lr_schedule is not None:
                 current = self._model.get_hyperparams()
@@ -173,6 +216,12 @@ class Trainer:
                 _call(cb, "on_epoch_end", epoch, epoch_loss)
 
             if val_data is None:
+                # No validation signal: convergence is judged on the training
+                # loss (negated, so higher is better). Nothing to checkpoint.
+                if self._stop_on_convergence:
+                    report = self._observe(history, -float(epoch_loss), epoch)
+                    if self._converged(history, report, epoch):
+                        return
                 epoch += 1
                 continue
 
@@ -209,11 +258,7 @@ class Trainer:
 
             # Convergence: what the validation curve is doing, and whether
             # the run has stopped making real progress.
-            report = self._monitor.observe(eval_metrics.primary_score, at=epoch)
-            history.convergence.append(report)
-            if report.regime_changed or report.entered_cooling or report.entered_dormant:
-                for cb in self._callbacks:
-                    _call(cb, "on_convergence", epoch, report)
+            report = self._observe(history, eval_metrics.primary_score, epoch)
             if report.improved and self._spsa is not None:
                 self._spsa.on_improvement(eval_metrics.to_eval_metrics())
 
@@ -239,26 +284,12 @@ class Trainer:
                 )
                 history.stopped_early = True
                 history.stop_reason = "early_stopping"
-                break
+                return
 
-            if report.entered_dormant:
-                for cb in self._callbacks:
-                    _call(cb, "on_dormant", epoch)
-                if self._stop_on_convergence:
-                    logger.info(
-                        "Converged at epoch %d (%s): no new ground for %d epochs.",
-                        epoch, report.regime.name, int(report.since_improvement),
-                    )
-                    history.stopped_early = True
-                    history.stop_reason = "converged"
-                    break
+            if self._converged(history, report, epoch):
+                return
 
             epoch += 1
-
-        if self._registry is not None and self._registry.best is not None:
-            self._registry.load_best(self._model)
-
-        return history
 
     def _run_train_epoch(self, train_data) -> float:
         total_loss = 0.0

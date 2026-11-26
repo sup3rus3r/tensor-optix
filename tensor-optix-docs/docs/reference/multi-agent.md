@@ -225,9 +225,10 @@ A seat's score also moves when the other seats change, so the tuning signal is n
 
 Collapses are **detected and reported for every seat**: `on_degradation(agent_id, window_id, score, rolled_back)` fires when the seat's monitor confirms a collapse. Confirmation means the `COLLAPSING` regime held for `min_consecutive_degradations` consecutive windows, judged against the seat's own peak and noise. Rollback is off by default; `rollback_on_degradation=True` requires `checkpoint_dir`.
 
-- With rollback on, an on-policy seat's best checkpoint is restored and training continues. The monitor forgets the collapsed scores but keeps the peak, and a renewed collapse is rolled back again.
+- With rollback on, an on-policy seat's best checkpoint is restored and training continues. The monitor forgets the collapsed scores but keeps the peak.
+- If the restored seat collapses again before it has been back at its peak, the collapse is reported (`rolled_back=False`) but not rolled back a second time: a restore that did not help would otherwise loop forever.
 - Off-policy agents are reported (`rolled_back=False`) but never rolled back: their replay buffer would pull restored weights straight back.
-- A collapsing seat does not count toward convergence, so it is never declared converged at its collapsed level.
+- DORMANT is withheld while a collapse is being confirmed or in progress. A seat that stays down turns into `REGRESSED_STALLED`, and its patience keeps running from its last real improvement, so it is eventually declared converged. Its best weights are restored at the end.
 - Windows in which the seat's optimizer is probing never confirm a collapse.
 - **With self-play enabled**, only windows in which at least one *other* seat was played by a pool snapshot can confirm a collapse. In a competitive game a score also drops when the opponent improves, which is not a collapse; windows against a frozen opponent are the ones where the opposition did not change.
 

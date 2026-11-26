@@ -42,6 +42,8 @@ def _first(reports, pred, after=0):
 def test_rejects_bad_timescales_and_patience():
     with pytest.raises(ValueError):
         ConvergenceMonitor(timescales=(2, 8, 16))
+    with pytest.raises(ValueError):          # too short for a noise estimate
+        ConvergenceMonitor(timescales=(3, 3, 3))
     with pytest.raises(ValueError):
         ConvergenceMonitor(timescales=(8, 4, 16))
     with pytest.raises(ValueError):
@@ -110,12 +112,107 @@ def test_min_at_before_dormant_is_respected():
 def test_defer_dormant_lets_dormant_be_entered_again():
     m = ConvergenceMonitor(cooling_patience=2, dormant_patience=4)
     entered = []
-    for i in range(30):
+    for i in range(80):
         r = m.observe(1.0, at=i)
         if r.entered_dormant:
             entered.append(i)
             m.defer_dormant()
     assert len(entered) >= 2 and m.state == LoopState.COOLING
+
+
+def test_hold_dormant_suppresses_dormant_silently_until_released():
+    m = ConvergenceMonitor(cooling_patience=2, dormant_patience=4)
+    m.hold_dormant(True)
+    reps = [m.observe(1.0, at=i) for i in range(80)]
+    assert not any(r.entered_dormant for r in reps)
+    assert sum(r.entered_cooling for r in reps) == 1
+    m.hold_dormant(False)
+    r = m.observe(1.0, at=80)
+    assert r.entered_dormant and r.state == LoopState.DORMANT
+
+
+def test_dormant_is_never_entered_during_warmup():
+    # sparse observations: patience (in episodes) runs out long before the
+    # medium window fills -- trends are not readable yet, so no DORMANT
+    m = ConvergenceMonitor()
+    reps = [m.observe(1.0 + (i % 2) * 0.01, at=100 * i) for i in range(31)]
+    assert all(r.state != LoopState.DORMANT for r in reps)
+    assert m.observe(1.0, at=3100).state == LoopState.DORMANT
+
+
+def test_dormant_is_sticky_against_trend_fluctuations():
+    for seed in SEEDS:
+        _, reps = _run(_stream(lambda i: B, 2000, seed))
+        # once converged, only new ground or a confirmed collapse ends it
+        for prev, r in zip(reps, reps[1:]):
+            if prev.state == LoopState.DORMANT and r.state != LoopState.DORMANT:
+                assert r.regime in (R.IMPROVING, R.COLLAPSING), (seed, r.at, r.regime)
+
+
+def test_probing_does_not_cancel_a_collapse_being_confirmed():
+    # a ramp down to far below the peak, observed under an SPSA-like probe
+    # pattern (probe, probe, measure): the collapse must still be confirmed
+    scores = [10.0 + 0.1 * (i % 2) for i in range(100)] + [10.0 - 0.5 * i for i in range(60)]
+    m = ConvergenceMonitor()
+    reps = [m.observe(s, at=i, probing=(i >= 100 and i % 3 != 2)) for i, s in enumerate(scores)]
+    assert any(r.collapse_confirmed for r in reps[100:])
+
+
+def test_restart_keeps_the_peak_even_when_short_equals_medium():
+    m = ConvergenceMonitor(timescales=(8, 8, 32))
+    for i in range(40):
+        m.observe(10.0 + 0.1 * (i % 2), at=i)
+    peak = m.peak
+    m.restart(at=40)
+    for i in range(10):
+        m.observe(2.0 + 0.1 * (i % 2), at=41 + i)
+    assert m.peak == peak
+
+
+def test_restart_during_first_warmup_judges_against_the_peak():
+    m = ConvergenceMonitor()
+    for i in range(10):
+        m.observe(10.0 + 0.1 * (i % 2), at=i)
+    m.restart(at=10)
+    reps = [m.observe(0.2 * i, at=11 + i) for i in range(18)]     # 0 -> 3.4, far below 10
+    assert not any(r.regime == R.IMPROVING for r in reps)
+
+
+def test_restart_before_a_noise_estimate_does_not_store_zero_noise():
+    m = ConvergenceMonitor()
+    for i in range(3):
+        m.observe(5.0, at=i)
+    m.restart(at=3)
+    rng = np.random.default_rng(0)
+    reps = [m.observe(5.0 + rng.normal(0, 1), at=4 + i) for i in range(4)]
+    assert not any(r.regime == R.IMPROVING for r in reps)
+
+
+def test_single_outlier_does_not_set_the_peak():
+    rng = np.random.default_rng(1)
+    scores = list(100 + rng.normal(0, 1, 200))
+    scores[100] = 1e6
+    m, reps = _run(scores)
+    assert m.best_score == 1e6                  # raw value is still recorded
+    assert m.peak < 105
+    assert not any(r.is_regressed for r in reps[110:])
+
+
+def test_deterministic_smooth_metric_converges_with_rel_delta():
+    m = ConvergenceMonitor(timescales=(3, 8, 24), cooling_patience=5, dormant_patience=20,
+                           persist=2, rel_delta=1e-4)
+    reps = [m.observe(-1.0 / (t + 1), at=t) for t in range(3000)]
+    assert any(r.entered_dormant for r in reps)
+
+
+def test_settling_a_provisional_peak_downward_is_not_reported_as_raised():
+    for seed in SEEDS:
+        _, reps = _run(_stream(lambda i: B + 0.3 * min(i, 300), 600, seed))
+        prev = None
+        for r in reps:
+            if prev is not None and r.peak_raised:
+                assert r.peak > prev
+            prev = r.peak
 
 
 def test_reset_scale_forgets_the_peak():

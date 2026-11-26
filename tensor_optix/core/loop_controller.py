@@ -9,7 +9,7 @@ from .base_optimizer import BaseOptimizer
 from .base_pipeline import BasePipeline
 from .checkpoint_registry import CheckpointRegistry
 from .backoff_scheduler import BackoffScheduler
-from .convergence import ConvergenceMonitor, ConvergenceReport
+from .convergence import ConvergenceMonitor, ConvergenceRegime, ConvergenceReport
 from .checkpoint_confirmation import CheckpointConfirmationTracker
 from .reward_shape import episode_breadth
 from .types import LoopState, EvalMetrics, PolicySnapshot
@@ -135,6 +135,7 @@ class LoopController:
         self._convergence_patience = convergence_patience
         self._target_score = target_score
         self._consecutive_above_target: int = 0
+        self._restored_unrecovered = False   # rolled back, not yet back at the peak
         # Three separate concerns — kept deliberately independent:
         #
         # 1. Checkpoint saving  → checkpoint_score (raw external eval when
@@ -189,6 +190,11 @@ class LoopController:
         whether stopped by convergence, budget, or manual stop().
         """
         self._stop_requested = False
+        if self._monitor.n_observations:
+            # A repeated run() restarts episode numbering at 0: start a new
+            # monitor segment (the peak to beat is kept).
+            self._monitor.restart()
+        self._restored_unrecovered = False
         self._pipeline.setup()
         if self._val_pipeline is not None:
             self._val_pipeline.setup()
@@ -273,8 +279,9 @@ class LoopController:
         self._best_raw = ckpt_score
         self._score_window.append(eval_metrics.primary_score)
         self._best_smoothed = float(np.mean(self._score_window))
-        self._monitor.observe(eval_metrics.primary_score, at=0)
+        report = self._monitor.observe(eval_metrics.primary_score, at=0)
         self._metrics_history.append(eval_metrics)
+        self._fire("on_convergence", 0, report)
 
         logger.info(
             "Baseline established: score=%.4f smoothed=%.4f state=%s",
@@ -450,6 +457,12 @@ class LoopController:
                 # optimizer probe is self-inflicted, so it can never confirm
                 # a collapse.
                 optimizer_is_probing = bool(getattr(self._optimizer, "is_probing", False))
+                # Too few finished episodes to call anything converged yet:
+                # DORMANT is held (not entered, not reported) until there are.
+                self._monitor.hold_dormant(
+                    self._evaluator_reports_episodes
+                    and self._total_completed_episodes < self._min_completed_episodes_before_dormant
+                )
                 report = self._monitor.observe(raw, at=episode_id, probing=optimizer_is_probing)
                 if self._verbose:
                     self._verbose_trend(report)
@@ -458,7 +471,10 @@ class LoopController:
                     self._optimizer.on_improvement(eval_metrics)
                     self._update_rnd_eta("improvement")
                     self._scheduler.advance_interval(True)
-                elif eval_due:
+                elif eval_due and report.regime != ConvergenceRegime.WARMUP:
+                    # Back off only once trends are readable: backing off
+                    # during warm-up would starve the monitor of observations
+                    # exactly when it has too few to judge anything.
                     self._scheduler.advance_interval(False)
                 self._act_on_report(episode_id, report, eval_metrics)
                 logger.debug(
@@ -574,6 +590,8 @@ class LoopController:
         """Run the actions a convergence report calls for, each once, on entry."""
         if report.regime_changed or report.entered_cooling or report.entered_dormant:
             self._fire("on_convergence", episode_id, report)
+        if report.regime in (ConvergenceRegime.PLATEAU, ConvergenceRegime.IMPROVING):
+            self._restored_unrecovered = False      # back at (or above) the peak
         if report.collapse_confirmed:
             self._handle_degradation(episode_id, eval_metrics)
             return
@@ -582,13 +600,6 @@ class LoopController:
             self._optimizer.on_cooling(self._metrics_history)
             self._fire("on_plateau", episode_id, report.state)
         if not report.entered_dormant:
-            return
-        if (
-            self._evaluator_reports_episodes
-            and self._total_completed_episodes < self._min_completed_episodes_before_dormant
-        ):
-            # Too few finished episodes to call anything converged yet.
-            self._monitor.defer_dormant()
             return
         self._update_rnd_eta("dormant")
         self._optimizer.on_plateau(self._metrics_history)
@@ -602,13 +613,15 @@ class LoopController:
             for cb in self._callbacks
             if callable(getattr(cb, "consume_dormant_resume", None))
         ]
-        if not self._stop_requested and not any(resume):
-            logger.info(
-                "Episode %d: DORMANT (%s) — no callback resumed the loop,"
-                " stopping by default",
-                episode_id, report.regime.name,
-            )
+        if self._stop_requested or not any(resume):
+            if not self._stop_requested:
+                logger.info(
+                    "Episode %d: DORMANT (%s) — no callback resumed the loop,"
+                    " stopping by default",
+                    episode_id, report.regime.name,
+                )
             self._stop_requested = True
+            return       # stays DORMANT: state / convergence report the real outcome
         self._update_rnd_eta("restart")
         # Restarts the monitor too (attached in __init__): a resumed variant
         # keeps the peak it must beat but gets fresh trend history.
@@ -637,10 +650,24 @@ class LoopController:
             self._rollback_on_degradation
             and agent_supports_rollback
             and self._best_snapshot is not None
+            and self._restored_unrecovered
+        ):
+            # The last restore never got back to the peak: the collapse is not
+            # caused by the weights (environment / hyperparameters changed),
+            # so restoring again would loop forever. Report only.
+            logger.info(
+                "Episode %d: collapse again after a restore that never recovered — "
+                "not rolling back a second time", episode_id,
+            )
+        elif (
+            self._rollback_on_degradation
+            and agent_supports_rollback
+            and self._best_snapshot is not None
         ):
             self._registry.load_best(self._agent)
             # Scores before the restore describe the collapsed policy.
             self._monitor.note_restored(at=episode_id)
+            self._restored_unrecovered = True
             logger.info("Rolled back to best snapshot (episode %d)", self._best_snapshot.episode_id)
         elif self._rollback_on_degradation and not agent_supports_rollback:
             logger.debug(

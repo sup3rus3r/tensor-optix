@@ -106,17 +106,19 @@ def test_rolls_back_to_best_after_confirmed_degradation(tmp_path):
     agents, result = _run({"a": COLLAPSE_LONG}, tmp_path, rollback_on_degradation=True,
                           min_consecutive_degradations=3, callbacks=[CB()])
     seat = result.seats["a"]
-    assert seat.degradations == 2 and seat.rollbacks == 2
-    # The first window (6) is still within noise of the 4-window mean; the
-    # collapse signal starts at window 8 and is confirmed after 3 consecutive
-    # collapsing observations, at window 10.
-    assert events[0] == ("a", 10, 1.0, True)
-    # After the restore the seat's new scores are judged against its peak
-    # straight away, so the renewed collapse is confirmed 3 windows later.
-    assert events[1] == ("a", 13, 1.0, True)
-    assert agents["a"].loads == 2
-    # the last rollback (window 13) was followed by windows 14-15 of learning
-    assert agents["a"].w == 6 + 2
+    # A collapse in the run's first warm-up needs 8 points (window 7), the
+    # newest points are outlier-clipped against the trend until the drop is
+    # corroborated, and confirmation takes 3 consecutive collapsing
+    # observations: confirmed at window 11 -> rollback.
+    assert events[0] == ("a", 11, 1.0, True)
+    # The scripted score does not depend on the weights, so the restore never
+    # gets back to the peak: the renewed collapse is reported but not rolled
+    # back again -- repeating a restore that did not help would loop forever.
+    assert events[1][0] == "a" and events[1][3] is False and events[1][1] > 11
+    assert seat.degradations == 2 and seat.rollbacks == 1
+    assert agents["a"].loads == 1
+    # rolled back at window 11 (w=6), then windows 12-15 of learning
+    assert agents["a"].w == 6 + 4
 
 
 def test_rollback_disabled_by_default_but_collapse_still_reported(tmp_path):
@@ -161,15 +163,17 @@ def test_off_policy_agents_are_reported_but_never_rolled_back(tmp_path):
     assert events and not any(events)
 
 
-def test_degradation_is_not_counted_as_convergence(tmp_path):
-    agents, result = _run({"a": COLLAPSE + [1.0] * 40}, tmp_path, rollback_on_degradation=True,
+def test_unfixable_collapse_is_rolled_back_once_then_the_seat_converges(tmp_path):
+    agents, result = _run({"a": COLLAPSE + [1.0] * 60}, tmp_path, rollback_on_degradation=True,
                           plateau_threshold=2, dormant_threshold=4,
-                          min_completed_episodes_before_converged=0, stop_on_convergence=True)
-    # every third collapsed window is a confirmed degradation that resets the
-    # seat to ACTIVE, so a collapsed seat keeps being rolled back instead of
-    # being declared converged at its collapsed level
-    assert result.stop_reason != "converged"
-    assert result.seats["a"].rollbacks >= 5
+                          min_completed_episodes_before_converged=0, stop_on_convergence=True,
+                          restore_best=True)
+    seat = result.seats["a"]
+    # rolled back once; the renewed collapse is reported, not restored again
+    assert seat.rollbacks == 1 and seat.degradations >= 2
+    # a run that stays collapsed eventually stops; its best weights are restored
+    assert result.stop_reason == "converged"
+    assert agents["a"].w == 6
 
 
 def test_requires_checkpoint_dir():

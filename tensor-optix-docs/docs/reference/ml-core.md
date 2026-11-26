@@ -47,7 +47,7 @@ class BaseMLModel(ABC):
         self,
         train_data,
         val_data=None,
-        epochs: Optional[int] = 10,
+        epochs: Optional[int] = None,
         batch_size: int = 32,
         early_stopping_patience: Optional[int] = None,
         metrics="auto",
@@ -56,23 +56,28 @@ class BaseMLModel(ABC):
         lr_schedule: Optional[Callable[[int], float]] = None,
         augment: Optional[Callable] = None,
         max_epochs: Optional[int] = None,
-        stop_on_convergence: bool = True,
+        stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
     ) -> FitHistory:
         """
-        Train for up to `epochs` epochs, or -- with epochs=None -- until
-        the ConvergenceMonitor judges the run converged (requires val_data,
-        or a max_epochs cap). The best checkpoint's weights are restored
-        before returning, however the run ended. "New best" is tracked
-        independently of whether checkpoint_dir is set.
+        epochs: None (default) -- train until the ConvergenceMonitor reaches
+        DORMANT (no new ground for its dormant patience, no material slow
+        rise still in progress). It reads the validation primary_score when
+        val_data is given, otherwise the negated training loss. An int N
+        runs exactly N epochs; convergence does not end it early unless
+        stop_on_convergence=True.
 
-        max_epochs: optional hard cap for an open-ended run; off by default.
+        max_epochs: optional hard cap; off by default.
         early_stopping_patience: stop after that many epochs without a new
-        best; off by default.
-        stop_on_convergence: with val_data, stop when the monitor reaches
-        DORMANT (no new ground for its dormant patience, no slow rise still
-        in progress). On by default.
-        convergence: a ConvergenceMonitor replacing the ML defaults.
+        validation best; off by default.
+        stop_on_convergence: None (default) = on exactly when epochs is None.
+        convergence: a ConvergenceMonitor replacing the ML defaults; may be
+        reused across fit() calls (each call starts a new segment).
+
+        With checkpoint_dir set, the best checkpoint's weights are restored
+        before returning, however the run ended (also on an exception).
+        Without it nothing is persisted and the final weights are returned.
+        "New best" is tracked independently of whether checkpoint_dir is set.
 
         lr_schedule: callable(epoch) -> float, applied once per epoch.
         Mutually exclusive with SPSA tuning of learning_rate for this run
@@ -127,6 +132,8 @@ class Trainer:
          and apply the suggestion via model.set_hyperparams().
       6. Stop on early_stopping_patience, or -- when stop_on_convergence --
          when the monitor enters DORMANT (on_dormant fires first).
+    Without val_data (and with convergence on) only the negated training
+    loss is fed to the monitor; nothing is checkpointed.
 
     After the loop, if checkpoint_dir was set and at least one checkpoint
     was saved, restores the best checkpoint's weights via
@@ -145,7 +152,7 @@ class Trainer:
         lr_schedule: Optional[Callable[[int], float]] = None,
         augment: Optional[Callable] = None,
         max_epochs: Optional[int] = None,
-        stop_on_convergence: bool = True,
+        stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
     ): ...
 
@@ -158,10 +165,11 @@ class Trainer:
 # epochs, so every window is short; patience keeps COOLING after 5 /
 # DORMANT after 20 epochs without new ground.
 ML_CONVERGENCE_DEFAULTS = dict(
-    timescales=(3, 8, 24),
+    timescales=(4, 12, 48),
     cooling_patience=5,
     dormant_patience=20,
     persist=2,
+    rel_delta=1e-4,     # gains < 0.01 % of the peak are not new ground
 )
 # (replaces the former ML_BACKOFF_DEFAULTS)
 ```

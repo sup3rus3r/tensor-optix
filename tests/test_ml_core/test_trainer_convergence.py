@@ -49,11 +49,52 @@ def test_open_ended_fit_stops_when_converged(monkeypatch):
     assert history.convergence[-1].entered_dormant
 
 
-def test_open_ended_fit_requires_validation_data_or_a_cap():
+def test_default_fit_without_validation_converges_on_training_loss():
     train, _ = _data()
-    model = TorchMLModel(nn.Sequential(nn.Linear(4, 2)), loss_fn=nn.CrossEntropyLoss())
-    with pytest.raises(ValueError, match="val_data"):
-        model.fit(train, None, epochs=None)
+    model = TorchMLModel(nn.Sequential(nn.Linear(4, 2)), loss_fn=nn.CrossEntropyLoss(),
+                         learning_rate=1e-2)
+    history = model.fit(train, batch_size=8, max_epochs=2000)     # no epochs given
+    assert history.stop_reason == "converged"
+    assert len(history.convergence) == history.epochs_run
+    assert not history.val_metrics
+
+
+def test_fixed_epochs_keep_the_old_behaviour(monkeypatch):
+    train, val = _data()
+    model = _model_with_scores(monkeypatch, [0.5, 0.6, 0.7, 0.7])   # converges fast
+    history = model.fit(train, val, epochs=60, batch_size=8)
+    assert history.stop_reason == "epochs" and history.epochs_run == 60
+
+
+def test_best_weights_are_restored_even_on_an_exception(monkeypatch, tmp_path):
+    train, val = _data()
+    model = _model_with_scores(monkeypatch, [0.5, 0.9, 0.6, 0.6, 0.6])
+    loads = {"n": 0}
+    original_load = model.load_weights
+
+    def counting_load(path):
+        loads["n"] += 1
+        return original_load(path)
+
+    monkeypatch.setattr(model, "load_weights", counting_load)
+
+    class Boom:
+        def on_epoch_end(self, epoch, loss):
+            if epoch == 3:
+                raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        model.fit(train, val, epochs=10, batch_size=8, callbacks=[Boom()],
+                  checkpoint_dir=str(tmp_path))
+    assert loads["n"] == 1
+
+
+def test_a_monitor_can_be_reused_across_fits(monkeypatch):
+    train, val = _data()
+    model = _model_with_scores(monkeypatch, [0.5, 0.6, 0.7, 0.7])
+    mon = ConvergenceMonitor(timescales=(3, 6, 12), cooling_patience=3, dormant_patience=8)
+    model.fit(train, val, epochs=5, batch_size=8, convergence=mon)
+    model.fit(train, val, epochs=5, batch_size=8, convergence=mon)   # must not raise
 
 
 def test_open_ended_fit_with_convergence_off_needs_another_stop():
@@ -77,10 +118,10 @@ def test_fixed_budget_still_runs_to_the_end_when_not_converged(monkeypatch):
     assert history.stop_reason == "epochs" and history.epochs_run == 8
 
 
-def test_convergence_stops_a_fixed_budget_run_early(monkeypatch):
+def test_convergence_stops_a_fixed_budget_run_early_when_asked(monkeypatch):
     train, val = _data()
     model = _model_with_scores(monkeypatch, [0.5, 0.6, 0.7, 0.7])
-    history = model.fit(train, val, epochs=200, batch_size=8)
+    history = model.fit(train, val, epochs=200, batch_size=8, stop_on_convergence=True)
     assert history.stop_reason == "converged" and history.epochs_run < 200
 
 

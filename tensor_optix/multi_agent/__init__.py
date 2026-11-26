@@ -12,16 +12,18 @@ new multi-agent EpisodeData variant, so every existing agent class's
 learn() is reused completely unmodified.
 
 MultiAgentRunner drives every seat's agent.learn() per window and applies
-per-seat convergence detection (BackoffScheduler) and best-snapshot
+per-seat convergence detection (ConvergenceMonitor) and best-snapshot
 checkpointing (CheckpointRegistry); the run stops when all seats (or any
 seat, configurable) have converged, and restores each seat's best weights.
+Collapses are reported per seat, with optional rollback to the seat's best
+snapshot (rollback_on_degradation=True).
 
 Each seat's hyperparameters are tuned online by its own optimizer, and
 SelfPlayConfig / SelfPlayPipeline provide frozen-opponent self-play.
 
-Out of scope for this package: one policy shared across seats, degradation
-rollback and policy spawning per seat, and
-vectorizing across multiple copies of a multi-agent environment.
+Out of scope for this package: one policy shared across seats, policy
+spawning per seat, and vectorizing across multiple copies of a multi-agent
+environment.
 """
 from tensor_optix.multi_agent.seat_env import SeatEnvView
 from tensor_optix.multi_agent.parallel_pipeline import ParallelMultiAgentPipeline
