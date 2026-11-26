@@ -282,8 +282,13 @@
 <ul>
 <li><strong>ACTIVE</strong> - the run made new ground within the cooling patience, or it's early in training.</li>
 <li><strong>COOLING</strong> - no new ground for <code>plateau_threshold</code> episodes (default 32). The optimizer is told to widen its search now, while there is still time for that to help. Only windows in which at least one episode finished are scored.</li>
-<li><strong>DORMANT</strong> - no new ground for <code>dormant_threshold</code> episodes (default 160). DORMANT is withheld in three cases: while a slow rise is still significant on the long timescale, while the score is collapsing, and until <code>min_completed_episodes_before_dormant</code> (default 10) episodes have finished. By default the loop stops here and restores the best checkpoint. With a <code>PolicyManagerCallback</code> attached, <code>DORMANT</code> instead triggers a spawn/prune/stop decision.</li>
+<li><strong>DORMANT</strong> - no new ground for <code>dormant_threshold</code> episodes (default 160). DORMANT is withheld in four cases:</li>
+<li>during warm-up;</li>
+<li>while a material slow rise is still significant on the longest readable timescale;</li>
+<li>while the score is collapsing;</li>
+<li>until <code>min_completed_episodes_before_dormant</code> (default 10) episodes have finished.</li>
 </ul>
+<p>Once entered, only new ground or a confirmed collapse ends it. By default the loop stops here and restores the best checkpoint. With a <code>PolicyManagerCallback</code> attached, <code>DORMANT</code> instead triggers a spawn/prune/stop decision.</p>
 <p>All three are decided by the <a href="../../reference/core/convergence/"><code>ConvergenceMonitor</code></a>:</p>
 <ul>
 <li><strong>Several timescales at once.</strong> It reads short, medium and long trends (8 / 32 / 128 observations) together, against the run's own <strong>peak</strong>: the best level reached, corrected for lucky windows.</li>

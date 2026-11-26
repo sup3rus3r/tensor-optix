@@ -238,7 +238,7 @@
             <div class="section" itemprop="articleBody">
               
                 <h1 id="convergence">convergence</h1>
-<p><code>tensor_optix.core.convergence</code> — the one convergence detector every training loop uses: <code>LoopController</code> (RL), the ML <code>Trainer</code>, <code>MultiAgentRunner</code> (one per seat) and the runtime <code>DeploymentObserver</code>.</p>
+<p><code>tensor_optix.core.convergence</code> is the one convergence detector every training loop uses: <code>LoopController</code> (RL), the ML <code>Trainer</code>, <code>MultiAgentRunner</code> (one per seat) and the runtime <code>DeploymentObserver</code>.</p>
 <pre><code class="language-python">from tensor_optix import ConvergenceMonitor, ConvergenceRegime
 
 monitor = ConvergenceMonitor()             # defaults below
@@ -248,7 +248,7 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </code></pre>
 <h2 id="what-it-answers">What it answers</h2>
 <p>After every observation the monitor reports two separate things.</p>
-<p><strong>The regime</strong>: what the score curve is doing, judged against the best level the run has reached (its <em>peak</em>):</p>
+<p><strong>The regime</strong>: what the score curve is doing, judged against the best level the run has reached (its <em>peak</em>).</p>
 <table>
 <thead>
 <tr>
@@ -284,46 +284,127 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tbody>
 </table>
 <p><strong>The state</strong> (<code>LoopState</code>): how long it has been since real progress.</p>
-<ul>
-<li><strong>ACTIVE</strong> — <code>IMPROVING</code> was seen within <code>cooling_patience</code>.</li>
-<li><strong>COOLING</strong> — no new ground for <code>cooling_patience</code>.</li>
-<li><strong>DORMANT</strong> — no new ground for <code>dormant_patience</code>.</li>
-</ul>
-<p>Patience is measured in the caller's own units of <code>at</code> (episodes, windows or epochs), never in evaluation counts.</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ACTIVE</strong></td>
+<td><code>IMPROVING</code> within <code>cooling_patience</code></td>
+</tr>
+<tr>
+<td><strong>COOLING</strong></td>
+<td>no new ground for <code>cooling_patience</code></td>
+</tr>
+<tr>
+<td><strong>DORMANT</strong></td>
+<td>no new ground for <code>dormant_patience</code></td>
+</tr>
+</tbody>
+</table>
+<p>Patience is measured in the caller's own units of <code>at</code> (episodes, scored windows or epochs), never in evaluation counts.</p>
 <h2 id="how-it-reads-the-curve">How it reads the curve</h2>
-<p>Three timescales are read together, by default the last 8, 32 and 128 observations. For each it computes:</p>
+<p><strong>Three timescales.</strong> By default the last 8, 32 and 128 observations are read together. For each window the monitor computes:</p>
 <ul>
-<li>the <strong>level</strong>: the mean, with its standard error;</li>
-<li>the <strong>slope</strong>: an OLS fit against the real positions <code>at</code>, with its standard error.</li>
+<li>the <strong>level</strong>: its mean, with the standard error of that mean;</li>
+<li>the <strong>slope</strong>: an OLS fit against the real positions <code>at</code>, with its standard error. Irregular evaluation spacing is therefore handled by the regression itself.</li>
 </ul>
-<p>Irregular evaluation spacing is therefore handled by the regression itself.</p>
-<p><strong>Noise</strong> is estimated from the robust spread (MAD) of first differences. A change of slope, such as a rise flattening into a plateau, is a step in the mean of those differences. Steps are located by a CUSUM test and removed first, so a bending curve is not mistaken for noise. Lag-1 autocorrelation comes from the same differences; for AR(1) noise, corr(dₜ, dₜ₋₁) = −(1−ρ)/2. Every standard error is then inflated by √((1+ρ)/(1−ρ)).</p>
-<p><strong>The peak</strong> is the best medium-scale level, minus one standard error. A lucky window therefore cannot set an unbeatable bar. During an established rise (a significant medium slope plus a sustained <code>IMPROVING</code> streak), the medium mean lags the true level. In that case the peak follows the top of the rise. That fast-tracked top is provisional: after a full medium window of plateau it settles to the medium-scale estimate. A run that collapses first keeps the fast-tracked top, because that is the level it has to get back to.</p>
-<p><strong>The rules</strong>:</p>
+<p><strong>Outliers.</strong> Levels and slopes are computed on scores clipped to (running median of 5) ± <code>outlier_k</code> noise standard deviations, a Hampel filter.</p>
 <ul>
-<li><strong><code>IMPROVING</code></strong>, by any one of three paths:</li>
-<li><em>Fast:</em> the short level clears the peak by 2 SE, and the medium level is above the peak.</li>
-<li><em>Slow:</em> the medium level clears the peak, and the medium or long slope is significantly rising. The long window resolves slopes too gentle for the short one.</li>
-<li><em>Continuation:</em> inside an ongoing <code>IMPROVING</code> streak, the medium slope is still significant and the short level has not fallen below the peak.</li>
-<li><strong><code>COLLAPSING</code></strong>: the medium slope is significantly falling and the short level is far below the peak.</li>
-<li><strong><code>REGRESSED_*</code></strong>: both the medium and the short level are below the peak by more than their combined uncertainty. Climbing or stalled is decided by the short or medium slope.</li>
-<li><strong>Persistence</strong>: a new regime must hold for <code>persist</code> consecutive observations before it is reported. This absorbs clusters of false alarms from overlapping windows.</li>
+<li>The noise estimate is a robust scale, so the means it is compared with must be robust too. Otherwise one spike, or a heavy-tailed noise draw, moves a short mean by several of its own standard errors.</li>
+<li>The two newest points have no future neighbours. Their reference is the trailing median advanced by the recent step, so a steady trend is not clipped.</li>
+<li><code>best_score</code> always sees the raw values.</li>
 </ul>
-<p><strong>Warm-up</strong> has separate mechanics. For the first <code>medium</code> observations, and for the first few after a restart or restore:</p>
+<p><strong>Noise.</strong></p>
 <ul>
-<li><strong>Improvement</strong>: the mean of the last 4 scores beats a reference level by a significant margin. The reference is the level at the previous improvement during the first warm-up, and the peak after a restart or restore.</li>
-<li><strong>Collapse</strong>: that mean and the newest score both fall below the peak by twice the margin.</li>
-<li><strong>Patience</strong> doesn't run until a noise estimate exists (5 observations).</li>
+<li>σ is estimated from the robust spread (MAD) of first differences.</li>
+<li>A change of slope (a rise flattening into a plateau) is a step in the mean of those differences. Steps are located by a CUSUM test with binary segmentation and removed first, so a bending curve is not mistaken for noise.</li>
+<li>A relative floor of 10⁻⁹ × the median |score| keeps a deterministic curve from making every 10⁻¹⁵ change "significant".</li>
 </ul>
-<p><strong>DORMANT</strong> is withheld in three cases:</p>
+<p><strong>Autocorrelation.</strong></p>
 <ul>
-<li>while the long-scale slope is still significantly rising (a slow learner is not converged);</li>
-<li>while a collapse is being confirmed or is in progress;</li>
-<li>right after a rollback, while the restored policy's scores can't be read yet.</li>
+<li>Lag-1 autocorrelation ρ comes from the same differences: for AR(1) noise, corr(dₜ, dₜ₋₁) = −(1−ρ)/2.</li>
+<li>One window's estimate is too noisy to set every standard error from. It is therefore pooled over the run with an EWMA (weight max(1/128, 1/count)), and only from windows with at least 32 differences.</li>
+<li>Before the pool exists, a single-window estimate is used from 12 differences on. Because it is clipped at 0, it is biased upward, which is the conservative side.</li>
+<li>With mostly identical differences (flat or piecewise-constant scores), no autocorrelation is estimated: there the formula would read ρ ≈ 1.</li>
+<li>Every standard error is inflated by √((1+ρ)/(1−ρ)).</li>
+</ul>
+<p><strong>After <code>restart()</code> or <code>note_restored()</code>.</strong> The previous segment's σ and ρ are reused until the new segment holds <code>medium</code> observations. Without this, an autocorrelated run is judged with standard errors about 3× too small right after a rollback, and "collapses" again.</p>
+<p><strong>The peak</strong>: the best medium-scale level minus one standard error.</p>
+<ul>
+<li><strong>During an established rise</strong> (a significant medium slope and an <code>IMPROVING</code> streak of at least <code>short</code> observations), the medium mean lags the current level by half a window. The peak then follows the top of the rise: the lower of (short level − SE) and (the medium fit at the newest point − SE).</li>
+<li><strong>That top is provisional.</strong> After a full medium window of plateau it settles to the medium-scale estimate. A run that regresses or collapses first keeps the fast-tracked top, since that is the level it has to get back to.</li>
+<li><strong>End of the first warm-up.</strong> The peak becomes the larger of the medium-scale estimate and the warm-up peak deflated by two of its own standard errors. A run that already fell during warm-up does not forget how high it had been.</li>
+<li><strong>Residual bias.</strong> A rare false <code>IMPROVING</code> on a long plateau raises the peak a little each time: measured at about +0.3σ after 10,000 observations of white noise. The margins of the "below the peak" test absorb this; it acts as hysteresis.</li>
+</ul>
+<p><strong>Minimum gain</strong>: <code>max(min_delta, rel_delta × max(|peak|, peak − lowest level seen))</code>. It is added to every "above the peak" and "below the peak" test. The span term keeps a relative threshold meaningful for a metric heading to zero, such as a loss.</p>
+<p><strong>Regime rules (training phase).</strong> "Clears by <code>z</code> SE" below means by the larger of <code>z</code> standard errors and the minimum gain.</p>
+<table>
+<thead>
+<tr>
+<th>Regime</th>
+<th>Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>IMPROVING</code>, fast</td>
+<td>the short level clears the peak by <code>z</code> SE, the medium level is above the peak by 1 SE, and the medium slope is positive</td>
+</tr>
+<tr>
+<td><code>IMPROVING</code>, slow</td>
+<td>the medium level clears the peak by <code>z</code> SE, and the medium or long slope is significantly rising (the long window resolves slopes too gentle for the short one)</td>
+</tr>
+<tr>
+<td><code>IMPROVING</code>, continuation</td>
+<td>inside an ongoing <code>IMPROVING</code> streak, the medium slope is still significant and the short level is at or above the peak plus the minimum gain</td>
+</tr>
+<tr>
+<td><code>COLLAPSING</code></td>
+<td>the medium slope is significantly falling, and the short level is more than 2 × <code>z</code> SE below the peak</td>
+</tr>
+<tr>
+<td><code>REGRESSED_*</code></td>
+<td>both the medium and the short level are below the peak by more than their combined uncertainty; climbing or stalled is decided by the short or medium slope</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Persistence.</strong> A new regime must hold for <code>persist</code> consecutive observations before it is reported.</li>
+<li><strong>Probing.</strong> A collapse is never confirmed on an observation scored under a deliberate perturbation (<code>probing=True</code>, e.g. an SPSA probe or a self-play window against all-live opponents). Such an observation neither counts toward a pending collapse nor cancels it.</li>
+</ul>
+<p><strong>Warm-up and the first readings after a restart or restore</strong> use separate rules. The mean of the last 4 scores is compared with a reference:</p>
+<ul>
+<li><strong><code>IMPROVING</code></strong> when it beats the reference by a significant margin. In the run's first warm-up the reference is the level at the previous improvement; after a restart or restore it is the run's peak, because climbing back to the peak is not new ground.</li>
+<li>In the first warm-up the noise comes from very few differences, so the normal <code>z</code> is replaced by the Student-t quantile at the same level, with df = 0.37·(n − 2).</li>
+<li><strong><code>COLLAPSING</code></strong> when that mean and the newest score both fall below the peak by twice the margin. In the first warm-up this needs at least 8 points.</li>
+<li><strong>No patience before noise.</strong> The patience clock does not run until a noise estimate exists (5 observations).</li>
+</ul>
+<p><strong>DORMANT.</strong></p>
+<ul>
+<li><strong>Never entered while the regime is <code>WARMUP</code>.</strong> Patience counts in <code>at</code> units, so with sparse evaluation it can run out before trends are readable.</li>
+<li><strong>Sticky.</strong> Once entered, only new ground (<code>IMPROVING</code>) or a confirmed <code>COLLAPSING</code> ends it, never a chance fluctuation of a trend test.</li>
+<li><strong>Withheld in these cases:</strong></li>
+<li>While the longest readable trend is still significantly rising <em>and</em> would add more than the minimum gain over another <code>dormant_patience</code>.</li>
+<li>While a collapse is being confirmed, or right after a rollback until the restored policy's scores can be read.</li>
+<li>While <code>hold_dormant(True)</code> is in effect, or before <code>min_at_before_dormant</code>.</li>
+<li><strong>A run that collapsed and stays down</strong> turns into <code>REGRESSED_STALLED</code> once the medium window has moved past the fall. Patience keeps running from the last real improvement, so such a run <em>is</em> eventually declared DORMANT. Loops restore the best weights at that point.</li>
+<li><strong>Slow learners.</strong> "A slow learner is not converged" holds only above a detection floor. The 128-observation long window resolves slopes down to about 2σ·√(12/128³) ≈ 0.005σ per observation, roughly 0.8σ of gain per default <code>dormant_patience</code>. A learner slower than that is declared DORMANT with that much gain still to come.</li>
+<li>To push the floor down, raise the long timescale. For example, <code>(8, 32, 256)</code> reduces the gain left at DORMANT by about a third, at the cost of about 40 more observations before DORMANT on a plateau.</li>
+</ul>
+<p><strong>Known limits:</strong></p>
+<ul>
+<li><strong>Oscillating scores.</strong> A policy that oscillates on the medium timescale (for example a period of about 50 observations) is reported as repeatedly <code>COLLAPSING</code>. Each fall is a real, significant fall.</li>
+<li><strong>Noise jumps.</strong> σ lags a sudden jump in noise by up to one long window.</li>
+<li><strong>Discrete metrics near their ceiling.</strong> For example, accuracy at 0.97 on 50 samples: σ is over-estimated by about 1.5×, which makes detection slower.</li>
 </ul>
 <h2 id="constructor">Constructor</h2>
 <pre><code class="language-python">ConvergenceMonitor(
-    timescales=(8, 32, 128),      # (short, medium, long) observations; first `medium` = warm-up
+    timescales=(8, 32, 128),      # (short, medium, long) observations; 3 &lt;= short &lt;= medium &lt;= long, long &gt;= 8
     cooling_patience=32,          # units of `at` without IMPROVING -&gt; COOLING
     dormant_patience=160,         # units of `at` without IMPROVING -&gt; DORMANT
     z=2.0,                        # significance (standard errors) of every test
@@ -331,6 +412,8 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
     min_delta=0.0,                # smallest absolute gain over the peak that counts
     min_at_before_dormant=0,      # DORMANT never before this position
     autocorrelation=True,         # correct SEs for AR(1) noise
+    rel_delta=0.0,                # relative minimum gain (see above)
+    outlier_k=3.0,                # Hampel clipping width in noise SDs; 0 disables
 )
 </code></pre>
 <h2 id="methods">Methods</h2>
@@ -344,11 +427,11 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 <tbody>
 <tr>
 <td><code>observe(score, at=None, probing=False)</code></td>
-<td>Record one score and return a <code>ConvergenceReport</code>. <code>at</code> must not decrease; it defaults to the observation count. With <code>probing=True</code> (a deliberate perturbation such as an SPSA probe) a collapse is never confirmed.</td>
+<td>Record one score and return a <code>ConvergenceReport</code>. <code>at</code> must not decrease within a segment; it defaults to the observation count.</td>
 </tr>
 <tr>
 <td><code>restart(at=None)</code></td>
-<td>A new policy variant (spawn, topology change). The peak is kept, so the variant must still beat it. Trend history and patience start afresh.</td>
+<td>A new policy variant (spawn, topology change, a repeated <code>run()</code>). The peak is kept, so the variant must still beat it. Trend history and patience start afresh; σ and ρ are carried over.</td>
 </tr>
 <tr>
 <td><code>note_restored(at=None)</code></td>
@@ -359,8 +442,12 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 <td>The score scale changed. Forget everything, including the peak.</td>
 </tr>
 <tr>
+<td><code>hold_dormant(hold)</code></td>
+<td>While held, the state stops at COOLING: DORMANT is neither entered nor reported. Releasing lets DORMANT be entered on the next observation.</td>
+</tr>
+<tr>
 <td><code>defer_dormant()</code></td>
-<td>The owning loop refuses DORMANT for now. Step back to COOLING so DORMANT can be entered again later.</td>
+<td>One-off: step back from DORMANT to COOLING.</td>
 </tr>
 </tbody>
 </table>
@@ -380,15 +467,15 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tr>
 <tr>
 <td><code>scales</code></td>
-<td><code>{"short" / "medium" / "long": ScaleReading(n, level, level_se, slope, slope_se)}</code>, for the windows that are full</td>
+<td><code>{"short" / "medium" / "long": ScaleReading(n, level, level_se, slope, slope_se)}</code> for the windows that are full</td>
 </tr>
 <tr>
 <td><code>sigma</code>, <code>rho</code></td>
-<td>per-observation noise and its lag-1 autocorrelation</td>
+<td>per-observation noise (<code>None</code> before an estimate exists) and lag-1 autocorrelation</td>
 </tr>
 <tr>
 <td><code>peak</code>, <code>peak_at</code>, <code>best_score</code></td>
-<td>bias-corrected peak level, where it was last raised, highest raw score</td>
+<td>the peak level (see above), where it was last set, the highest raw score</td>
 </tr>
 <tr>
 <td><code>gap_to_peak</code></td>
@@ -404,7 +491,7 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tr>
 <tr>
 <td><code>eta_to_peak</code></td>
-<td>units of <code>at</code> to climb back at the current slope (<code>inf</code> unless <code>REGRESSED_CLIMBING</code>)</td>
+<td><code>REGRESSED_CLIMBING</code>: units of <code>at</code> to climb back at the current medium slope. <code>inf</code> when below the peak but not climbing. <code>None</code> when not below the peak.</td>
 </tr>
 <tr>
 <td><code>improved</code>, <code>peak_raised</code></td>
@@ -439,47 +526,52 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tr>
 <tr>
 <td><code>entered_cooling</code></td>
-<td><code>optimizer.on_cooling</code>, RND η × 1.5, <code>on_plateau</code> callback</td>
-<td><code>spsa.on_cooling</code>, <code>on_plateau</code> callback</td>
+<td><code>optimizer.on_cooling</code>, RND η × 1.5, <code>on_plateau</code></td>
+<td><code>spsa.on_cooling</code>, <code>on_plateau</code></td>
 <td><code>optimizer.on_cooling</code>, <code>on_plateau</code></td>
 </tr>
 <tr>
 <td><code>collapse_confirmed</code></td>
-<td><code>on_degradation</code>, plus rollback when enabled (on-policy only)</td>
+<td><code>on_degradation</code>; rollback when enabled, on-policy only, and not again until the run has been back at the peak</td>
 <td>—</td>
-<td><code>on_degradation</code>, plus rollback when enabled (on-policy only)</td>
+<td><code>on_degradation</code>; rollback under the same rule</td>
 </tr>
 <tr>
 <td><code>entered_dormant</code></td>
-<td><code>optimizer.on_plateau</code>, <code>on_dormant</code>, stop unless a callback resumes</td>
-<td><code>on_dormant</code>, stop (<code>stop_reason="converged"</code>)</td>
+<td><code>optimizer.on_plateau</code>, <code>on_dormant</code>; stop unless a callback resumes (state stays DORMANT)</td>
+<td><code>on_dormant</code>; stop when convergence is on (<code>stop_reason="converged"</code>)</td>
 <td><code>optimizer.on_plateau</code>, <code>on_converged</code></td>
 </tr>
 <tr>
 <td>any regime or state change</td>
-<td><code>on_convergence(episode_id, report)</code></td>
+<td><code>on_convergence(episode_id, report)</code> (including the cold start)</td>
 <td><code>on_convergence(epoch, report)</code></td>
 <td><code>on_convergence(agent_id, window_id, report)</code></td>
 </tr>
 </tbody>
 </table>
+<p>The RL loop and the multi-agent runner hold DORMANT (<code>hold_dormant</code>) until <code>min_completed_episodes_before_dormant</code> / <code>min_completed_episodes_before_converged</code> episodes have finished.</p>
 <h2 id="behaviour-under-simulation">Behaviour under simulation</h2>
-<p>Noise σ = 5 around a level of 100, 20 seeds:</p>
+<p>The figures below are medians over 16 seeds. Rows marked † are other scenarios from the statistical audit.</p>
 <table>
 <thead>
 <tr>
 <th>Scenario</th>
-<th>Result (median)</th>
+<th>Result</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Flat plateau, false <code>IMPROVING</code> per 2,800 episodes</td>
+<td>Flat plateau (σ = 5), false <code>IMPROVING</code> observations per 2,800</td>
 <td>3</td>
 </tr>
 <tr>
 <td>Flat plateau, episodes to DORMANT</td>
-<td>213</td>
+<td>220</td>
+</tr>
+<tr>
+<td>Autocorrelated plateau (AR ρ = 0.6), false <code>REGRESSED</code> observations per 2,800 / false collapses per run</td>
+<td>14.5 / 0</td>
 </tr>
 <tr>
 <td>Dip −30, then recovery to the same level, counted as <code>IMPROVING</code></td>
@@ -487,7 +579,7 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tr>
 <tr>
 <td>Dip −30, delay until reported as regressed / collapsing</td>
-<td>3</td>
+<td>4</td>
 </tr>
 <tr>
 <td>Drop −15 that stays, delay to <code>REGRESSED_STALLED</code></td>
@@ -495,19 +587,31 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </tr>
 <tr>
 <td>Collapse −30, delay to confirmed</td>
-<td>4</td>
+<td>3</td>
 </tr>
 <tr>
 <td>Learning resumes at +0.5 / +0.2 / +0.05 per episode, delay to <code>IMPROVING</code></td>
-<td>19 / 28 / 78</td>
+<td>19 / 27 / 69</td>
 </tr>
 <tr>
-<td>Steady slow learner (+0.05 per episode), ever DORMANT</td>
+<td>Steady learner at +0.05 per episode, ever DORMANT</td>
 <td>never</td>
+</tr>
+<tr>
+<td>† 1 % outlier episodes at −60, false collapses per run</td>
+<td>0</td>
+</tr>
+<tr>
+<td>† Student-t(3) noise, false collapses per run</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>False collapse right after a rollback, autocorrelated noise</td>
+<td>0 % (p90 0)</td>
 </tr>
 </tbody>
 </table>
-<p>Cost is about 0.2 ms per observation.</p>
+<p>Cost is about 0.35 ms per observation.</p>
               
             </div>
           </div><footer>

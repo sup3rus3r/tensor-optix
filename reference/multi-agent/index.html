@@ -472,9 +472,10 @@ class SeatResult:
 <h3 id="collapse-detection-and-rollback">Collapse detection and rollback</h3>
 <p>Collapses are <strong>detected and reported for every seat</strong>: <code>on_degradation(agent_id, window_id, score, rolled_back)</code> fires when the seat's monitor confirms a collapse. Confirmation means the <code>COLLAPSING</code> regime held for <code>min_consecutive_degradations</code> consecutive windows, judged against the seat's own peak and noise. Rollback is off by default; <code>rollback_on_degradation=True</code> requires <code>checkpoint_dir</code>.</p>
 <ul>
-<li>With rollback on, an on-policy seat's best checkpoint is restored and training continues. The monitor forgets the collapsed scores but keeps the peak, and a renewed collapse is rolled back again.</li>
+<li>With rollback on, an on-policy seat's best checkpoint is restored and training continues. The monitor forgets the collapsed scores but keeps the peak.</li>
+<li>If the restored seat collapses again before it has been back at its peak, the collapse is reported (<code>rolled_back=False</code>) but not rolled back a second time: a restore that did not help would otherwise loop forever.</li>
 <li>Off-policy agents are reported (<code>rolled_back=False</code>) but never rolled back: their replay buffer would pull restored weights straight back.</li>
-<li>A collapsing seat does not count toward convergence, so it is never declared converged at its collapsed level.</li>
+<li>DORMANT is withheld while a collapse is being confirmed or in progress. A seat that stays down turns into <code>REGRESSED_STALLED</code>, and its patience keeps running from its last real improvement, so it is eventually declared converged. Its best weights are restored at the end.</li>
 <li>Windows in which the seat's optimizer is probing never confirm a collapse.</li>
 <li><strong>With self-play enabled</strong>, only windows in which at least one <em>other</em> seat was played by a pool snapshot can confirm a collapse. In a competitive game a score also drops when the opponent improves, which is not a collapse; windows against a frozen opponent are the ones where the opposition did not change.</li>
 </ul>

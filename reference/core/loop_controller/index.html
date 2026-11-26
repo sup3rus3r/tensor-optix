@@ -449,7 +449,7 @@ smooth through degradations without rollback.
 <li><strong>History:</strong> scores from the collapsed policy are dropped from the trend history.</li>
 <li><strong>Peak and patience:</strong> both are kept, since restoring is not progress.</li>
 <li><strong>No early DORMANT:</strong> the run cannot be declared DORMANT until the restored policy's scores can be read.</li>
-<li><strong>Renewed collapse:</strong> if the restored policy collapses again, that is detected and rolled back again.</li>
+<li><strong>Renewed collapse:</strong> if the restored policy collapses again before it has been back at the peak, the collapse is reported (<code>on_degradation</code>) but <strong>not</strong> rolled back a second time. A restore that did not help points at something other than the weights (environment, hyperparameters), and repeating it would loop forever.</li>
 </ul>
 <h2 id="convergence-actions">Convergence actions</h2>
 <p>Each action runs <strong>once, on entry</strong>:</p>
@@ -458,7 +458,18 @@ smooth through degradations without rollback.
 <li><strong>Entering DORMANT:</strong> <code>optimizer.on_plateau()</code>, RND η = 0, <code>on_dormant</code> fires, then the DORMANT rule below.</li>
 <li><strong>Every <code>IMPROVING</code> observation:</strong> <code>optimizer.on_improvement()</code> and RND η × 0.9.</li>
 </ul>
-<p>A regressed run is <strong>reported</strong> (<code>on_convergence</code>, <code>report.gap_to_peak</code>, <code>report.eta_to_peak</code>) and keeps counting toward DORMANT, because climbing back to the peak is not progress. A collapsing run does not count toward DORMANT, so it is never declared converged at its collapsed level.</p>
+<p>A regressed run is <strong>reported</strong> (<code>on_convergence</code>, <code>report.gap_to_peak</code>, <code>report.eta_to_peak</code>) and keeps counting toward DORMANT, because climbing back to the peak is not progress.</p>
+<ul>
+<li><strong>While collapsing:</strong> DORMANT is withheld while a collapse is being confirmed or is in progress.</li>
+<li><strong>Once the fall is past:</strong> a run that stays down turns into <code>REGRESSED_STALLED</code>. Patience keeps running from the last real improvement, so the run is eventually declared DORMANT and stops, and <code>run()</code> restores the best weights.</li>
+</ul>
+<p><strong>DORMANT behaviour:</strong></p>
+<ul>
+<li><strong>Sticky:</strong> once DORMANT, only new ground or a confirmed collapse leaves it.</li>
+<li><strong>Not during warm-up:</strong> DORMANT is never entered while the trends are still in warm-up. During warm-up the evaluation interval does not back off either, so the monitor gets the observations it needs.</li>
+<li><strong>Final state:</strong> when the loop stops at DORMANT, <code>state</code> and <code>convergence.state</code> both read DORMANT.</li>
+<li><strong>Running again:</strong> a repeated <code>run()</code> starts a new monitor segment and keeps the peak.</li>
+</ul>
 <h2 id="what-happens-at-dormant">What happens at DORMANT</h2>
 <p>After <code>on_dormant</code> callbacks have run, the loop stops unless a callback asks for more training:</p>
 <ul>
@@ -483,7 +494,7 @@ restart     → eta = base   (reset after dormant restart)
 <li><strong>The default evaluators</strong> (<code>TorchEvaluator</code> / <code>TFEvaluator</code>) use the mean of those returns as <code>primary_score</code> and report <code>metrics["episodes_completed"]</code>. With a custom <code>primary_score_fn</code> the count is not reported and none of the rules below apply.</li>
 <li><strong>A window in which no episode finished is not an evaluation.</strong> The agent still learns from it, but there is no checkpoint decision, no monitor observation and no hyperparameter step; <code>on_episode_end</code> fires with <code>eval_metrics=None</code>.</li>
 <li><strong>Before the first episode ever finishes</strong> there is nothing better to score with, so windows are scored by mean per-step reward. When the first episode finishes the scale changes from per-step reward to episode return, so the best score, the monitor (<code>reset_scale()</code>) and the metrics history are reset at that point - otherwise a per-step best such as <code>-1.0</code> could never be beaten by a return such as <code>-200</code>.</li>
-<li><strong><code>min_completed_episodes_before_dormant</code></strong> (default <code>10</code>): DORMANT is deferred (<code>monitor.defer_dormant()</code>) until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to <code>0</code>.</li>
+<li><strong><code>min_completed_episodes_before_dormant</code></strong> (default <code>10</code>): DORMANT is held (<code>monitor.hold_dormant()</code>: neither entered nor reported) until that many episodes have finished. A flat score built on a handful of episodes - or on none - is not treated as convergence. For a genuinely continuing task whose episodes never end, set it to <code>0</code>.</li>
 </ul>
 <p>With a validation pipeline the same rules are applied to the validation windows (<code>val_episodes_completed</code>), since the validation score is what drives the loop.</p>
               
