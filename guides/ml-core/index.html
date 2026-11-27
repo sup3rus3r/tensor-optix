@@ -107,6 +107,19 @@
                   <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery-statistics/">Statistics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../gbdt/">Gradient-boosted trees</a>
+                </li>
+              </ul>
               <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
@@ -384,7 +397,7 @@ model.fit((X_train, y_train), (X_val, y_val), epochs=50)  # fixed budget: exactl
 <ul>
 <li><code>on_improvement(metrics)</code>: every new best.</li>
 <li><code>on_no_improvement(metrics)</code>: every epoch without one.</li>
-<li><code>on_plateau(metrics)</code>: <strong>once</strong>, on entering COOLING. SPSA's <code>on_cooling</code> also widens its search at that point.</li>
+<li><code>on_plateau(metrics)</code>: <strong>once</strong>, on entering COOLING. Unlike the RL loop, the trainer does <em>not</em> widen SPSA's search at that point: on a smooth supervised curve a plateau usually means convergence, and larger probes would only disturb the model.</li>
 <li><code>on_dormant(epoch)</code>: once, on entering DORMANT.</li>
 <li><code>on_convergence(epoch, report)</code>: on every regime or state change.</li>
 </ul>
@@ -408,6 +421,14 @@ model.fit(train, val,
     default_param_bounds = {&quot;learning_rate&quot;: (1e-5, 1e-2), &quot;weight_decay&quot;: (0.0, 1e-2)}
 </code></pre>
 <p><code>TorchMLModel</code>/<code>TFMLModel</code> both already set this for <code>learning_rate</code>/<code>weight_decay</code> by default.</p>
+<p>Control it per <code>fit()</code> call with <code>spsa=</code>:</p>
+<pre><code class="language-python">model.fit(train, val, spsa=False)                         # no online tuning
+model.fit(train, val, spsa=SPSAOptimizer(                  # gentler probes and steps
+    param_bounds={&quot;learning_rate&quot;: (1e-5, 1e-2)}, log_params=[&quot;learning_rate&quot;],
+    perturbation_scale=0.02, learning_rate=0.05))
+</code></pre>
+<p>SPSA estimates its gradient from two <strong>probe</strong> epochs per cycle (plus and minus a perturbation), then commits an update. Probe epochs train under a deliberately perturbed configuration, so their validation scores are <strong>not</strong> fed to the convergence monitor: they can't count as new ground, raise the peak or move the trends. They are listed in <code>FitHistory.probe_epochs</code>. Patience still counts them, because they are real epochs of training.</p>
+<p>As a result, with the default tuner only every third epoch is a progress reading, and an open-ended <code>fit()</code> takes a little longer to reach a convergence decision than with <code>spsa=False</code>.</p>
 <h2 id="learning-rate-schedules">Learning-rate schedules</h2>
 <p>Pass <code>lr_schedule</code> to <code>fit()</code> for a per-epoch learning-rate schedule, independent of SPSA:</p>
 <pre><code class="language-python">from tensor_optix.ml_core import StepLR, CosineAnnealingLR, WarmupLR

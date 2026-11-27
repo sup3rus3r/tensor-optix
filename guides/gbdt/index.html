@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Gradient-boosted trees - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Gradient-boosted trees";
+        var mkdocs_page_input_path = "guides\\gbdt.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery-statistics/">Statistics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul class="current">
+                <li class="toctree-l1 current"><a class="reference internal current" href="#">Gradient-boosted trees</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#what-it-does">What it does</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#accuracy-and-speed">Accuracy and speed</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#in-discovery">In discovery</a>
+    </li>
+    </ul>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+      <li class="breadcrumb-item active">Gradient-boosted trees</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/gbdt.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="gradient-boosted-trees-tensor_optixgbdt">Gradient-boosted trees (tensor_optix.gbdt)</h1>
+<p>A native histogram gradient-boosted decision tree implementation in numpy -- no compiled dependency -- with early stopping by tensor-optix's <code>ConvergenceMonitor</code>.</p>
+<pre><code class="language-python">from tensor_optix.gbdt import GBDTClassifier, GBDTRegressor
+
+clf = GBDTClassifier(learning_rate=0.05, max_depth=6).fit(X_train, y_train)
+proba = clf.predict_proba(X_test)
+labels = clf.predict(X_test)                      # original labels (any hashable type)
+
+reg = GBDTRegressor(objective=&quot;l2&quot;).fit(X_train, y_train, eval_set=(X_val, y_val))
+counts = GBDTRegressor(objective=&quot;poisson&quot;).fit(X_train, n_events)
+</code></pre>
+<h2 id="what-it-does">What it does</h2>
+<ul>
+<li><strong>Histogram splits</strong>: numeric features are binned once into up to <code>max_bins</code> quantile bins; trees grow depth-wise and every level's histograms come from one <code>bincount</code> per feature.</li>
+<li><strong>Second-order gains</strong> with L2 regularisation: <code>G_L²/(H_L+λ) + G_R²/(H_R+λ) - G²/(H+λ) - γ</code>; leaves are <code>-G/(H+λ)</code> times the learning rate.</li>
+<li><strong>Missing values</strong> need no imputation: each feature has a missing bin, and every split learns whether missing values go left or right (unseen values at predict time follow the same direction).</li>
+<li><strong>Native categorical splits</strong>: pass <code>categorical_features=[column indices]</code> (integer-coded columns). Within a node the categories are ordered by <code>G/(H+cat_smooth)</code> and the best prefix goes left -- the optimal binary partition for these losses -- instead of treating codes as numbers. Regularised as in LightGBM: categories with fewer than <code>cat_smooth</code> rows stay out of the search, categorical gains get an extra <code>cat_l2</code>, each side needs <code>min_data_per_group</code> rows, and at most <code>max_cat_threshold</code> categories go to one side. Unseen categories map to an "other" bin.</li>
+<li><strong>Objectives</strong>: binary and multiclass log loss (classifier), squared error and Poisson (regressor).</li>
+<li><strong>Row / column subsampling</strong>: <code>subsample</code>, <code>colsample</code> (per boosting round), seeded by <code>seed</code>.</li>
+<li><strong>Early stopping</strong>: with <code>early_stopping=True</code> (default) a <code>validation_fraction</code> of the training rows -- or <code>eval_set</code> -- is scored after every round, and a <code>ConvergenceMonitor</code> on the negated validation loss stops training once it reaches DORMANT (no new ground for its patience, no slow rise in progress). The model is truncated to the round with the lowest validation loss (<code>best_iteration_</code>); <code>stop_reason_</code> says <code>"converged"</code> or <code>"n_estimators"</code> (the size cap).</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Default</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>n_estimators</code></td>
+<td>2000</td>
+<td>maximum boosting rounds</td>
+</tr>
+<tr>
+<td><code>learning_rate</code></td>
+<td>0.1</td>
+<td>shrinkage</td>
+</tr>
+<tr>
+<td><code>max_depth</code></td>
+<td>6</td>
+<td></td>
+</tr>
+<tr>
+<td><code>min_samples_leaf</code></td>
+<td>20</td>
+<td></td>
+</tr>
+<tr>
+<td><code>min_child_weight</code></td>
+<td>1e-3</td>
+<td>minimum hessian per child</td>
+</tr>
+<tr>
+<td><code>reg_lambda</code>, <code>gamma</code></td>
+<td>1.0, 0.0</td>
+<td>L2 on leaf values, minimum split gain</td>
+</tr>
+<tr>
+<td><code>subsample</code>, <code>colsample</code></td>
+<td>1.0, 1.0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>max_bins</code></td>
+<td>255</td>
+<td></td>
+</tr>
+<tr>
+<td><code>categorical_features</code></td>
+<td><code>()</code></td>
+<td>column indices</td>
+</tr>
+<tr>
+<td><code>cat_smooth</code>, <code>cat_l2</code>, <code>min_data_per_group</code>, <code>max_cat_threshold</code></td>
+<td>10, 10, 100, 32</td>
+<td>categorical regularisation</td>
+</tr>
+<tr>
+<td><code>early_stopping</code>, <code>validation_fraction</code></td>
+<td>True, 0.1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>seed</code></td>
+<td>0</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="accuracy-and-speed">Accuracy and speed</h2>
+<p><code>benchmarks/validate_gbdt.py</code> compares it with LightGBM on six problems (Friedman-1, interactions with 10% missing values, a 200-level categorical, multiclass, Poisson counts, a 2%-positive binary target) over three seeds with the same rows, validation rows and learning rate. The native implementation is within each metric's practical threshold of LightGBM on all of them; it is pure numpy and typically 10-20x slower.</p>
+<h2 id="in-discovery">In discovery</h2>
+<p>Discovery offers it as the <code>gbdt</code> family. It is tried by default only when neither LightGBM nor XGBoost is installed -- so boosted trees are always part of the comparison -- and on request otherwise:</p>
+<pre><code class="language-python">discover(df, target=&quot;y&quot;, families=[&quot;linear&quot;, &quot;gbdt&quot;, &quot;lightgbm&quot;])
+</code></pre>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../../reference/discovery/" class="btn btn-neutral float-left" title="Reference"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../learning-to-learn/" class="btn btn-neutral float-right" title="Guide">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../../reference/discovery/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../learning-to-learn/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

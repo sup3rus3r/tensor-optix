@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Statistics - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Statistics";
+        var mkdocs_page_input_path = "guides\\discovery-statistics.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Guide</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Statistics</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#principles">Principles</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#comparing-two-families">Comparing two families</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#time-ordered-data">Time-ordered data</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#the-recommendation-rule">The recommendation rule</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#structure-detectors">Structure detectors</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#leakage-detectors">Leakage detectors</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#shift-detectors">Shift detectors</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#feature-opportunities">Feature opportunities</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#reinforcement-learning">Reinforcement learning</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#calibration">Calibration</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#benchmark">Benchmark</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../gbdt/">Gradient-boosted trees</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Discovery</li>
+      <li class="breadcrumb-item active">Statistics</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/discovery-statistics.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="discovery-statistics">Discovery statistics</h1>
+<p>This page states exactly how discovery reaches each conclusion, so a report can be checked rather than trusted. Everything is implemented in numpy (no scipy); every random choice derives from the run's <code>seed</code>.</p>
+<h2 id="principles">Principles</h2>
+<ul>
+<li><strong>Our own evaluation must not leak.</strong> All preprocessing statistics are learned inside training folds; target encoding is out-of-fold <em>within</em> the training rows; duplicate rows never straddle a split; the confirmation holdout is cut before any model selection and used once.</li>
+<li><strong>Identical folds for every family.</strong> All comparisons are paired by fold id (or by test row), which removes most of the fold-to-fold noise from the difference.</li>
+<li><strong>Practical significance, not just statistical.</strong> Each metric has a <em>region of practical equivalence</em> (ROPE): differences smaller than it do not matter. A verdict needs the interval of the difference to clear it.</li>
+<li><strong>Conservative detectors.</strong> A false "leak" or "grouped data" alarm costs trust, so every detector is calibrated (below).</li>
+</ul>
+<h2 id="comparing-two-families">Comparing two families</h2>
+<p>For per-fold scores <code>a_j</code>, <code>b_j</code> on the same folds, the difference <code>d_j = a_j - b_j</code> (oriented so positive means <code>a</code> is better) gets the <strong>Nadeau-Bengio corrected resampled t interval</strong>:</p>
+<pre><code>se = sqrt((1/J + n_test/n_train) * var(d))
+</code></pre>
+<p>The <code>n_test/n_train</code> term corrects for the overlap between CV training sets, which makes the plain t interval far too narrow.</p>
+<p>The verdict compares the 95% interval <code>[lo, hi]</code> with the ROPE <code>r</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Interval</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lo &gt; r</code></td>
+<td><code>better</code></td>
+</tr>
+<tr>
+<td><code>hi &lt; -r</code></td>
+<td><code>worse</code></td>
+</tr>
+<tr>
+<td><code>-r &lt;= lo</code> and <code>hi &lt;= r</code></td>
+<td><code>equivalent</code></td>
+</tr>
+<tr>
+<td>otherwise</td>
+<td><code>undetermined</code></td>
+</tr>
+</tbody>
+</table>
+<p>Default ROPEs: AUC 0.005; accuracy / balanced accuracy / macro-F1 / R² 0.01; RMSE / MAE 1% of the target's standard deviation; log-loss / Brier / Poisson deviance 1% of the dummy model's loss.</p>
+<p>p-values of all comparisons against the leader are <strong>Holm-adjusted</strong>.</p>
+<h3 id="time-ordered-data">Time-ordered data</h3>
+<p>Forward-chaining CV (train on the past, test on the next block) cannot be repeated, so it gives only a handful of fold scores. Discovery uses 5-10 test blocks of at least 100 rows each, and -- when the metric is a mean of per-row losses (RMSE, MAE, log-loss, Brier, Poisson deviance) -- compares families with a <strong>Diebold-Mariano test on the pooled test rows</strong>: the per-row loss differences, in time order, with a Newey-West (HAC) standard error.</p>
+<p>The HAC bandwidth is chosen from the data (<strong>Andrews 1991</strong>, AR(1) plug-in: <code>1.1447 (α n)^{1/3}</code> with <code>α = 4ρ² / ((1-ρ)²(1+ρ)²)</code>), never shorter than the forward-chaining gap. A fixed short bandwidth badly understates the uncertainty when the loss differences are persistent. RMSE differences are reported on the RMSE scale (MSE difference / 2·RMSE).</p>
+<h2 id="the-recommendation-rule">The recommendation rule</h2>
+<ol>
+<li>The <strong>leader</strong> is the family with the best mean score.</li>
+<li>Every other family is compared with the leader.</li>
+<li>If the leader is not <code>better</code> than the dummy baseline: <strong>abstain</strong>, saying whether the evidence shows no meaningful signal (<code>equivalent</code>/<code>worse</code>) or is merely inconclusive (<code>undetermined</code>).</li>
+<li>Among the leader and the families <code>equivalent</code> to it, the <strong>simplest</strong> wins (simplicity order: linear &lt; naive Bayes &lt; k-NN &lt; boosted trees &lt; MLP). If that is not the leader, the verdict is <code>tie_simplest_chosen</code>.</li>
+<li>Otherwise <code>clear_winner</code> if every other family is <code>worse</code>, else <code>undetermined</code> with the unresolved families as alternatives.</li>
+<li>While comparisons with the leader are <code>undetermined</code> and the budget allows, CV repeats are added for the leader and those families (up to 5 repeats; not for forward chaining).</li>
+</ol>
+<p>The chosen family is refit on all development rows and scored on the holdout. Its interval is a percentile bootstrap: whole groups for grouped data, moving blocks for temporal data, rows otherwise.</p>
+<h2 id="structure-detectors">Structure detectors</h2>
+<p><strong>Grouped data.</strong> For each candidate group column (repeating values, not unique per row), the same reference model is scored with a random split and with a group split. The <em>split gap</em> (random minus group score) gets an interval from both sets of resampled scores; with several candidates the level is Bonferroni-corrected. A gap that clears the ROPE is <code>critical</code> (discovery switches to a group split); a gap whose interval excludes 0 but not the ROPE is an <code>advisory</code> <em>possible groups</em> finding, applied only if you accept it.</p>
+<p><strong>Temporal data.</strong> For a datetime column (or the row order), a model trained on the past and one trained on an equal-size random sample of all other rows predict the same future blocks; the time column is excluded from both, so a date trend cannot be extrapolated. The per-row loss differences get a Diebold-Mariano test as above. A past-only model that is worse by more than the ROPE means the data drifts: validate with forward chaining.</p>
+<p><strong>Row order.</strong> The same Diebold-Mariano result on the row index, plus a Spearman correlation between row position and the target (|ρ| ≥ 0.3, p &lt; 0.001) for files sorted by outcome.</p>
+<h2 id="leakage-detectors">Leakage detectors</h2>
+<p>All scores are out-of-fold on the structure-correct split, expressed as <strong>skill</strong>: the fraction of the possible improvement over the dummy, <code>(score - dummy) / (perfect - dummy)</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Rule</th>
+<th>Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single feature near-perfect</td>
+<td>depth-3 tree on that feature alone, skill &gt;= 0.90 (AUC &gt;= 0.95)</td>
+<td><code>warning</code>, <code>critical</code> if its name matches the target's; excluded from discovery's experiments; the full model's score without it is attached</td>
+</tr>
+<tr>
+<td>One feature dominates</td>
+<td>&gt;= 90% of the full model's skill and twice the next feature's</td>
+<td><code>info</code></td>
+</tr>
+<tr>
+<td>Identifier predicts</td>
+<td>an id, used as a number, skill &gt;= 0.2 with an interval above 0</td>
+<td><code>warning</code></td>
+</tr>
+<tr>
+<td>Missingness predicts</td>
+<td>the missing indicator alone, skill &gt;= 0.1</td>
+<td><code>advisory</code></td>
+</tr>
+<tr>
+<td>Future target</td>
+<td>a feature equals the target 1-3 steps later in &gt;= 90% of rows (time-ordered data)</td>
+<td><code>critical</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="shift-detectors">Shift detectors</h2>
+<p>With <code>test=</code>: an out-of-fold depth-3 tree trying to tell training rows from test rows (adversarial validation; <code>advisory</code> when the AUC's lower bound exceeds 0.55, <code>warning</code> at AUC &gt;= 0.70), plus per-feature tests -- Kolmogorov-Smirnov and PSI for numeric features, chi-square (rare categories pooled so expected counts are &gt;= 5) for categoricals. Per-feature results are Holm-adjusted and reported only when the adjusted p &lt; 0.01 <em>and</em> the effect is large enough to matter (KS D or PSI &gt;= 0.1, total-variation distance &gt;= 0.1). Exact train/test row overlap and columns missing from <code>test</code> are reported too. Datetime columns are compared by range only.</p>
+<p>For time-ordered data, the same per-feature tests compare the earliest third with the latest third, plus the target.</p>
+<h2 id="feature-opportunities">Feature opportunities</h2>
+<p><strong>Detection</strong> (decides only which families are tried): Ljung-Box over lags 1-10 on the target and on numeric features in time order, summed over series (independent series: chi-square with the summed degrees of freedom), p &lt; 0.01; McLeod-Li (Ljung-Box on squared residuals of a per-series AR(1) fit) for volatility clustering, p &lt; 0.01; skewness &gt; 2 in absolute value; the landmark interaction / non-linearity signals; a datetime column; a grouped structure. Scalers: robust when &gt;= 1% of a column lies beyond 3 IQR from the quartiles, quantile when |skewness| &gt; 2 or excess kurtosis &gt; 7.</p>
+<p><strong>Validation</strong>: the recommended family (or, when that is the MLP, the best cheaper family) is evaluated on the same folds with and without the family's features (or with the alternative scaler on the triggering columns), and the two are compared with the same paired test as families (corrected resampled t, or the pooled Diebold-Mariano test under forward chaining). A family is recommended when the verdict is <code>better</code> (the interval clears the ROPE) and the Holm-adjusted p &lt; 0.05 across the families tried; scalers form their own Holm group.</p>
+<p><strong>Leakage safety</strong>: every generated feature uses only the row and earlier rows of its series; target lags start at lag 1; group aggregates use features only; series with tied timestamps get no past-only features.</p>
+<h2 id="reinforcement-learning">Reinforcement learning</h2>
+<p><strong>Probes</strong> (random policy, up to 10 000 steps): reward sparsity = fewer than 1% of steps with a reward other than the most common value <em>and</em> fewer than 5% of episodes with a distinct return (a constant +1 per step with varying episode lengths is dense); observation scale = largest |mean| + std above 10, or a largest-to-smallest spread ratio above 100; determinism = two replays of the same seeded action sequence.</p>
+<p><strong>Partial observability</strong>: quadratic-basis ridge models predict the <em>change</em> of the observation, <code>o(t+1) - o(t)</code>, from <code>(o(t), a(t))</code> and from <code>(o(t), a(t), o(t-1), a(t-1))</code>, compared with paired 5x2 CV (corrected resampled t); statistic: the largest R² gain over observation dimensions. Flagged when its lower 95% bound exceeds 0.10. The change is the right target because it is a function of the full state: with a hidden velocity it is poorly predicted from the current observation and recovered by the previous one, while the next observation itself is predicted almost perfectly either way. On fully observed environments (CartPole, Pendulum, Acrobot, MountainCar, LunarLander) the gain stays below 0.05; on CartPole with velocities masked it is about 0.57.</p>
+<p><strong>Trials</strong>: each (algorithm, seed) trains a fresh agent on a fresh, seeded environment for the same number of steps (<code>RLOptimizer</code>, best checkpoint restored, no online tuning), then the mean return over fixed evaluation episodes is the seed's score. Seeds are independent replicates, so comparisons use a plain paired t interval over seeds; ROPE = 5% of |leader - random policy|. Variants are Holm-adjusted among themselves. Torch runs in <code>fork_rng</code> on the CPU and numpy's / the stdlib's global RNGs are restored after each trial.</p>
+<h2 id="calibration">Calibration</h2>
+<p>Each detector is run on 200 seeded <em>null</em> datasets (no planted effect). The exact (Clopper-Pearson) upper 95% bound of its false-alarm rate must be &lt;= 0.08; the test suite enforces this (<code>tests/test_discovery/test_calibration.py</code>, marked <code>slow</code>). The same suite checks that two exchangeable families on strongly autocorrelated series (AR coefficient 0.95) are rarely declared different by the pooled comparison, and that null datasets built to trigger every feature detector (skewed noise columns, a datetime column, a persistent irrelevant feature) rarely get a feature family or scaler recommended.</p>
+<p>Planted-effect tests check the other direction: planted leaks, groups, drift, covariate shift, non-linearity and noise-only targets are each reported (or, for noise, lead to abstaining).</p>
+<h2 id="benchmark">Benchmark</h2>
+<p><code>benchmarks/validate_discovery.py</code> runs discovery on six realistic synthetic datasets -- churn with a leaked column, repeated patient visits, daily sales with drift, a 600-level categorical, 2% fraud, Friedman-1 -- each with a fresh test set from the same generator (new customers, new patients, the future). It checks that every planted issue is reported, that the recommended family's test score is within the ROPE of the best family's on at least 80% of datasets and never worse than the dummy, that the run stays within its budget, and that the report renders in under a second.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../discovery/" class="btn btn-neutral float-left" title="Guide"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../../reference/discovery/" class="btn btn-neutral float-right" title="Reference">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../discovery/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../../reference/discovery/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

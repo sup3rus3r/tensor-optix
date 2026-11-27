@@ -83,6 +83,19 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/discovery/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../../guides/discovery-statistics/">Statistics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../../guides/gbdt/">Gradient-boosted trees</a>
+                </li>
+              </ul>
               <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../../guides/learning-to-learn/">Guide</a>
@@ -375,7 +388,7 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 </table>
 <ul>
 <li><strong>Persistence.</strong> A new regime must hold for <code>persist</code> consecutive observations before it is reported.</li>
-<li><strong>Probing.</strong> A collapse is never confirmed on an observation scored under a deliberate perturbation (<code>probing=True</code>, e.g. an SPSA probe or a self-play window against all-live opponents). Such an observation neither counts toward a pending collapse nor cancels it.</li>
+<li><strong>Probing.</strong> A collapse is never confirmed on an observation scored under a deliberate perturbation (<code>probing=True</code>, e.g. an SPSA probe or a self-play window against all-live opponents). Such an observation neither counts toward a pending collapse nor cancels it. The ML <code>Trainer</code> goes further: it does not feed probe epochs to the monitor at all (see the <a href="../../../guides/ml-core/#hyperparameter-tuning">ML core guide</a>).</li>
 </ul>
 <p><strong>Warm-up and the first readings after a restart or restore</strong> use separate rules. The mean of the last 4 scores is compared with a reference:</p>
 <ul>
@@ -521,14 +534,20 @@ report.state           # LoopState: ACTIVE / COOLING / DORMANT
 <tr>
 <td><code>improved</code></td>
 <td><code>optimizer.on_improvement</code>, RND η × 0.9</td>
-<td><code>spsa.on_improvement</code></td>
+<td><code>tuner.on_improvement</code></td>
 <td><code>optimizer.on_improvement</code></td>
 </tr>
 <tr>
 <td><code>entered_cooling</code></td>
 <td><code>optimizer.on_cooling</code>, RND η × 1.5, <code>on_plateau</code></td>
-<td><code>spsa.on_cooling</code>, <code>on_plateau</code></td>
+<td><code>on_plateau</code> only (the tuner is not widened)</td>
 <td><code>optimizer.on_cooling</code>, <code>on_plateau</code></td>
+</tr>
+<tr>
+<td>probe observations</td>
+<td><code>probing=True</code> (no collapse confirmation)</td>
+<td>not fed to the monitor (<code>FitHistory.probe_epochs</code>)</td>
+<td><code>probing=True</code></td>
 </tr>
 <tr>
 <td><code>collapse_confirmed</code></td>

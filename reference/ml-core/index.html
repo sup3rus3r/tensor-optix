@@ -83,6 +83,19 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/logging-callbacks/">Logging and dashboards</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/discovery/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../guides/discovery-statistics/">Statistics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../guides/gbdt/">Gradient-boosted trees</a>
+                </li>
+              </ul>
               <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../guides/learning-to-learn/">Guide</a>
@@ -296,6 +309,7 @@
         max_epochs: Optional[int] = None,
         stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
+        spsa=None,                          # None: default SPSA | False: off | a BaseOptimizer
     ) -&gt; FitHistory:
         &quot;&quot;&quot;
         epochs: None (default) -- train until the ConvergenceMonitor reaches
@@ -317,6 +331,13 @@
         Without it nothing is persisted and the final weights are returned.
         &quot;New best&quot; is tracked independently of whether checkpoint_dir is set.
 
+        spsa: online hyperparameter tuning. None (default) -- an
+        SPSAOptimizer over default_param_bounds; False -- none; or any
+        BaseOptimizer instance. Epochs trained under a probe
+        (optimizer.is_probing) are listed in FitHistory.probe_epochs and are
+        not fed to the convergence monitor. A tuner that tunes learning_rate
+        cannot be combined with lr_schedule (ValueError).
+
         lr_schedule: callable(epoch) -&gt; float, applied once per epoch.
         Mutually exclusive with SPSA tuning of learning_rate for this run
         (see tensor_optix.ml_core.lr_schedules).
@@ -336,7 +357,8 @@ class FitHistory:
     stopped_early: bool                # True if early stopping or convergence ended the run
     epochs_run: int                    # actual epochs completed
     stop_reason: Optional[str]         # &quot;epochs&quot; | &quot;max_epochs&quot; | &quot;early_stopping&quot; | &quot;converged&quot;
-    convergence: List[ConvergenceReport]   # one report per validated epoch
+    convergence: List[ConvergenceReport]   # one report per epoch fed to the monitor
+    probe_epochs: List[int]                # epochs trained under a tuner probe (not fed to it)
 </code></pre>
 <h2 id="trainer">Trainer</h2>
 <pre><code class="language-python">class Trainer:
@@ -355,13 +377,14 @@ class FitHistory:
          epoch as best, (if checkpoint_dir is set) CheckpointRegistry.save(),
          fire on_improvement. Otherwise advance the counter and fire
          on_no_improvement.
-      4. Feed the score to the ConvergenceMonitor (at=epoch). Fire
-         on_convergence on regime / state changes; on IMPROVING tell SPSA
-         (on_improvement); on entering COOLING tell SPSA (on_cooling) and
-         fire on_plateau once.
-      5. If an SPSA-tunable model (default_param_bounds set), call
-         SPSAOptimizer.suggest() with the accumulated EvalMetrics history
-         and apply the suggestion via model.set_hyperparams().
+      4. Unless the epoch ran under a tuner probe (tuner.is_probing -- then
+         the epoch goes to FitHistory.probe_epochs instead), feed the score
+         to the ConvergenceMonitor (at=epoch). Fire on_convergence on regime
+         / state changes; on IMPROVING tell the tuner (on_improvement); on
+         entering COOLING fire on_plateau once (the tuner is not widened).
+      5. If a tuner is active, call its suggest() with the accumulated
+         EvalMetrics history and apply the suggestion via
+         model.set_hyperparams().
       6. Stop on early_stopping_patience, or -- when stop_on_convergence --
          when the monitor enters DORMANT (on_dormant fires first).
     Without val_data (and with convergence on) only the negated training

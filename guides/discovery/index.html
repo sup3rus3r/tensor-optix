@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Guide - tensor-optix</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Guide";
+        var mkdocs_page_input_path = "guides\\discovery.md";
+        var mkdocs_page_url = null;
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> tensor-optix
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../..">Home</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Getting Started</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/installation/">Installation</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/quickstart/">Quickstart</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../getting-started/concepts/">Concepts</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Guides</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../train-rl-agent/">Train an RL agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-core/">Train an ML model</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../hyperparameter-optimization/">Tune hyperparameters online</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../trial-search/">Run trial-level search</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../cli-config/">Configure via YAML / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ensembles-evolution/">Ensembles and policy evolution</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../exploration-rnd/">Add exploration bonuses (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../distributed-training/">Distributed training (IMPALA)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent/">Multi-agent training (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../ml-mode/">Train any PyTorch model (legacy ML mode)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../neuroevo/">Build a neuroevo agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../onnx-export/">Export to ONNX</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../custom-agent/">Write a custom agent</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../logging-callbacks/">Logging and dashboards</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Discovery</span></p>
+              <ul class="current">
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Guide</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#what-a-run-does">What a run does</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#reading-the-report">Reading the report</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#the-recommendation-verdicts">The recommendation verdicts</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#findings-and-decisions">Findings and decisions</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#feature-opportunities">Feature opportunities</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#building-a-model-from-the-report">Building a model from the report</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#inputs">Inputs</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#recording-runs-in-the-ledger">Recording runs in the ledger</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#environments-reinforcement-learning">Environments (reinforcement learning)</a>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#what-discovery-does-not-do-yet">What discovery does not do (yet)</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../discovery-statistics/">Statistics</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/discovery/">Reference</a>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../gbdt/">Gradient-boosted trees</a>
+                </li>
+              </ul>
+              <p class="caption"><span class="caption-text">Learning-to-Learn Engine</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../learning-to-learn/">Guide</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/learning-to-learn/">Reference</a>
+                  </li>
+              </ul>
+              <p class="caption"><span class="caption-text">API Reference</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/">Overview</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >core</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/types/">types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_agent/">base_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_evaluator/">base_evaluator</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_optimizer/">base_optimizer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/base_pipeline/">base_pipeline</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/loop_controller/">loop_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/convergence/">convergence</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/backoff_scheduler/">backoff_scheduler</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/checkpoint_registry/">checkpoint_registry</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/diagnostic_controller/">diagnostic_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/policy_manager/">policy_manager</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/meta_controller/">meta_controller</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/ensemble_agent/">ensemble_agent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/regime_detector/">regime_detector</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/normalizers/">normalizers</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/replay_buffer/">replay_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/her_buffer/">her_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/trajectory_buffer/">trajectory_buffer</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/noisy_linear/">noisy_linear</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/core/device/">device</a>
+                </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizer/">Top-level API (RLOptimizer / Optimizer)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/factory/">make_agent (factory)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/algorithms/">Algorithms</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/pipelines/">Pipelines</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/multi-agent/">Multi-agent (PettingZoo)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/encoders/">Encoders (image / Dict observations)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/optimizers/">Optimizers (hyperparameter tuning)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/callbacks/">Callbacks</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/distributed/">Distributed (IMPALA + V-trace)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/orchestrator/">Trial search (TrialOrchestrator)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/config-cli/">Config / CLI</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml-core/">ml_core (BaseMLModel / Trainer / metrics)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/ml/">ML mode (legacy)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../reference/exploration/">Exploration (RND)</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" >Neuroevo</a>
+    <ul>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/">Overview</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuron-graph/">NeuronGraph</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neurons/">Neuron types</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-ops/">Topology operations</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-controller/">TopologyController</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/graph-agent/">GraphAgent</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/brain-network/">BrainNetwork</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/hebbian/">HebbianHook</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/neuromodulator/">NeuromodulatorSignal</a>
+                </li>
+                <li class="toctree-l2"><a class="reference internal" href="../../reference/neuroevo/topology-aware-adam/">TopologyAwareAdam</a>
+                </li>
+    </ul>
+                  </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../contributing/">Contributing</a>
+                </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">tensor-optix</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Discovery</li>
+      <li class="breadcrumb-item active">Guide</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/sup3rus3r/tensor-optix/edit/master/docs/guides/discovery.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="understand-your-data-and-choose-a-model-family-discovery">Understand your data and choose a model family (discovery)</h1>
+<p>Most modelling projects that go wrong do so before any training starts: a column that leaks the outcome, rows from the same customer on both sides of the validation split, a time series validated as if it were shuffled, or a model family that does not fit the problem. <code>tensor_optix.discovery</code> looks at your dataset with statistics before you commit to a model, and tells you what it found, how sure it is, which model family to use and why.</p>
+<pre><code class="language-python">from tensor_optix.discovery import discover
+
+report = discover(df, target=&quot;churned&quot;)
+report.to_html(&quot;discovery.html&quot;)      # a static, self-contained report
+print(report.summary())               # the same content as text
+</code></pre>
+<p>Discovery <strong>advises; it never changes anything on its own</strong>. Every finding has a stable id that you accept or reject, and only accepted findings are applied when you build a model from the report.</p>
+<h2 id="what-a-run-does">What a run does</h2>
+<ol>
+<li><strong>Profiles the target</strong>: task type (binary / multiclass / regression / count), class balance, skew, and the metric families are compared on (AUC, macro AUC or RMSE by default).</li>
+<li><strong>Profiles the features</strong>: inferred type per column (numeric, categorical, datetime, identifier, text, numbers stored as text ...), missingness, constants, duplicates, collinearity, outliers.</li>
+<li><strong>Finds the structure that decides how you must validate</strong>:<ul>
+<li><em>grouped</em> rows (several rows per customer / patient / device), detected by comparing a random split with a group split on the same model -- a random split that scores better than a group split is memorising the group;</li>
+<li><em>temporal</em> data, detected by comparing a model trained on the past with one trained on an equal-size random sample, on the same future rows (a Diebold-Mariano test);</li>
+<li>a row order that carries the target (a file sorted by outcome).</li>
+</ul>
+</li>
+<li><strong>Keeps a confirmation holdout</strong> (15% by default), cut with that structure -- whole groups, or the most recent rows -- before any model is chosen, and touched once at the end.</li>
+<li><strong>Looks for leakage</strong>: a single feature that predicts the target almost perfectly, an identifier that predicts it, missingness that predicts it, a feature equal to a future value of the target.</li>
+<li><strong>Checks for distribution shift</strong>: train vs <code>test=</code> rows (adversarial validation plus per-feature tests) and early vs late data.</li>
+<li><strong>Runs cheap reference models</strong> (dummy, linear, stump, depth-3 tree, k-NN, naive Bayes, LDA) whose relative scores describe the problem: is there signal at all, is it non-linear, does it involve interactions.</li>
+<li><strong>Tries candidate families</strong> on identical folds -- linear, naive Bayes, k-NN, a neural network (MLP, trained by tensor-optix until convergence) and boosted trees (LightGBM and XGBoost when installed, otherwise tensor-optix's <a href="../gbdt/">native implementation</a>) -- and keeps adding CV repeats for the leaders while they cannot be told apart.</li>
+<li><strong>Recommends</strong> the simplest family that is not worse than the best one, scores it once on the holdout, and writes a plan.</li>
+<li><strong>Looks for feature opportunities</strong>: kinds of features worth engineering and a better scaler, each kept only if it improves the recommended family on the same folds (see below).</li>
+</ol>
+<h2 id="reading-the-report">Reading the report</h2>
+<p><a href="../../assets/discovery-sample.html">Open a sample report</a> (a churn dataset with a leaked column; generated by <code>benchmarks/validate_discovery.py</code>'s <code>churn_with_leak</code>). The HTML report has the same sections as <code>report.summary()</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Section</th>
+<th>What it tells you</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Summary</td>
+<td>the recommendation, its verdict, the holdout estimate with its interval, and the findings that need a decision</td>
+</tr>
+<tr>
+<td>Data understanding</td>
+<td>the profile: columns and their inferred types, the target, the structure, quality</td>
+</tr>
+<tr>
+<td>Risks</td>
+<td>one card per finding: what was found, the evidence (test, statistic, interval, p-value), the suggested action and the exact <code>report.reject(...)</code> line to undo it</td>
+</tr>
+<tr>
+<td>Feature opportunities</td>
+<td>feature families and scalers that measurably improve the model, the ones tested without gain, and the ones not tried (and why)</td>
+</tr>
+<tr>
+<td>Families tried</td>
+<td>every experiment with its mean score and 95% interval, and every paired comparison</td>
+</tr>
+<tr>
+<td>Recommendation</td>
+<td>the family, its configuration, why it was chosen, and the conditions it depends on</td>
+</tr>
+<tr>
+<td>Plan</td>
+<td>the steps to train it: split, preprocessing, family, monitoring</td>
+</tr>
+<tr>
+<td>Limitations</td>
+<td>what discovery could not do (budget cuts, missing optional families, no holdout)</td>
+</tr>
+</tbody>
+</table>
+<p>The JSON of the whole report is embedded in the HTML, so a saved report reloads exactly:</p>
+<pre><code class="language-python">from tensor_optix.discovery import DiscoveryReport
+report = DiscoveryReport.from_html(&quot;discovery.html&quot;)
+</code></pre>
+<h3 id="the-recommendation-verdicts">The recommendation verdicts</h3>
+<table>
+<thead>
+<tr>
+<th>Verdict</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>clear_winner</code></td>
+<td>the recommended family beats every other family tried by more than the practical threshold</td>
+</tr>
+<tr>
+<td><code>tie_simplest_chosen</code></td>
+<td>a simpler family is <em>equivalent</em> to the best-scoring one (the whole interval of their difference lies inside the practical threshold), so the simpler one is recommended</td>
+</tr>
+<tr>
+<td><code>undetermined</code></td>
+<td>the best-scoring family is recommended, but some others could not be separated from it with the data and budget; they are listed as alternatives</td>
+</tr>
+<tr>
+<td><code>abstain</code></td>
+<td>no family beats predicting the mean / class prior by a margin that matters -- or the evidence that one does is inconclusive (the report says which). <code>report.build(family=...)</code> still builds any family you choose</td>
+</tr>
+</tbody>
+</table>
+<h2 id="findings-and-decisions">Findings and decisions</h2>
+<p>Each finding has a severity -- <code>info</code>, <code>advisory</code>, <code>warning</code>, <code>critical</code> -- and, when there is something to do about it, a suggested action from a fixed set (<code>drop_column</code>, <code>set_column_type</code>, <code>use_split</code>, <code>dedupe</code>, <code>set_metric</code>, ...).</p>
+<p>Some findings are <em>applied by default inside discovery's own experiments</em> (<code>default_applied</code>), because ignoring them would make every later number wrong: a detected group structure switches discovery's evaluation to a group split, a suspected leak is excluded from its experiments. That only affects how discovery measures; your model is built from the findings <strong>you accept</strong>.</p>
+<pre><code class="language-python">report.pending(&quot;warning&quot;)                    # findings at warning or above still undecided
+report.accept(&quot;structure.grouped:col=customer_id&quot;)
+report.reject(&quot;leakage.single_feature:col=refund_flag&quot;, note=&quot;known at prediction time&quot;)
+report.accept_where(category=&quot;structure&quot;)    # bulk-accept by category / minimum severity
+</code></pre>
+<p>There is deliberately no <code>accept_all()</code>.</p>
+<p>To re-measure with your decisions in force (for example after rejecting a leak finding you know is fine), pass them back:</p>
+<pre><code class="language-python">report2 = discover(df, target=&quot;churned&quot;, decisions=report.decisions())
+</code></pre>
+<h2 id="feature-opportunities">Feature opportunities</h2>
+<p>Discovery does not invent features; it tells you which <em>kinds</em> of features are worth engineering for this data, with evidence. Each family is tried only when a property of the data suggests it, and recommended only when adding it improves the recommended family on the same folds by more than the practical threshold (Holm-adjusted across the families tried):</p>
+<table>
+<thead>
+<tr>
+<th>Property detected</th>
+<th>Feature family</th>
+<th>What it adds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the target is persistent over time (Ljung-Box)</td>
+<td><code>target_lags</code></td>
+<td>lagged targets and past rolling means</td>
+</tr>
+<tr>
+<td>volatility clusters (McLeod-Li)</td>
+<td><code>volatility</code></td>
+<td>past rolling volatility of the target</td>
+</tr>
+<tr>
+<td>features are persistent over time</td>
+<td><code>rolling_features</code></td>
+<td>rolling means / standard deviations and differences</td>
+</tr>
+<tr>
+<td>a datetime column</td>
+<td><code>calendar_cycles</code></td>
+<td>sine / cosine of day of week, month, day of year (and hour)</td>
+</tr>
+<tr>
+<td>heavily skewed features (scale-sensitive models only)</td>
+<td><code>log_transform</code></td>
+<td>signed log transforms</td>
+</tr>
+<tr>
+<td>interactions, with an additive model (linear, naive Bayes)</td>
+<td><code>interactions</code></td>
+<td>pairwise products of the strongest features</td>
+</tr>
+<tr>
+<td>rows grouped by an entity</td>
+<td><code>group_aggregates</code></td>
+<td>per-entity means, spreads and deviations</td>
+</tr>
+</tbody>
+</table>
+<p>The same stage recommends a <strong>scaler</strong> for models that depend on feature scale (linear, k-NN, naive Bayes, MLP): robust scaling for outlier-heavy columns, or a quantile (rank-to-normal) transform for heavy-tailed ones, each compared with the default standard scaling. For tree models the report notes that the scaler does not matter.</p>
+<p>Temporal families run whenever the rows have a time order (a declared time, a datetime column, or detected temporal structure); with <code>groups=</code>, each entity is its own series. Every feature is computed from the row itself and <em>earlier</em> rows of its series only -- target lags start at lag 1 -- and when timestamps tie within a series, past-only features are undefined, so those families are not tried (the report says so).</p>
+<p>Findings are <code>advisory</code>, never applied by default. Accept the ones you want and <code>build()</code> computes the same features at fit and predict time:</p>
+<pre><code class="language-python">report.accept(&quot;features.calendar_cycles&quot;)
+report.accept(&quot;preprocess.scaler:method=quantile&quot;)
+solution = report.build()
+solution.fit(df, target=&quot;sales&quot;)
+solution.predict(new_rows)
+</code></pre>
+<p>Families that use past target values (<code>target_lags</code>, <code>volatility</code>) assume the target of earlier rows is known when you predict (one-step-ahead forecasting); pass that history with <code>predict(new_rows, target=history)</code>, with <code>NaN</code> for the rows to predict.</p>
+<h2 id="building-a-model-from-the-report">Building a model from the report</h2>
+<pre><code class="language-python">solution = report.build()          # applies ACCEPTED findings only
+solution.fit(df, target=&quot;churned&quot;)
+solution.predict(new_rows)         # original labels
+solution.predict_proba(new_rows)
+solution.cross_validate(df, target=&quot;churned&quot;)   # re-measure with the built split
+</code></pre>
+<p><code>build()</code>:</p>
+<ul>
+<li>refuses while any <strong>critical</strong> finding is still pending (<code>build(acknowledge_pending=True)</code> to override);</li>
+<li>warns, and lists the ids in <code>solution.evidence_mismatch</code>, when the findings it applies differ from the ones discovery's experiments applied -- the report's scores then do not describe this setup; re-run with <code>decisions=</code>;</li>
+<li>needs <code>build(family=...)</code> when the report abstained.</li>
+</ul>
+<p>The solution uses the same fold-safe preprocessing discovery used: every imputation, scaling and encoding statistic is learned from training rows only, and high-cardinality target encoding is computed out-of-fold.</p>
+<h2 id="inputs">Inputs</h2>
+<pre><code class="language-python">discover(df, target=&quot;y&quot;)                          # pandas DataFrame (pandas is optional)
+discover({&quot;age&quot;: ..., &quot;plan&quot;: ...}, target=y)     # dict of columns
+discover(X, y, column_names=[&quot;a&quot;, &quot;b&quot;, &quot;c&quot;])      # numpy arrays
+discover(df, target=&quot;y&quot;, groups=&quot;customer_id&quot;)    # declare groups you know about
+discover(df, target=&quot;y&quot;, time=&quot;order_date&quot;)       # declare the time column
+discover(df, target=&quot;y&quot;, test=df_to_score)        # the rows the model will be used on
+discover(df, target=&quot;y&quot;, column_types={&quot;zip&quot;: &quot;categorical_high&quot;})
+discover(df, target=&quot;y&quot;, task=&quot;regression&quot;, metric=&quot;mae&quot;)
+discover(df, target=&quot;y&quot;, families=[&quot;linear&quot;, &quot;lightgbm&quot;])
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Argument</th>
+<th>Default</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>budget</code></td>
+<td><code>Budget.default_for_rows(n)</code> (about 60 s at 10k rows)</td>
+<td><code>Budget(time_s=..., max_rows=..., max_fits=...)</code>; discovery never silently overruns -- each cut is reported as a <code>budget</code> finding</td>
+</tr>
+<tr>
+<td><code>holdout</code></td>
+<td><code>0.15</code></td>
+<td>fraction kept aside to confirm the recommendation; <code>0</code> disables it</td>
+</tr>
+<tr>
+<td><code>seed</code></td>
+<td><code>0</code></td>
+<td>the run is reproducible given the seed</td>
+</tr>
+<tr>
+<td><code>store</code></td>
+<td><code>None</code></td>
+<td>an <code>ExperimentStore</code> (or a ledger path) to record the run in</td>
+</tr>
+<tr>
+<td><code>verbose</code></td>
+<td><code>False</code></td>
+<td>print progress</td>
+</tr>
+</tbody>
+</table>
+<p>Install the optional pieces as needed:</p>
+<pre><code class="language-bash">pip install &quot;tensor-optix[pandas]&quot;            # DataFrame input
+pip install &quot;tensor-optix[discovery-boost]&quot;   # LightGBM and XGBoost candidates
+</code></pre>
+<p>Without LightGBM / XGBoost, boosted trees are still tried with tensor-optix's native implementation (<code>gbdt</code>; same accuracy on the benchmark, slower), and the report notes it.</p>
+<h2 id="recording-runs-in-the-ledger">Recording runs in the ledger</h2>
+<pre><code class="language-python">from tensor_optix.ledger import ExperimentStore
+report = discover(df, target=&quot;churned&quot;, store=ExperimentStore(&quot;runs.db&quot;))
+report.ledger_refs     # {&quot;experiment_id&quot;: ..., &quot;trials&quot;: {...}}
+</code></pre>
+<p>A parent experiment (<code>algorithm="discovery"</code>) with one child per family trial, plus events for the profile (versioned meta-features), every finding, the decisions, the recommendation and the budget. These records live under their own <code>discovery:&lt;data fingerprint&gt;</code> task name, so they never count as evidence for other tasks, and discovery never reads ledger history to make a decision.</p>
+<h2 id="environments-reinforcement-learning">Environments (reinforcement learning)</h2>
+<p>The same entry point profiles a Gymnasium environment and compares RL algorithms on it:</p>
+<pre><code class="language-python">import gymnasium as gym
+from tensor_optix.discovery import discover, Budget
+
+report = discover(gym.make(&quot;CartPole-v1&quot;))                       # auto-detected
+report = discover(make_my_env, kind=&quot;rl&quot;)                        # a zero-argument factory
+report = discover(&quot;Pendulum-v1&quot;, kind=&quot;rl&quot;, budget=Budget(env_steps=300_000))
+report.to_html(&quot;discovery.html&quot;)
+</code></pre>
+<p>What it does:</p>
+<ol>
+<li><strong>Probes the environment with a random policy</strong>: spaces and bounds, episode lengths and returns, reward sparsity and scale, observation scale, determinism under a fixed seed, and partial observability (does the previous observation improve prediction of how the observation changes?).</li>
+<li><strong>Trains every applicable algorithm</strong> for the same number of steps on the same seeds -- <code>PPO</code> and <code>DQN</code> for discrete actions; <code>SAC</code>, <code>TD3</code> and <code>PPO</code> for continuous ones -- with tensor-optix's own loop, default hyperparameters and no online tuning, then evaluates each on fixed evaluation episodes.</li>
+<li><strong>Tries the variants the probes motivate</strong> on the leading algorithm -- observation normalisation, an RND exploration bonus, a recurrent (GRU) policy -- each kept only when it beats its base by more than the practical threshold over the same seeds.</li>
+<li><strong>Adds seeds</strong> while the leader cannot be separated from another algorithm (up to 5).</li>
+<li><strong>Recommends</strong> with the same rule as for datasets, on mean evaluation return; the practical threshold is 5% of the gap between the random policy and the leader.</li>
+</ol>
+<p>Actions of continuous-control environments are rescaled to <code>[-1, 1]</code> in the trials when their bounds differ (tanh-squashed policies emit that range); the <code>env.action_rescale</code> finding records it.</p>
+<pre><code class="language-python">report.accept(&quot;env.action_rescale&quot;)
+solution = report.build()                  # RLSolution: algorithm + accepted wrappers / add-ons
+agent, run = solution.fit(gym.make(&quot;Pendulum-v1&quot;))   # full training: convergence stopping, online tuning
+</code></pre>
+<p>The default budget is <code>Budget(time_s=900, env_steps=200_000)</code>. Trial results describe <em>short</em> training; the report says so, and longer training can change the ranking, particularly for off-policy methods.</p>
+<h2 id="what-discovery-does-not-do-yet">What discovery does not do (yet)</h2>
+<ul>
+<li>Multi-agent (PettingZoo) environments are profiled but algorithms are not compared.</li>
+<li>Image and dict observations are profiled but not trialled.</li>
+<li>Unsupervised data (no target).</li>
+</ul>
+<p>See <a href="../discovery-statistics/">Discovery statistics</a> for exactly how each test and comparison works, and the <a href="../../reference/discovery/">reference</a> for the full API.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../logging-callbacks/" class="btn btn-neutral float-left" title="Logging and dashboards"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../discovery-statistics/" class="btn btn-neutral float-right" title="Statistics">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/sup3rus3r/tensor-optix" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../logging-callbacks/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../discovery-statistics/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
