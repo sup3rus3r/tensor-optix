@@ -75,9 +75,25 @@ With `test=`: an out-of-fold depth-3 tree trying to tell training rows from test
 
 For time-ordered data, the same per-feature tests compare the earliest third with the latest third, plus the target.
 
+## Feature opportunities
+
+**Detection** (decides only which families are tried): Ljung-Box over lags 1-10 on the target and on numeric features in time order, summed over series (independent series: chi-square with the summed degrees of freedom), p < 0.01; McLeod-Li (Ljung-Box on squared residuals of a per-series AR(1) fit) for volatility clustering, p < 0.01; skewness > 2 in absolute value; the landmark interaction / non-linearity signals; a datetime column; a grouped structure. Scalers: robust when >= 1% of a column lies beyond 3 IQR from the quartiles, quantile when |skewness| > 2 or excess kurtosis > 7.
+
+**Validation**: the recommended family (or, when that is the MLP, the best cheaper family) is evaluated on the same folds with and without the family's features (or with the alternative scaler on the triggering columns), and the two are compared with the same paired test as families (corrected resampled t, or the pooled Diebold-Mariano test under forward chaining). A family is recommended when the verdict is `better` (the interval clears the ROPE) and the Holm-adjusted p < 0.05 across the families tried; scalers form their own Holm group.
+
+**Leakage safety**: every generated feature uses only the row and earlier rows of its series; target lags start at lag 1; group aggregates use features only; series with tied timestamps get no past-only features.
+
+## Reinforcement learning
+
+**Probes** (random policy, up to 10 000 steps): reward sparsity = fewer than 1% of steps with a reward other than the most common value *and* fewer than 5% of episodes with a distinct return (a constant +1 per step with varying episode lengths is dense); observation scale = largest |mean| + std above 10, or a largest-to-smallest spread ratio above 100; determinism = two replays of the same seeded action sequence.
+
+**Partial observability**: quadratic-basis ridge models predict the *change* of the observation, `o(t+1) - o(t)`, from `(o(t), a(t))` and from `(o(t), a(t), o(t-1), a(t-1))`, compared with paired 5x2 CV (corrected resampled t); statistic: the largest R² gain over observation dimensions. Flagged when its lower 95% bound exceeds 0.10. The change is the right target because it is a function of the full state: with a hidden velocity it is poorly predicted from the current observation and recovered by the previous one, while the next observation itself is predicted almost perfectly either way. On fully observed environments (CartPole, Pendulum, Acrobot, MountainCar, LunarLander) the gain stays below 0.05; on CartPole with velocities masked it is about 0.57.
+
+**Trials**: each (algorithm, seed) trains a fresh agent on a fresh, seeded environment for the same number of steps (`RLOptimizer`, best checkpoint restored, no online tuning), then the mean return over fixed evaluation episodes is the seed's score. Seeds are independent replicates, so comparisons use a plain paired t interval over seeds; ROPE = 5% of |leader - random policy|. Variants are Holm-adjusted among themselves. Torch runs in `fork_rng` on the CPU and numpy's / the stdlib's global RNGs are restored after each trial.
+
 ## Calibration
 
-Each detector is run on 200 seeded *null* datasets (no planted effect). The exact (Clopper-Pearson) upper 95% bound of its false-alarm rate must be <= 0.08; the test suite enforces this (`tests/test_discovery/test_calibration.py`, marked `slow`). The same suite checks that two exchangeable families on strongly autocorrelated series (AR coefficient 0.95) are rarely declared different by the pooled comparison.
+Each detector is run on 200 seeded *null* datasets (no planted effect). The exact (Clopper-Pearson) upper 95% bound of its false-alarm rate must be <= 0.08; the test suite enforces this (`tests/test_discovery/test_calibration.py`, marked `slow`). The same suite checks that two exchangeable families on strongly autocorrelated series (AR coefficient 0.95) are rarely declared different by the pooled comparison, and that null datasets built to trigger every feature detector (skewed noise columns, a datetime column, a persistent irrelevant feature) rarely get a feature family or scaler recommended.
 
 Planted-effect tests check the other direction: planted leaks, groups, drift, covariate shift, non-linearity and noise-only targets are each reported (or, for noise, lead to abstaining).
 

@@ -156,18 +156,10 @@ def test_missing_boosting_is_a_limitation(monkeypatch):
     assert all(x.family not in ("lightgbm", "xgboost", "mlp") for x in rep.experiments)
 
 
-def test_rl_input_is_refused_clearly():
-    class Env:
-        action_space = None
-
-        def reset(self):
-            pass
-
-        def step(self, a):
-            pass
-
-    with pytest.raises(NotImplementedError, match="RL discovery"):
-        discover(Env())
+def test_environment_is_routed_to_rl_and_target_is_refused():
+    gym = pytest.importorskip("gymnasium")
+    with pytest.raises(ValueError, match="no target"):
+        discover(gym.make("CartPole-v1"), target="y")
 
 
 def test_target_required():

@@ -115,6 +115,12 @@ def _decision(d: Dict[str, Any], fid: str) -> Dict[str, Any]:
     return (d.get("decisions") or {}).get(fid) or {"state": "pending"}
 
 
+def _key_label(key: str) -> str:
+    """Family name from an experiment key ``stage:family:config`` (any other string as is)."""
+    parts = str(key).split(":", 2)
+    return parts[1] if len(parts) >= 2 else str(key)
+
+
 def _family_label(exp: Dict[str, Any]) -> str:
     cfg = exp.get("config") or {}
     tag = cfg.get("name") or ", ".join(f"{k}={v}" for k, v in cfg.items() if not isinstance(v, (dict, list)))
@@ -211,8 +217,39 @@ def _evidence_html(ev: Dict[str, Any]) -> str:
     return _kv(kv) + (_kv(details) if details else "")
 
 
+def _finding_card(d: Dict[str, Any], f: Dict[str, Any]) -> str:
+    dec = _decision(d, f["id"])
+    state = dec.get("state", "pending")
+    act = f.get("suggested_action")
+    act_html = ""
+    if act:
+        params = ", ".join(f"{k}={v!r}" for k, v in (act.get("params") or {}).items())
+        act_html = f"<p>Suggested action: <code>{e(act['kind'])}({e(params)})</code>"
+        if f.get("default_applied"):
+            act_html += " <span class='muted'>(already applied in discovery's own experiments)</span>"
+        act_html += "</p>"
+    ev_html = "".join(f"<details><summary>Evidence: {e(ev.get('test'))}</summary>{_evidence_html(ev)}</details>"
+                      for ev in f.get("evidence") or [])
+    note = f" — {e(dec.get('note'))}" if dec.get("note") else ""
+    return (
+        f'<div class="panel finding sev-{e(f["severity"])}-b">'
+        f'<div class="head">{pill(f["severity"], "sev-" + f["severity"])}'
+        f'{pill(f["category"].replace("_", " "), "sev-info")}'
+        f'{pill("decision: " + state, "d-" + state)}'
+        f'<span class="muted">confidence: {e(f.get("confidence"))}</span></div>'
+        f'<div class="stmt">{e(f["statement"])}</div>'
+        f'<div class="fid">id: {e(f["id"])}{note}</div>'
+        f'{act_html}'
+        f'{"<p class=muted>" + e(f["confidence_basis"]) + "</p>" if f.get("confidence_basis") else ""}'
+        f'{ev_html}'
+        f'<details><summary>How to accept / reject</summary>'
+        f'<pre>report.accept({e(repr(f["id"]))})\nreport.reject({e(repr(f["id"]))}, note="why")</pre></details>'
+        "</div>"
+    )
+
+
 def _risks(d: Dict[str, Any]) -> str:
-    fs = _sorted_findings(d)
+    fs = [f for f in _sorted_findings(d) if f.get("category") != "features"]
     parts = ['<section id="risks"><h2>Findings and risks</h2>']
     if not fs:
         parts.append('<p class="muted">No findings.</p></section>')
@@ -220,34 +257,46 @@ def _risks(d: Dict[str, Any]) -> str:
     parts.append("<p class='muted'>Nothing below is applied automatically. "
                  "Accept or reject each finding by id; <code>report.build()</code> applies only accepted ones.</p>")
     for f in fs:
-        dec = _decision(d, f["id"])
-        state = dec.get("state", "pending")
-        act = f.get("suggested_action")
-        act_html = ""
-        if act:
-            params = ", ".join(f"{k}={v!r}" for k, v in (act.get("params") or {}).items())
-            act_html = f"<p>Suggested action: <code>{e(act['kind'])}({e(params)})</code>"
-            if f.get("default_applied"):
-                act_html += " <span class='muted'>(already applied in discovery's own experiments)</span>"
-            act_html += "</p>"
-        ev_html = "".join(f"<details><summary>Evidence: {e(ev.get('test'))}</summary>{_evidence_html(ev)}</details>"
-                          for ev in f.get("evidence") or [])
-        note = f" — {e(dec.get('note'))}" if dec.get("note") else ""
-        parts.append(
-            f'<div class="panel finding sev-{e(f["severity"])}-b">'
-            f'<div class="head">{pill(f["severity"], "sev-" + f["severity"])}'
-            f'{pill(f["category"].replace("_", " "), "sev-info")}'
-            f'{pill("decision: " + state, "d-" + state)}'
-            f'<span class="muted">confidence: {e(f.get("confidence"))}</span></div>'
-            f'<div class="stmt">{e(f["statement"])}</div>'
-            f'<div class="fid">id: {e(f["id"])}{note}</div>'
-            f'{act_html}'
-            f'{"<p class=muted>" + e(f["confidence_basis"]) + "</p>" if f.get("confidence_basis") else ""}'
-            f'{ev_html}'
-            f'<details><summary>How to accept / reject</summary>'
-            f'<pre>report.accept({e(repr(f["id"]))})\nreport.reject({e(repr(f["id"]))}, note="why")</pre></details>'
-            "</div>"
-        )
+        parts.append(_finding_card(d, f))
+    parts.append("</section>")
+    return "".join(parts)
+
+
+def _features(d: Dict[str, Any]) -> str:
+    sec = ((d.get("profile") or {}).get("sections") or {}).get("features")
+    fs = [f for f in _sorted_findings(d) if f.get("category") == "features"]
+    if not sec and not fs:
+        return ""
+    parts = ['<section id="features"><h2>Feature opportunities</h2>',
+             "<p class='muted'>Kinds of features worth engineering. Each was triggered by a property of the data "
+             "and kept only if adding it improved the model on the same folds. Not applied unless accepted.</p>"]
+    for f in fs:
+        parts.append(_finding_card(d, f))
+    tested = (sec or {}).get("tested") or []
+    if tested:
+        rows = [{"family": t.get("family"), "triggered by": (t.get("trigger") or {}).get("test"),
+                 "gain": t.get("gain"), "95% CI": interval(t.get("gain_interval")) if t.get("gain_interval") else None,
+                 "p (Holm)": t.get("p_holm"), "folds improved": t.get("folds_improved"),
+                 "verdict": t.get("verdict") or t.get("status"),
+                 "recommended": "yes" if t.get("recommended") else "no"} for t in tested]
+        parts.append(f"<h3>Families tested (model: {e((sec or {}).get('probe_family'))})</h3>")
+        parts.append(_table(rows, list(rows[0].keys())))
+    elif not fs:
+        parts.append("<p class='muted'>No property of the data suggested a feature family to try.</p>")
+    scal = (sec or {}).get("scaling") or {}
+    if scal.get("tested"):
+        rows = [{"scaler": t.get("method"), "columns": ", ".join((t.get("columns") or [])[:5]),
+                 "gain vs standard": t.get("gain"),
+                 "95% CI": interval(t.get("gain_interval")) if t.get("gain_interval") else None,
+                 "p (Holm)": t.get("p_holm"), "verdict": t.get("verdict") or t.get("status"),
+                 "recommended": "yes" if t.get("recommended") else "no"} for t in scal["tested"]]
+        parts.append("<h3>Scalers tested</h3>")
+        parts.append(_table(rows, list(rows[0].keys())))
+    if scal.get("note"):
+        parts.append(f"<p class='muted'>Scaling: {e(scal['note'])}.</p>")
+    for note in (sec or {}).get("not_tried") or []:
+        parts.append(f"<p class='muted'>Not tried: {e(', '.join(note.get('families') or []))} -- "
+                     f"{e(note.get('reason'))}</p>")
     parts.append("</section>")
     return "".join(parts)
 
@@ -297,7 +346,7 @@ def _families(d: Dict[str, Any]) -> str:
     comps = d.get("comparisons") or []
     if comps:
         crow = [{
-            "comparison": f"{c['a'].split(':')[1]} vs {c['b'].split(':')[1]}",
+            "comparison": f"{_key_label(c['a'])} vs {_key_label(c['b'])}",
             "Δ (positive = first better)": c.get("delta_mean"),
             "95% CI": interval(c.get("delta_interval")), "ROPE ±": c.get("rope"),
             "verdict": c.get("verdict"), "p (Holm)": c.get("p_holm"), "method": c.get("method"),
@@ -367,7 +416,7 @@ def _limits(d: Dict[str, Any]) -> str:
 
 def render_html(d: Dict[str, Any]) -> str:
     body = "".join([
-        _header(d), _summary(d), _understanding(d), _risks(d), _families(d),
+        _header(d), _summary(d), _understanding(d), _risks(d), _features(d), _families(d),
         _recommendation(d), _plan(d), _limits(d),
         "<footer>Generated by tensor-optix discovery. Statistics are estimates from a sample of the data; "
         "see Limitations. Nothing in this report was applied to your data or models.</footer>",

@@ -44,6 +44,7 @@ class Category(str, Enum):
     FAMILY = "family"
     BUDGET = "budget"
     LIMITATION = "limitation"
+    FEATURES = "features"
     ENV = "env"
 
 
@@ -126,7 +127,10 @@ class Evidence:
 # Actions: a closed, versioned grammar
 # ---------------------------------------------------------------------------
 
-ACTION_GRAMMAR_VERSION = 1
+ACTION_GRAMMAR_VERSION = 2
+
+# kind -> grammar version that introduced it (1 when absent)
+ACTION_KIND_SINCE: Dict[str, int] = {"add_feature_family": 2}
 
 # kind -> required parameter names. Anything else is rejected, never ignored.
 ACTION_KINDS: Dict[str, Tuple[str, ...]] = {
@@ -142,6 +146,7 @@ ACTION_KINDS: Dict[str, Tuple[str, ...]] = {
     "dedupe": ("strategy",),
     "set_metric": ("metric",),
     "use_family": ("family",),
+    "add_feature_family": ("family",),          # params: a feature_gen.FeatureSpec as a dict
     # RL (phase 2)
     "wrap_obs_normalize": (),
     "wrap_action_rescale": ("low", "high"),
@@ -157,19 +162,23 @@ class Action:
 
     kind: str
     params: Dict[str, Any] = field(default_factory=dict)
-    grammar_version: int = ACTION_GRAMMAR_VERSION
+    grammar_version: Optional[int] = None       # None -> the version that introduced ``kind``
 
     def __post_init__(self):
+        if self.grammar_version is not None and self.grammar_version > ACTION_GRAMMAR_VERSION:
+            raise ValueError(
+                f"action grammar version {self.grammar_version} is newer than this "
+                f"tensor-optix understands ({ACTION_GRAMMAR_VERSION}); upgrade tensor-optix"
+            )
         if self.kind not in ACTION_KINDS:
             raise ValueError(f"unknown action kind {self.kind!r}; known: {sorted(ACTION_KINDS)}")
         missing = [p for p in ACTION_KINDS[self.kind] if p not in self.params]
         if missing:
             raise ValueError(f"action {self.kind!r} is missing parameter(s) {missing}")
-        if self.grammar_version > ACTION_GRAMMAR_VERSION:
-            raise ValueError(
-                f"action grammar version {self.grammar_version} is newer than this "
-                f"tensor-optix understands ({ACTION_GRAMMAR_VERSION}); upgrade tensor-optix"
-            )
+        if self.grammar_version is None:
+            # the lowest grammar version that can read this action, so reports stay
+            # readable by older tensor-optix unless they use a newer kind
+            object.__setattr__(self, "grammar_version", ACTION_KIND_SINCE.get(self.kind, 1))
 
     def to_dict(self) -> Dict[str, Any]:
         return {"kind": self.kind, "params": jsonable(self.params),

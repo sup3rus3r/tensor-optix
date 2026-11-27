@@ -220,6 +220,11 @@ def test_render_handles_an_empty_report():
 
 def test_build_without_a_registered_builder_says_so():
     with pytest.raises(NotImplementedError):
+        DiscoveryReport(domain="other", profile=Profile(domain="other")).build()
+
+
+def test_rl_build_without_a_recommendation_asks_for_a_family():
+    with pytest.raises(ValueError, match="family"):
         DiscoveryReport(domain="rl", profile=Profile(domain="rl")).build()
 
 

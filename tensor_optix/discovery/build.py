@@ -21,6 +21,8 @@ def register_builder(domain: str, fn: Callable) -> None:
 def build_solution(report, *args, **kwargs):
     if report.domain == "ml" and "ml" not in _BUILDERS:
         from .ml import build as _ml_build  # noqa: F401  (registers the ML builder)
+    if report.domain == "rl" and "rl" not in _BUILDERS:
+        from .rl import build as _rl_build  # noqa: F401  (registers the RL builder)
     fn = _BUILDERS.get(report.domain)
     if fn is None:
         raise NotImplementedError(

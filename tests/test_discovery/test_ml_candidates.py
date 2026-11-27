@@ -87,4 +87,4 @@ def test_registry_without_optional_dependencies():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr[-2000:]
     names = eval(out.stdout.strip().splitlines()[-1])
-    assert names == ["baseline", "knn", "lda", "linear", "naive_bayes", "tree"]
+    assert names == ["baseline", "gbdt", "knn", "lda", "linear", "naive_bayes", "tree"]

@@ -11,7 +11,7 @@ from .schema import DiscoveryReport
 
 
 def _looks_like_env(obj: Any) -> bool:
-    """gymnasium / gym env, PettingZoo env, or a zero-arg factory returning one (duck-typed)."""
+    """gymnasium / gym env or PettingZoo env (duck-typed). A factory or an env id needs kind="rl"."""
     if hasattr(obj, "reset") and (hasattr(obj, "step") or hasattr(obj, "last")) and \
             (hasattr(obj, "action_space") or hasattr(obj, "action_spaces") or hasattr(obj, "possible_agents")):
         return True
@@ -33,8 +33,9 @@ def discover(data: Any, target: Any = None, *, kind: str = "auto", task: Optiona
 
     Args:
         data:   pandas DataFrame, dict of columns, 2-D numpy array, structured
-                array, or an ``(X, y)`` tuple. (RL environments: coming with RL
-                discovery.)
+                array, or an ``(X, y)`` tuple -- or a Gymnasium environment
+                (auto-detected), a zero-argument environment factory or an
+                environment id (with kind="rl").
         target: target column name / index, or an array of targets.
         kind:   "auto" (default), "ml" or "rl".
         task:   force "binary" | "multiclass" | "regression" | "count".
@@ -43,7 +44,7 @@ def discover(data: Any, target: Any = None, *, kind: str = "auto", task: Optiona
                 train-vs-test shift checks.
         column_types: {column: type} overrides of the inferred feature types.
         metric: force the comparison metric.
-        families: restrict the candidate families (names).
+        families: restrict the candidate families (names; for RL: algorithm names).
         budget: ``Budget(time_s=..., max_rows=..., max_fits=...)``.
         decisions: {finding_id: "accept" | "reject" | Decision} from a previous
                 report (``report.decisions()``), so the experiments follow them.
@@ -56,9 +57,11 @@ def discover(data: Any, target: Any = None, *, kind: str = "auto", task: Optiona
         raise ValueError("kind must be 'auto', 'ml' or 'rl'")
     k = detect_kind(data) if kind == "auto" else kind
     if k == "rl":
-        raise NotImplementedError(
-            "RL discovery (environments) is not available yet in this version; "
-            "discover() currently supports datasets.")
+        if target is not None:
+            raise ValueError("target= is for datasets; an environment has no target")
+        from .rl.pipeline import discover_rl
+        return discover_rl(data, families=families, budget=budget, decisions=decisions, seed=seed,
+                           store=store, verbose=verbose)
     from .ml.pipeline import discover_ml
     return discover_ml(data, target, task=task, groups=groups, time=time, test=test,
                        column_names=column_names, column_types=column_types, metric=metric,

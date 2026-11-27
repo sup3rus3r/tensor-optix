@@ -46,6 +46,7 @@ class PipelineOptions:
     target_smoothing: float = 10.0
     inner_folds: int = 5
     robust_columns: Tuple[str, ...] = ()     # scale these robustly even when scale="standard"
+    quantile_columns: Tuple[str, ...] = ()   # map these to normal scores via training-fold quantiles
     drop: Tuple[str, ...] = ()               # extra columns to drop (accepted findings)
     type_overrides: Tuple[Tuple[str, str], ...] = ()
 
@@ -141,7 +142,17 @@ class _Numeric:
         self.fill = float(np.median(x[ok])) if ok.any() else 0.0
         self.has_missing = bool((~ok).any()) and self.indicator
         xf = np.where(ok, x, self.fill)
-        if self.scale == "robust":
+        if self.scale == "quantile":
+            # normal scores from the training rows' quantiles (rank-based: outliers and skew vanish)
+            from ..stats.distributions import norm_ppf
+            probs = np.linspace(0.001, 0.999, 201)
+            q = np.quantile(xf, probs)
+            uq, first = np.unique(q, return_index=True)
+            z = np.array([norm_ppf(p_) for p_ in probs])
+            self.qx = uq
+            self.qz = np.array([z[q == v].mean() for v in uq]) if len(uq) < len(q) else z[first]
+            self.center, self.spread = 0.0, 1.0
+        elif self.scale == "robust":
             self.center = float(np.median(xf))
             q75, q25 = np.percentile(xf, [75, 25])
             s = float(q75 - q25)
@@ -157,7 +168,11 @@ class _Numeric:
     def transform(self, col, ctx):
         x = self._x(col)
         miss = np.isnan(x)
-        v = (np.where(miss, self.fill, x) - self.center) / self.spread
+        xv = np.where(miss, self.fill, x)
+        if self.scale == "quantile":
+            v = np.interp(xv, self.qx, self.qz) if len(self.qx) > 1 else np.zeros(len(xv))
+        else:
+            v = (xv - self.center) / self.spread
         if self.has_missing:
             return np.column_stack([v, miss.astype(np.float64)])
         return v[:, None]
@@ -312,7 +327,12 @@ class ColumnPipeline:
         o = self.options
         if name in o.drop or ct.type in _DROP:
             return None
-        scale = "robust" if name in o.robust_columns and o.scale != "none" else o.scale
+        scale = o.scale
+        if o.scale != "none":
+            if name in o.quantile_columns:
+                scale = "quantile"
+            elif name in o.robust_columns:
+                scale = "robust"
         if ct.type in ("numeric_continuous", "numeric_discrete"):
             return _Numeric(name, scale, o.missing_indicators)
         if ct.type == "embedded_number":
@@ -381,7 +401,7 @@ class ColumnPipeline:
         o = self.options
         return {"scale": o.scale, "categorical": o.categorical, "high_cardinality": o.high_cardinality,
                 "missing_indicators": o.missing_indicators, "drop": list(o.drop),
-                "robust_columns": list(o.robust_columns),
+                "robust_columns": list(o.robust_columns), "quantile_columns": list(o.quantile_columns),
                 "type_overrides": [list(p) for p in o.type_overrides]}
 
 

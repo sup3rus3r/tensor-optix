@@ -27,6 +27,7 @@ nav:
       - Guide: guides/discovery.md
       - Statistics: guides/discovery-statistics.md
       - Reference: reference/discovery.md
+  - Gradient-boosted trees: guides/gbdt.md
   - Learning-to-Learn Engine:
       - Guide: guides/learning-to-learn.md
       - Reference: reference/learning-to-learn.md

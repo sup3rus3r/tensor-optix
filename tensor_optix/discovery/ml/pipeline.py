@@ -34,11 +34,12 @@ from ..meta_features import ml_meta_features
 from ..rng import rng_for
 from ..schema import DiscoveryReport, PlanStep, Profile, Recommendation
 from ..stats.intervals import bootstrap_interval
-from ..stats.metrics import score
+from ..stats.metrics import get_metric, score
 from .data import Table, to_table
 from .evaluate import ROW_LOSS_METRICS, evaluate_family, predict_and_score
 from .families.base import CLASSIFICATION, all_families, get_family
 from .landmarks import metric_rope, run_landmarks
+from .features import detect_candidates, feature_opportunities, scaler_opportunities
 from .leakage import detect_leakage
 from .preprocess import ColumnPipeline
 from .quality import quality_profile
@@ -48,7 +49,7 @@ from .splits import (
     ForwardChaining, GroupKFold, KFold, RepeatedSplitter, StratifiedGroupKFold, StratifiedKFold,
     _time_order, carve_holdout, splitter_to_dict,
 )
-from .structure import _strat, detect_structure
+from .structure import _strat, _time_numeric, detect_structure
 from .target import profile_target
 from .trials import candidate_families, refine, run_trials
 from .types import ColumnType, infer_types, type_findings
@@ -452,14 +453,18 @@ def discover_ml(data: Any, target: Any = None, *, task: Optional[str] = None, gr
     fams = candidate_families(task, families)
     have = {f.name for f in all_families()}
     if families is None and not any(b in have for b in BOOSTING):
+        native = any(f.name == "gbdt" for f in fams)
         tree_friendly = bool(signals.get("nonlinear") or signals.get("interactions"))
         findings.append(Finding(
             id="limitation.no_boosting", category=Category.LIMITATION,
-            severity=Severity.ADVISORY if tree_friendly else Severity.INFO,
-            statement="Gradient-boosted trees were not tried (LightGBM / XGBoost are not installed)"
-                      + (". The landmarks show non-linear structure, where boosted trees are often the "
-                         "strongest tabular family: install tensor-optix[discovery-boost] and re-run."
-                         if tree_friendly else "; install tensor-optix[discovery-boost] to include them."),
+            severity=Severity.ADVISORY if (tree_friendly and not native) else Severity.INFO,
+            statement=("LightGBM / XGBoost are not installed, so boosted trees were tried with tensor-optix's "
+                       "native implementation (same accuracy on discovery's benchmark, about 10x slower); "
+                       "install tensor-optix[discovery-boost] for faster runs." if native else
+                       "Gradient-boosted trees were not tried (LightGBM / XGBoost are not installed)"
+                       + (". The landmarks show non-linear structure, where boosted trees are often the "
+                          "strongest tabular family: install tensor-optix[discovery-boost] and re-run."
+                          if tree_friendly else "; install tensor-optix[discovery-boost] to include them.")),
             evidence=(Evidence(test="dependency_check", details={"nonlinear": signals.get("nonlinear"),
                                                                   "interactions": signals.get("interactions")}),),
             confidence="high", confidence_basis="import check"))
@@ -501,6 +506,59 @@ def discover_ml(data: Any, target: Any = None, *, task: Optional[str] = None, gr
     findings += rf
     findings = _confirm_nonlinearity(findings, state.best, rope=rope, n_train=n_tr, n_test=n_te,
                                      pooled=pooled, seed=seed)
+
+    # ---- 7b. feature opportunities (development folds only; the holdout stays untouched)
+    fsum, ff = {"tested": []}, []
+    probe_name = rec.family if rec.family and rec.family != "mlp" else None
+    if probe_name is None:
+        cheap = [f for f, r in state.best.items() if f != "mlp" and r.mean is not None]
+        hib_ = get_metric(metric).higher_is_better
+        probe_name = (max(cheap, key=lambda f: state.best[f].mean if hib_ else -state.best[f].mean)
+                      if cheap else None)
+    if probe_name is not None and probe_name in state.best:
+        _log(verbose, f"feature opportunities (model: {probe_name})")
+        base_r = state.best[probe_name]
+        ftypes = {c: t for c, t in types.items() if c not in drops}
+        # persistence is a property of the series, not of drift: temporal families are tried whenever
+        # the rows have a time order (detected temporal structure, or a datetime column)
+        f_order, f_time = time_order, time_col
+        if f_order is None:
+            dts = [c for c, t in ftypes.items() if t.type == "datetime"]
+            if dts:
+                f_time = dts[0]
+                f_order = np.argsort(np.nan_to_num(_time_numeric(dtab.columns[f_time]), nan=-np.inf),
+                                     kind="stable")
+        entity_groups = None if group_arr is None or not group_col else group_arr[dev]
+        series_groups = entity_groups if f_order is not None else None
+        cands = detect_candidates(dtab, ftypes, ydev, task=task, probe=probe_name,
+                                  order=f_order, series_groups=series_groups, entity_groups=entity_groups,
+                                  time_column=f_time, group_column=group_col, signals=signals,
+                                  time_values=(tdev if f_time == time_col and tdev is not None else
+                                               (_time_numeric(dtab.columns[f_time]) if f_time in dtab.columns
+                                                else np.arange(len(ydev), dtype=np.float64))),
+                                  ranked=lsum.get("single_feature") or [])
+        from .recommend import compare_results
+
+        def _cmp(a, b, pl):
+            return compare_results(a, b, rope=rope, n_train=n_tr, n_test=n_te, pooled=pl)
+
+        fsum, ff = feature_opportunities(
+            dtab, ftypes, ydev, folds, task=task, n_classes=k, metric=metric, seed=seed,
+            probe=(probe_name, dict(base_r.config)), base=base_r, candidates=cands, order=f_order,
+            series_groups=series_groups, entity_groups=entity_groups, compare=_cmp, ledger=ledger, drop=drops,
+            base_rows=state.row_losses.get(base_r.key) if use_pooled else None,
+            pooled_factory=(lambda rows: PooledLosses(rows, time_order, int(sp.gap), metric)) if use_pooled
+            else None)
+        findings += ff
+        ssum, sf2 = scaler_opportunities(
+            dtab, ftypes, ydev, folds, task=task, n_classes=k, metric=metric, seed=seed,
+            probe=(probe_name, dict(base_r.config)), base=base_r, compare=_cmp, ledger=ledger, drop=drops,
+            base_rows=state.row_losses.get(base_r.key) if use_pooled else None,
+            pooled_factory=(lambda rows: PooledLosses(rows, time_order, int(sp.gap), metric)) if use_pooled
+            else None)
+        fsum["scaling"] = ssum
+        findings += sf2
+        ff = ff + sf2
     if rec.family is not None and len(hold):
         _log(verbose, f"confirming {rec.family} on the holdout")
         fam = get_family(rec.family)
@@ -549,6 +607,11 @@ def discover_ml(data: Any, target: Any = None, *, task: Optional[str] = None, gr
            if c.verdict == "undetermined" and c.a.startswith("trial:") and c.a.split(":")[1] != rec.family]
     plan = _plan(rec, split_desc + ".", split_refs, leak_drops, leak_refs, und, table.target_name, metric,
                  applied=list(ap.applied))
+    if ff:
+        plan.insert(len(plan) - 1, PlanStep(
+            "features", "Consider engineering: " + "; ".join(f.statement.split(" improves ")[0].replace(
+                "Engineering ", "") for f in ff) + ". Accept the findings you want and build() adds them.",
+            tuple(f.id for f in ff)))
     if forward:
         limitations.append(
             f"Scores describe forecasting about {int(round(n_te))} rows ahead (the length of each forward-chaining "
@@ -584,6 +647,7 @@ def discover_ml(data: Any, target: Any = None, *, task: Optional[str] = None, gr
             "shift": ssum,
             "applied_findings": list(ap.applied),
             "excluded_columns": drops,
+            "features": fsum,
         },
         fingerprint=table.fingerprint())
     profile.sections["meta_features"] = ml_meta_features(jsonable(profile.sections))

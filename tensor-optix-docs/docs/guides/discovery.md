@@ -24,8 +24,9 @@ Discovery **advises; it never changes anything on its own**. Every finding has a
 5. **Looks for leakage**: a single feature that predicts the target almost perfectly, an identifier that predicts it, missingness that predicts it, a feature equal to a future value of the target.
 6. **Checks for distribution shift**: train vs `test=` rows (adversarial validation plus per-feature tests) and early vs late data.
 7. **Runs cheap reference models** (dummy, linear, stump, depth-3 tree, k-NN, naive Bayes, LDA) whose relative scores describe the problem: is there signal at all, is it non-linear, does it involve interactions.
-8. **Tries candidate families** on identical folds -- linear, naive Bayes, k-NN, a neural network (MLP, trained by tensor-optix until convergence) and, when installed, LightGBM and XGBoost -- and keeps adding CV repeats for the leaders while they cannot be told apart.
+8. **Tries candidate families** on identical folds -- linear, naive Bayes, k-NN, a neural network (MLP, trained by tensor-optix until convergence) and boosted trees (LightGBM and XGBoost when installed, otherwise tensor-optix's [native implementation](gbdt.md)) -- and keeps adding CV repeats for the leaders while they cannot be told apart.
 9. **Recommends** the simplest family that is not worse than the best one, scores it once on the holdout, and writes a plan.
+10. **Looks for feature opportunities**: kinds of features worth engineering and a better scaler, each kept only if it improves the recommended family on the same folds (see below).
 
 ## Reading the report
 
@@ -36,6 +37,7 @@ Discovery **advises; it never changes anything on its own**. Every finding has a
 | Summary | the recommendation, its verdict, the holdout estimate with its interval, and the findings that need a decision |
 | Data understanding | the profile: columns and their inferred types, the target, the structure, quality |
 | Risks | one card per finding: what was found, the evidence (test, statistic, interval, p-value), the suggested action and the exact `report.reject(...)` line to undo it |
+| Feature opportunities | feature families and scalers that measurably improve the model, the ones tested without gain, and the ones not tried (and why) |
 | Families tried | every experiment with its mean score and 95% interval, and every paired comparison |
 | Recommendation | the family, its configuration, why it was chosen, and the conditions it depends on |
 | Plan | the steps to train it: split, preprocessing, family, monitoring |
@@ -77,6 +79,36 @@ To re-measure with your decisions in force (for example after rejecting a leak f
 ```python
 report2 = discover(df, target="churned", decisions=report.decisions())
 ```
+
+## Feature opportunities
+
+Discovery does not invent features; it tells you which *kinds* of features are worth engineering for this data, with evidence. Each family is tried only when a property of the data suggests it, and recommended only when adding it improves the recommended family on the same folds by more than the practical threshold (Holm-adjusted across the families tried):
+
+| Property detected | Feature family | What it adds |
+|---|---|---|
+| the target is persistent over time (Ljung-Box) | `target_lags` | lagged targets and past rolling means |
+| volatility clusters (McLeod-Li) | `volatility` | past rolling volatility of the target |
+| features are persistent over time | `rolling_features` | rolling means / standard deviations and differences |
+| a datetime column | `calendar_cycles` | sine / cosine of day of week, month, day of year (and hour) |
+| heavily skewed features (scale-sensitive models only) | `log_transform` | signed log transforms |
+| interactions, with an additive model (linear, naive Bayes) | `interactions` | pairwise products of the strongest features |
+| rows grouped by an entity | `group_aggregates` | per-entity means, spreads and deviations |
+
+The same stage recommends a **scaler** for models that depend on feature scale (linear, k-NN, naive Bayes, MLP): robust scaling for outlier-heavy columns, or a quantile (rank-to-normal) transform for heavy-tailed ones, each compared with the default standard scaling. For tree models the report notes that the scaler does not matter.
+
+Temporal families run whenever the rows have a time order (a declared time, a datetime column, or detected temporal structure); with `groups=`, each entity is its own series. Every feature is computed from the row itself and *earlier* rows of its series only -- target lags start at lag 1 -- and when timestamps tie within a series, past-only features are undefined, so those families are not tried (the report says so).
+
+Findings are `advisory`, never applied by default. Accept the ones you want and `build()` computes the same features at fit and predict time:
+
+```python
+report.accept("features.calendar_cycles")
+report.accept("preprocess.scaler:method=quantile")
+solution = report.build()
+solution.fit(df, target="sales")
+solution.predict(new_rows)
+```
+
+Families that use past target values (`target_lags`, `volatility`) assume the target of earlier rows is known when you predict (one-step-ahead forecasting); pass that history with `predict(new_rows, target=history)`, with `NaN` for the rows to predict.
 
 ## Building a model from the report
 
@@ -125,7 +157,7 @@ pip install "tensor-optix[pandas]"            # DataFrame input
 pip install "tensor-optix[discovery-boost]"   # LightGBM and XGBoost candidates
 ```
 
-Without LightGBM / XGBoost the report says so -- at `advisory` severity when the reference models show non-linear structure, where boosted trees are often the strongest tabular family.
+Without LightGBM / XGBoost, boosted trees are still tried with tensor-optix's native implementation (`gbdt`; same accuracy on the benchmark, slower), and the report notes it.
 
 ## Recording runs in the ledger
 
@@ -137,10 +169,42 @@ report.ledger_refs     # {"experiment_id": ..., "trials": {...}}
 
 A parent experiment (`algorithm="discovery"`) with one child per family trial, plus events for the profile (versioned meta-features), every finding, the decisions, the recommendation and the budget. These records live under their own `discovery:<data fingerprint>` task name, so they never count as evidence for other tasks, and discovery never reads ledger history to make a decision.
 
+## Environments (reinforcement learning)
+
+The same entry point profiles a Gymnasium environment and compares RL algorithms on it:
+
+```python
+import gymnasium as gym
+from tensor_optix.discovery import discover, Budget
+
+report = discover(gym.make("CartPole-v1"))                       # auto-detected
+report = discover(make_my_env, kind="rl")                        # a zero-argument factory
+report = discover("Pendulum-v1", kind="rl", budget=Budget(env_steps=300_000))
+report.to_html("discovery.html")
+```
+
+What it does:
+
+1. **Probes the environment with a random policy**: spaces and bounds, episode lengths and returns, reward sparsity and scale, observation scale, determinism under a fixed seed, and partial observability (does the previous observation improve prediction of how the observation changes?).
+2. **Trains every applicable algorithm** for the same number of steps on the same seeds -- `PPO` and `DQN` for discrete actions; `SAC`, `TD3` and `PPO` for continuous ones -- with tensor-optix's own loop, default hyperparameters and no online tuning, then evaluates each on fixed evaluation episodes.
+3. **Tries the variants the probes motivate** on the leading algorithm -- observation normalisation, an RND exploration bonus, a recurrent (GRU) policy -- each kept only when it beats its base by more than the practical threshold over the same seeds.
+4. **Adds seeds** while the leader cannot be separated from another algorithm (up to 5).
+5. **Recommends** with the same rule as for datasets, on mean evaluation return; the practical threshold is 5% of the gap between the random policy and the leader.
+
+Actions of continuous-control environments are rescaled to `[-1, 1]` in the trials when their bounds differ (tanh-squashed policies emit that range); the `env.action_rescale` finding records it.
+
+```python
+report.accept("env.action_rescale")
+solution = report.build()                  # RLSolution: algorithm + accepted wrappers / add-ons
+agent, run = solution.fit(gym.make("Pendulum-v1"))   # full training: convergence stopping, online tuning
+```
+
+The default budget is `Budget(time_s=900, env_steps=200_000)`. Trial results describe *short* training; the report says so, and longer training can change the ranking, particularly for off-policy methods.
+
 ## What discovery does not do (yet)
 
-- Reinforcement-learning environments: `discover(env)` raises a clear error; RL discovery is planned.
+- Multi-agent (PettingZoo) environments are profiled but algorithms are not compared.
+- Image and dict observations are profiled but not trialled.
 - Unsupervised data (no target).
-- Feature-engineering recommendations (which kinds of features are worth adding) are planned as a separate stage.
 
 See [Discovery statistics](discovery-statistics.md) for exactly how each test and comparison works, and the [reference](../reference/discovery.md) for the full API.

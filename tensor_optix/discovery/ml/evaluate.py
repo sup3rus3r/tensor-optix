@@ -88,7 +88,7 @@ def evaluate_family(table: Table, types: Dict[str, ColumnType], y: np.ndarray, f
                     family: Family, config: Dict, *, task: str, n_classes: int, metric: str,
                     secondary: Sequence[str] = (), seed: int = 0, stage: str = "trial",
                     drop: Sequence[str] = (), budget=None,
-                    row_losses: Optional[np.ndarray] = None) -> ExperimentResult:
+                    row_losses: Optional[np.ndarray] = None, preprocessing=None) -> ExperimentResult:
     """
     ``y`` is the encoded target for *all* rows of ``table`` (indexed by the folds).
     ``row_losses``: optional float array of length ``len(y)``; each fold's test
@@ -96,7 +96,7 @@ def evaluate_family(table: Table, types: Dict[str, ColumnType], y: np.ndarray, f
     """
     m = get_metric(metric)
     metrics = [metric] + [s for s in secondary if s != metric]
-    opts = family.preprocessing
+    opts = preprocessing if preprocessing is not None else family.preprocessing
     if drop:
         opts = replace(opts, drop=tuple(sorted(set(opts.drop) | set(drop))))
     fold_ids, scores = [], []

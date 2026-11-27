@@ -21,14 +21,14 @@ discover(data, target=None, *, kind="auto", task=None, groups=None, time=None, t
 |---|---|
 | `data` | pandas DataFrame, dict of columns, 2-D numpy array, structured array, or an `(X, y)` tuple |
 | `target` | column name, column index, or an array of targets |
-| `kind` | `"auto"` (default), `"ml"`, `"rl"` (RL environments are not supported yet: `NotImplementedError`) |
+| `kind` | `"auto"` (default; a Gymnasium / PettingZoo environment is detected), `"ml"`, `"rl"` (needed for an environment factory or id) |
 | `task` | force `"binary"`, `"multiclass"`, `"regression"` or `"count"` |
 | `groups`, `time` | declare the group / time column (name, index or array) |
 | `test` | features of the rows the model will be used on (enables train-vs-test shift checks) |
 | `column_names` | names for numpy columns |
 | `column_types` | `{column: type}` overrides; types: `numeric_continuous`, `numeric_discrete`, `boolean`, `categorical_low`, `categorical_high`, `datetime`, `identifier`, `text`, `embedded_number`, `constant`, `url`, `list` |
 | `metric` | force the comparison metric (`auc`, `macro_auc`, `accuracy`, `balanced_accuracy`, `macro_f1`, `log_loss`, `brier`, `rmse`, `mae`, `r2`, `poisson_deviance`) |
-| `families` | restrict candidates: `linear`, `naive_bayes`, `knn`, `mlp` (torch), `lightgbm`, `xgboost` |
+| `families` | restrict candidates: `linear`, `naive_bayes`, `knn`, `mlp` (torch), `lightgbm`, `xgboost`, `gbdt` (native; default only without LightGBM / XGBoost); for environments `ppo`, `dqn`, `sac`, `td3` |
 | `budget` | `Budget`; default `Budget.default_for_rows(n_rows)` |
 | `decisions` | `{finding_id: "accept" \| "reject" \| Decision}`, typically `report.decisions()` |
 | `seed` | reproducibility seed |
@@ -53,7 +53,7 @@ Budget.default_for_rows(n_rows)     # ~60 s at 10k rows, growing with log size, 
 | `comparisons` | `List[Comparison]` -- every paired comparison |
 | `recommendation` | `Recommendation` |
 | `plan` | `List[PlanStep]` |
-| `profile` | `Profile`: `sections` holds `columns`, `target`, `structure`, `quality`, `leakage`, `landmarks`, `shift`, `meta_features`, `applied_findings`, `excluded_columns` |
+| `profile` | `Profile`: `sections` holds `columns`, `target`, `structure`, `quality`, `leakage`, `landmarks`, `shift`, `features` (feature families and scalers tested), `meta_features`, `applied_findings`, `excluded_columns` |
 | `limitations` | `List[str]` |
 | `budget_requested`, `budget_used`, `seed`, `ledger_refs`, `schema_version` | |
 | `finding(id)`, `decision(id)` | look-ups |
@@ -73,12 +73,12 @@ Reports are versioned (`DISCOVERY_SCHEMA_VERSION`); older reports are migrated o
 | Field | |
 |---|---|
 | `id` | stable id, e.g. `leakage.single_feature:col=refund_flag` |
-| `category` | `data_types`, `quality`, `structure`, `leakage`, `target`, `shift`, `family`, `budget`, `limitation` |
+| `category` | `data_types`, `quality`, `structure`, `leakage`, `target`, `shift`, `family`, `features`, `budget`, `limitation` |
 | `severity` | `info` < `advisory` < `warning` < `critical` |
 | `statement` | plain-language finding |
 | `evidence` | `Tuple[Evidence]`: `test`, `statistic`, `n`, `null_value`, `p_value`, `interval`, `effect_size`, `details`, `seed` |
 | `confidence`, `confidence_basis` | `low` / `moderate` / `high`, and what it rests on |
-| `suggested_action` | `Action(kind, params)` from a closed grammar: `drop_column`, `set_column_type`, `use_split`, `dedupe`, `set_metric`, `use_family`, ... |
+| `suggested_action` | `Action(kind, params)` from a closed grammar: `drop_column`, `set_column_type`, `use_split`, `dedupe`, `set_metric`, `use_family`, `scale` (`column`, `method`: `robust` / `quantile`), `add_feature_family` (a feature-family spec), ... Each action carries the lowest grammar version that can read it |
 | `default_applied` | whether discovery's own experiments applied it (unless rejected) |
 
 ## Recommendation
@@ -96,11 +96,25 @@ Applies the findings whose decision is **accepted**. Raises `PendingCriticalFind
 | `MLSolution` | |
 |---|---|
 | `fit(data, target=None, *, groups=None, time=None)` | train on all rows |
-| `predict(data)` | predictions; original class labels for classification |
-| `predict_proba(data)` | class probabilities (classification) |
+| `predict(data, target=None)` | predictions; original class labels for classification. `target` (the known history, `NaN` for rows to predict) is needed only when an accepted feature family uses past target values |
+| `predict_proba(data, target=None)` | class probabilities (classification) |
+| `features`, `scaling` | accepted feature families (specs) and per-column scalers the solution applies |
 | `cross_validate(data, target=None, *, groups=None, time=None, repeats=1, n_splits=None)` | `ExperimentResult` with the built split |
 | `splitter(n_splits=None)` | the CV splitter (`KFold`, `StratifiedKFold`, `GroupKFold`, `StratifiedGroupKFold`, `ForwardChaining`) |
 | `describe()` | family, config, split, dropped columns, types, applied findings, mismatches |
+
+## RLSolution
+
+`report.build()` on an environment report. `algorithm` (`PPO`, `DQN`, `SAC`, `TD3`, `RECURRENT_PPO`), `action_rescale`, `obs_normalize`, `rnd`, `applied`, `evidence_mismatch`.
+
+| | |
+|---|---|
+| `make_env(env_or_factory)` | the environment with the accepted wrappers |
+| `make_agent(env, **kwargs)` | the agent (`make_agent()` defaults, or the recurrent builder) |
+| `fit(env_or_factory, *, max_episodes=None, checkpoint_dir=None, agent_kwargs=None, **rl_kwargs)` | trains with `RLOptimizer` (convergence stopping, online tuning); returns `(agent, run)` |
+| `describe()` | |
+
+Environment findings use the `env` category: `env.spaces`, `env.sparse_reward`, `env.reward_scale`, `env.obs_scale`, `env.action_rescale` (`wrap_action_rescale`, applied in trials), `env.unbounded_actions`, `env.determinism`, `env.partial_observability`; validated variants: `rl.obs_normalize` (`wrap_obs_normalize`), `rl.rnd` (`add_rnd`), `rl.recurrent` (`use_recurrent`).
 
 ## Ledger records
 

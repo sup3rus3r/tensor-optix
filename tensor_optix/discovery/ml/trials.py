@@ -40,6 +40,8 @@ class TrialState:
 
 def candidate_families(task: str, names: Optional[Sequence[str]] = None) -> List[Family]:
     fams = [f for f in all_families() if f.candidate and f.supports(task)]
+    if names is None:
+        fams = [f for f in fams if f.is_default()]
     if names is not None:
         wanted = set(names)
         unknown = wanted - {f.name for f in all_families()}

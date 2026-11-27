@@ -53,6 +53,11 @@ class Family:
     candidate: bool = True                      # can be recommended
     description: str = ""
     available: Callable[[], bool] = lambda: True
+    # tried when no ``families=`` is given; opt-in families set this to False (or a callable)
+    default: Any = True
+
+    def is_default(self) -> bool:
+        return bool(self.default() if callable(self.default) else self.default)
 
     def supports(self, task: str) -> bool:
         return task in self.tasks
@@ -89,7 +94,7 @@ def _ensure_loaded() -> None:
     if _LOADED:
         return
     _LOADED = True
-    from . import baseline, knn, linear, naive_bayes, tree  # noqa: F401  (register on import)
+    from . import baseline, knn, linear, naive_bayes, native_gbdt, tree  # noqa: F401  (register on import)
     # Optional families register themselves only when their dependency imports.
     for mod in ("mlp", "boosting"):
         try:
