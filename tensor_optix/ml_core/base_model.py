@@ -29,8 +29,10 @@ class FitHistory:
     # Why the run ended: "epochs", "max_epochs", "early_stopping" or
     # "converged" (the ConvergenceMonitor reached DORMANT).
     stop_reason: Optional[str] = None
-    # One ConvergenceReport per validated epoch.
+    # One ConvergenceReport per epoch fed to the monitor (probe epochs are not).
     convergence: List[Any] = field(default_factory=list)
+    # Epochs trained under an online tuner's probe (not fed to the monitor).
+    probe_epochs: List[int] = field(default_factory=list)
 
 
 class BaseMLModel(ABC):
@@ -118,6 +120,7 @@ class BaseMLModel(ABC):
         max_epochs: Optional[int] = None,
         stop_on_convergence: Optional[bool] = None,
         convergence: Optional[object] = None,
+        spsa: Any = None,
     ) -> FitHistory:
         """
         Train until tensor-optix judges the run converged (the default,
@@ -142,6 +145,13 @@ class BaseMLModel(ABC):
         With checkpoint_dir set, the best checkpoint's weights are restored
         before returning, however the run ended (also on an exception).
         Without it nothing is persisted, so the final weights are returned.
+
+        spsa: online hyperparameter tuning. None (default) -- an
+        SPSAOptimizer over default_param_bounds; False -- no tuning; or any
+        BaseOptimizer instance, e.g. SPSAOptimizer(param_bounds=...,
+        perturbation_scale=0.02, learning_rate=0.05) for gentler probes.
+        Epochs trained under a probe are recorded in FitHistory.probe_epochs
+        and are not fed to the convergence monitor.
 
         convergence: a tensor_optix.core.convergence.ConvergenceMonitor to use
         instead of the ML defaults (to change its timescales, patience or
@@ -179,5 +189,6 @@ class BaseMLModel(ABC):
             max_epochs=max_epochs,
             stop_on_convergence=stop_on_convergence,
             convergence=convergence,
+            spsa=spsa,
         )
         return trainer.run(train_data, val_data)

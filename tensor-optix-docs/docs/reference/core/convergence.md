@@ -85,7 +85,7 @@ Patience is measured in the caller's own units of `at` (episodes, scored windows
 | `REGRESSED_*` | both the medium and the short level are below the peak by more than their combined uncertainty; climbing or stalled is decided by the short or medium slope |
 
 - **Persistence.** A new regime must hold for `persist` consecutive observations before it is reported.
-- **Probing.** A collapse is never confirmed on an observation scored under a deliberate perturbation (`probing=True`, e.g. an SPSA probe or a self-play window against all-live opponents). Such an observation neither counts toward a pending collapse nor cancels it.
+- **Probing.** A collapse is never confirmed on an observation scored under a deliberate perturbation (`probing=True`, e.g. an SPSA probe or a self-play window against all-live opponents). Such an observation neither counts toward a pending collapse nor cancels it. The ML `Trainer` goes further: it does not feed probe epochs to the monitor at all (see the [ML core guide](../../guides/ml-core.md#hyperparameter-tuning)).
 
 **Warm-up and the first readings after a restart or restore** use separate rules. The mean of the last 4 scores is compared with a reference:
 
@@ -162,8 +162,9 @@ Read-only views: `state`, `regime`, `peak`, `best_score`, `last_report`, `n_obse
 
 | Transition | RL `LoopController` | ML `Trainer` | `MultiAgentRunner` (per seat) |
 |---|---|---|---|
-| `improved` | `optimizer.on_improvement`, RND η × 0.9 | `spsa.on_improvement` | `optimizer.on_improvement` |
-| `entered_cooling` | `optimizer.on_cooling`, RND η × 1.5, `on_plateau` | `spsa.on_cooling`, `on_plateau` | `optimizer.on_cooling`, `on_plateau` |
+| `improved` | `optimizer.on_improvement`, RND η × 0.9 | `tuner.on_improvement` | `optimizer.on_improvement` |
+| `entered_cooling` | `optimizer.on_cooling`, RND η × 1.5, `on_plateau` | `on_plateau` only (the tuner is not widened) | `optimizer.on_cooling`, `on_plateau` |
+| probe observations | `probing=True` (no collapse confirmation) | not fed to the monitor (`FitHistory.probe_epochs`) | `probing=True` |
 | `collapse_confirmed` | `on_degradation`; rollback when enabled, on-policy only, and not again until the run has been back at the peak | — | `on_degradation`; rollback under the same rule |
 | `entered_dormant` | `optimizer.on_plateau`, `on_dormant`; stop unless a callback resumes (state stays DORMANT) | `on_dormant`; stop when convergence is on (`stop_reason="converged"`) | `optimizer.on_plateau`, `on_converged` |
 | any regime or state change | `on_convergence(episode_id, report)` (including the cold start) | `on_convergence(epoch, report)` | `on_convergence(agent_id, window_id, report)` |

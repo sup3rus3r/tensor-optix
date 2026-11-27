@@ -44,9 +44,17 @@ def test_open_ended_fit_stops_when_converged(monkeypatch):
     model = _model_with_scores(monkeypatch, [0.5 + 0.03 * i for i in range(10)] + [0.8])
     history = model.fit(train, val, epochs=None, batch_size=8)
     assert history.stop_reason == "converged" and history.stopped_early
-    assert 20 <= history.epochs_run <= 60
-    assert len(history.convergence) == history.epochs_run
+    # The default SPSA tuner probes 2 of every 3 epochs and probe epochs are
+    # not progress readings, so the monitor's 12-reading warm-up spans ~36
+    # epochs before DORMANT can be judged.
+    assert 20 <= history.epochs_run <= 80
+    assert len(history.convergence) + len(history.probe_epochs) == history.epochs_run
     assert history.convergence[-1].entered_dormant
+    # without the tuner every epoch is a reading and the run stops sooner
+    model = _model_with_scores(monkeypatch, [0.5 + 0.03 * i for i in range(10)] + [0.8])
+    fast = model.fit(train, val, epochs=None, batch_size=8, spsa=False)
+    assert fast.stop_reason == "converged" and fast.epochs_run < history.epochs_run
+    assert len(fast.convergence) == fast.epochs_run
 
 
 def test_default_fit_without_validation_converges_on_training_loss():

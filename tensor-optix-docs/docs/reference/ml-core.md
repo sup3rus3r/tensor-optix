@@ -58,6 +58,7 @@ class BaseMLModel(ABC):
         max_epochs: Optional[int] = None,
         stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
+        spsa=None,                          # None: default SPSA | False: off | a BaseOptimizer
     ) -> FitHistory:
         """
         epochs: None (default) -- train until the ConvergenceMonitor reaches
@@ -78,6 +79,13 @@ class BaseMLModel(ABC):
         before returning, however the run ended (also on an exception).
         Without it nothing is persisted and the final weights are returned.
         "New best" is tracked independently of whether checkpoint_dir is set.
+
+        spsa: online hyperparameter tuning. None (default) -- an
+        SPSAOptimizer over default_param_bounds; False -- none; or any
+        BaseOptimizer instance. Epochs trained under a probe
+        (optimizer.is_probing) are listed in FitHistory.probe_epochs and are
+        not fed to the convergence monitor. A tuner that tunes learning_rate
+        cannot be combined with lr_schedule (ValueError).
 
         lr_schedule: callable(epoch) -> float, applied once per epoch.
         Mutually exclusive with SPSA tuning of learning_rate for this run
@@ -101,7 +109,8 @@ class FitHistory:
     stopped_early: bool                # True if early stopping or convergence ended the run
     epochs_run: int                    # actual epochs completed
     stop_reason: Optional[str]         # "epochs" | "max_epochs" | "early_stopping" | "converged"
-    convergence: List[ConvergenceReport]   # one report per validated epoch
+    convergence: List[ConvergenceReport]   # one report per epoch fed to the monitor
+    probe_epochs: List[int]                # epochs trained under a tuner probe (not fed to it)
 ```
 
 ## Trainer
@@ -123,13 +132,14 @@ class Trainer:
          epoch as best, (if checkpoint_dir is set) CheckpointRegistry.save(),
          fire on_improvement. Otherwise advance the counter and fire
          on_no_improvement.
-      4. Feed the score to the ConvergenceMonitor (at=epoch). Fire
-         on_convergence on regime / state changes; on IMPROVING tell SPSA
-         (on_improvement); on entering COOLING tell SPSA (on_cooling) and
-         fire on_plateau once.
-      5. If an SPSA-tunable model (default_param_bounds set), call
-         SPSAOptimizer.suggest() with the accumulated EvalMetrics history
-         and apply the suggestion via model.set_hyperparams().
+      4. Unless the epoch ran under a tuner probe (tuner.is_probing -- then
+         the epoch goes to FitHistory.probe_epochs instead), feed the score
+         to the ConvergenceMonitor (at=epoch). Fire on_convergence on regime
+         / state changes; on IMPROVING tell the tuner (on_improvement); on
+         entering COOLING fire on_plateau once (the tuner is not widened).
+      5. If a tuner is active, call its suggest() with the accumulated
+         EvalMetrics history and apply the suggestion via
+         model.set_hyperparams().
       6. Stop on early_stopping_patience, or -- when stop_on_convergence --
          when the monitor enters DORMANT (on_dormant fires first).
     Without val_data (and with convergence on) only the negated training

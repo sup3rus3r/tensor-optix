@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 
@@ -68,6 +68,17 @@ class Trainer:
     ``early_stopping_patience`` (epochs without a new validation best, off by
     default). With ``checkpoint_dir`` set, the best checkpoint's weights are
     restored before returning, however the run ended (also on an exception).
+
+    Online hyperparameter tuning (``spsa``): by default an ``SPSAOptimizer``
+    over the model's ``default_param_bounds``; ``spsa=False`` turns it off and
+    any ``BaseOptimizer`` instance replaces it. Epochs trained under one of
+    the tuner's deliberate probes (``optimizer.is_probing``) measure a
+    perturbed configuration, so their scores are *not* fed to the
+    ConvergenceMonitor: they cannot count as new ground, raise the peak, or
+    move the trends. Patience still counts them -- they are real epochs of
+    training. Unlike the RL loop, entering COOLING does not widen the tuner's
+    search here: on a smooth supervised curve a plateau usually means the
+    model has converged, and larger probes would only disturb it.
     """
 
     def __init__(
@@ -84,6 +95,7 @@ class Trainer:
         max_epochs: Optional[int] = None,
         stop_on_convergence: Optional[bool] = None,
         convergence: Optional[ConvergenceMonitor] = None,
+        spsa: Any = None,
     ):
         if epochs is not None and int(epochs) < 0:
             raise ValueError(f"epochs must be >= 0 or None, got {epochs}")
@@ -109,23 +121,45 @@ class Trainer:
             CheckpointRegistry(checkpoint_dir) if checkpoint_dir is not None else None
         )
 
-        self._spsa = None
+        self._spsa = self._resolve_tuner(spsa, model, lr_schedule)
+
+    @property
+    def monitor(self) -> ConvergenceMonitor:
+        return self._monitor
+
+    @staticmethod
+    def _resolve_tuner(spsa: Any, model, lr_schedule):
+        """None -> default SPSA over the model's bounds; False -> no tuning;
+        a BaseOptimizer instance -> used as given."""
+        if spsa is False:
+            return None
+        if spsa is not None and spsa is not True:
+            from tensor_optix.core.base_optimizer import BaseOptimizer
+            if not isinstance(spsa, BaseOptimizer):
+                raise TypeError("spsa must be None, False, or a BaseOptimizer instance "
+                                f"(e.g. SPSAOptimizer(...)), got {type(spsa).__name__}")
+            if lr_schedule is not None and "learning_rate" in (getattr(spsa, "_param_bounds", None) or {}):
+                raise ValueError("lr_schedule and a tuner that also tunes learning_rate would fight "
+                                 "over it; remove learning_rate from the tuner's param_bounds")
+            return spsa
         param_bounds = dict(getattr(model, "default_param_bounds", None) or {})
         if lr_schedule is not None:
             # A schedule and SPSA both mutating learning_rate every epoch
             # would fight each other -- the schedule owns learning_rate
             # for the whole run; SPSA still tunes any other bounded param.
             param_bounds.pop("learning_rate", None)
-        if param_bounds:
-            from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
-            self._spsa = SPSAOptimizer(
-                param_bounds=param_bounds,
-                log_params=[p for p in getattr(model, "default_log_params", []) if p in param_bounds],
-            )
+        if not param_bounds:
+            return None
+        from tensor_optix.optimizers.spsa_optimizer import SPSAOptimizer
+        return SPSAOptimizer(
+            param_bounds=param_bounds,
+            log_params=[p for p in getattr(model, "default_log_params", []) if p in param_bounds],
+        )
 
-    @property
-    def monitor(self) -> ConvergenceMonitor:
-        return self._monitor
+    def _probing(self) -> bool:
+        """Whether the epoch just evaluated ran under a tuner probe. ``suggest()``
+        runs after the evaluation, so this reflects that epoch's hyperparameters."""
+        return self._spsa is not None and bool(getattr(self._spsa, "is_probing", False))
 
     def _check_open_ended(self) -> None:
         if self._epochs is not None:
@@ -257,15 +291,19 @@ class Trainer:
                     _call(cb, "on_no_improvement", eval_metrics)
 
             # Convergence: what the validation curve is doing, and whether
-            # the run has stopped making real progress.
-            report = self._observe(history, eval_metrics.primary_score, epoch)
-            if report.improved and self._spsa is not None:
-                self._spsa.on_improvement(eval_metrics.to_eval_metrics())
+            # the run has stopped making real progress. An epoch trained under
+            # a tuner probe measured a perturbed configuration and is not a
+            # progress reading (see the class docstring).
+            report = None
+            if self._probing():
+                history.probe_epochs.append(epoch)
+            else:
+                report = self._observe(history, eval_metrics.primary_score, epoch)
+                if report.improved and self._spsa is not None:
+                    self._spsa.on_improvement(eval_metrics.to_eval_metrics())
 
             metrics_history.append(eval_metrics.to_eval_metrics())
-            if report.entered_cooling:
-                if self._spsa is not None:
-                    self._spsa.on_cooling(metrics_history)
+            if report is not None and report.entered_cooling:
                 for cb in self._callbacks:
                     _call(cb, "on_plateau", eval_metrics)
             if self._spsa is not None:
@@ -286,7 +324,7 @@ class Trainer:
                 history.stop_reason = "early_stopping"
                 return
 
-            if self._converged(history, report, epoch):
+            if report is not None and self._converged(history, report, epoch):
                 return
 
             epoch += 1

@@ -126,7 +126,7 @@ Callbacks:
 
 - `on_improvement(metrics)`: every new best.
 - `on_no_improvement(metrics)`: every epoch without one.
-- `on_plateau(metrics)`: **once**, on entering COOLING. SPSA's `on_cooling` also widens its search at that point.
+- `on_plateau(metrics)`: **once**, on entering COOLING. Unlike the RL loop, the trainer does *not* widen SPSA's search at that point: on a smooth supervised curve a plateau usually means convergence, and larger probes would only disturb the model.
 - `on_dormant(epoch)`: once, on entering DORMANT.
 - `on_convergence(epoch, report)`: on every regime or state change.
 
@@ -158,6 +158,19 @@ class MyModel(TorchMLModel):
 ```
 
 `TorchMLModel`/`TFMLModel` both already set this for `learning_rate`/`weight_decay` by default.
+
+Control it per `fit()` call with `spsa=`:
+
+```python
+model.fit(train, val, spsa=False)                         # no online tuning
+model.fit(train, val, spsa=SPSAOptimizer(                  # gentler probes and steps
+    param_bounds={"learning_rate": (1e-5, 1e-2)}, log_params=["learning_rate"],
+    perturbation_scale=0.02, learning_rate=0.05))
+```
+
+SPSA estimates its gradient from two **probe** epochs per cycle (plus and minus a perturbation), then commits an update. Probe epochs train under a deliberately perturbed configuration, so their validation scores are **not** fed to the convergence monitor: they can't count as new ground, raise the peak or move the trends. They are listed in `FitHistory.probe_epochs`. Patience still counts them, because they are real epochs of training.
+
+As a result, with the default tuner only every third epoch is a progress reading, and an open-ended `fit()` takes a little longer to reach a convergence decision than with `spsa=False`.
 
 ## Learning-rate schedules
 

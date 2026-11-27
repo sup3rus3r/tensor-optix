@@ -23,6 +23,10 @@ nav:
       - Export to ONNX: guides/onnx-export.md
       - Write a custom agent: guides/custom-agent.md
       - Logging and dashboards: guides/logging-callbacks.md
+  - Discovery:
+      - Guide: guides/discovery.md
+      - Statistics: guides/discovery-statistics.md
+      - Reference: reference/discovery.md
   - Learning-to-Learn Engine:
       - Guide: guides/learning-to-learn.md
       - Reference: reference/learning-to-learn.md
